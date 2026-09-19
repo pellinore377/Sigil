@@ -208,7 +208,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                     !welcomed && sawSignIn -> Box(Modifier.imePadding()) { WelcomePermissions(state, command) { write("welcomed", "true"); welcomed = true } }
                     else -> {
                         val accessNotice = state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null
-                        val destination = when { wide && chat == null && page == "inbox" -> "welcome"; state.call != null && !callMinimized -> "call"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
+                        val destination = when { state.call != null && !callMinimized -> "call"; wide && chat == null && page == "inbox" -> "welcome"; chat?.archived == true -> "saved-conversation"; chat != null -> when (conversationPage) { "Chat theme" -> "theme"; "Settings" -> "chat-settings"; else -> "conversation" }; page in listOf("inbox", "search", "notes", "calls", "settings") -> "home"; else -> page }
                         val floating = destination == "conversation"
                         val statusInset = if (!wide) WindowInsets.statusBars.asPaddingValues().calculateTopPadding() else 0.dp
                         val headerTop = statusInset + 12.dp

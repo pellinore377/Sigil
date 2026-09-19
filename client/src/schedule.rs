@@ -294,6 +294,10 @@ impl ClientStore {
         {
             state.next = state.next.min(now);
         }
+        // A setup pass answers a person waiting on a call: only a live reservation or a failure backoff holds it.
+        if poll == 0 && state.failures == 0 && state.next != state.last.saturating_add(RESERVATION_SECONDS) {
+            state.next = state.next.min(now);
+        }
         if now < state.next {
             return Ok(ScheduledSync {
                 step: None,
@@ -605,6 +609,19 @@ mod tests {
             .unwrap()
             .maintenance
             .is_some());
+    }
+    #[test]
+    fn call_setup_runs_between_foreground_passes_whatever_second_they_ended_in() {
+        let (_dir, _fixture, mut store, reject, _, now) = setup(120);
+        reject.store(false, Ordering::SeqCst);
+        // A foreground pass that started at `now` and finished a second later schedules the next for now + 2.
+        let mut ticks = vec![now, now + 1].into_iter();
+        let regular = store.sync_with_poll(|| Ok(ticks.next().unwrap()), 1, Pass::Full, false).unwrap();
+        assert_eq!(regular.next_at, now + 2);
+        // A setup pass in between does not wait for that.
+        let setup = store.sync_with_poll(|| Ok(now + 1), 0, Pass::CallSetup, false).unwrap();
+        assert!(setup.step.is_some());
+        assert!(store.sync_with_poll(|| Ok(now + 1), 1, Pass::Full, false).unwrap().step.is_some());
     }
     #[test]
     fn call_setup_preserves_backoff_and_incomplete_reservations() {

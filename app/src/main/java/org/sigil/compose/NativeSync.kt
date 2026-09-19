@@ -65,7 +65,7 @@ internal object NativeSync {
             val result = StorageKeyProvider(context).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request)) }
             check(result.getBoolean("ok"))
             val value = result.getJSONObject("value")
-            android.util.Log.i("SigilTiming", "sync ${android.os.SystemClock.elapsedRealtime() - started}ms native=${value.optLong("ms")} ran=${value.optBoolean("ran")} interactive=$interactive wake=$wake setup=$callSetup lanes=${value.optJSONObject("lanes")} ${value.optJSONObject("timings")}")
+            android.util.Log.i("SigilTiming", "sync ${android.os.SystemClock.elapsedRealtime() - started}ms native=${value.optLong("ms")} ran=${value.optBoolean("ran")} next=+${value.optLong("next_at") - System.currentTimeMillis() / 1000}s interactive=$interactive wake=$wake setup=$callSetup lanes=${value.optJSONObject("lanes")} ${value.optJSONObject("timings")}")
             value
         }
     }

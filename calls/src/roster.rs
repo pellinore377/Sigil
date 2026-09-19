@@ -79,6 +79,8 @@ impl Delegation {
             .map_err(|_| Error::Authentication)
     }
 }
+/// Signalling clock skew tolerated between participants and the server, in seconds.
+pub const CLOCK_SKEW: u64 = 60;
 impl Roster {
     pub fn controller(&self) -> Id {
         self.controller.unwrap_or(self.owner)
@@ -118,7 +120,8 @@ impl Roster {
             .ok_or(Error::Authentication)
     }
     pub fn active(&self, now: u64) -> Result<(), Error> {
-        if self.closed || now < self.created || now >= self.expires {
+        // A creator's clock may run ahead by the signalling skew; its roster is not "not yet" for that long.
+        if self.closed || now.saturating_add(CLOCK_SKEW) < self.created || now >= self.expires {
             Err(Error::Expired)
         } else {
             Ok(())

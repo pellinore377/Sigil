@@ -20,6 +20,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var generation=0
     private var starting=false
     private var connecting=false
+    private var lastMark:String?=null
     private var connected:String?=null
     private var members=listOf<String>()
     private var audio:WebAudioEngine?=null
@@ -43,6 +44,9 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     fun refresh(value:JsonObject,clock:(Long)->String,day:(Long)->String={""}){
         history=value["calls"]?.jsonArray?.map {item->val call=item.jsonObject;CallSummary(call.string("id"),call.string("phase"),call.bool("direct"),call.long("created"),call["participants"]!!.jsonArray.map {entry->val person=entry.jsonObject;CallParticipant(person.string("member"),person.string("peer"),person.string("name"),person.bool("own"),person.bool("verified"),person.bool("audio"),person.bool("camera"),person.bool("screen"),person.string("fingerprint"),person.string("address"))},call.bool("can_invite"),call.string("name"),call.bool("outgoing"),clock(call.long("created")),day(call.long("created")),call.bool("missed"),call["duration"]?.jsonPrimitive?.longOrNull,call["video"]?.jsonPrimitive?.booleanOrNull)}.orEmpty()
         val current=desired?.let {id->history.find {it.id==id}}?:history.firstOrNull {it.phase=="ringing"}
+        // Phase transitions only, as on Android; call ids are truncated.
+        val mark=current?.let{"${it.id.take(8)} ${it.phase} ${visible?.connection?:"-"} participants=${it.participants.size}"}
+        if(mark!=lastMark){lastMark=mark;browserTimingLog("SigilTiming call ${mark?:"none"}")}
         if(current!=null && current.phase !in setOf("active","joining","ringing")){close();return}
         visible=current?.let{ActiveCall(it,it.name.ifBlank{it.participants.filterNot{p->p.own}.joinToString(", "){p->p.name}.ifBlank{"Call"}},visible?.connection?:"connecting",if(start==0.0)0 else ((window.performance.now()-start)/1000).toLong(),muted,camera=video)}
         if(current?.phase=="active" && desired==current.id && !connecting && connected!=current.id && CallClock.now()>=retry)connect(current)
@@ -76,7 +80,12 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                     while(isActive && current==generation && desired==call.id){
                         val state=browserCallTransportState()
                         if(state in setOf("failed","closed","disconnected")){reconnect(backoff=state!="closed");break}
-                        val receivers=runCatching{control("call_refresh",call.id).long("receivers")}.getOrDefault(0)
+                        val refreshed=runCatching{control("call_refresh",call.id).long("receivers")}
+                        val receivers=refreshed.getOrDefault(0)
+                        // Durations and counts only: how far media setup has come, and why it has not.
+                        if(state!="connected" || receivers<members.size)browserTimingLog("SigilTiming call transport=$state receivers=$receivers members=${members.size}"+(refreshed.exceptionOrNull()?.let{" refresh_error=${it.message?.take(80)}"}?:""))
+                        // Media that the worker no longer holds, or that belongs to an older roster, is rebuilt at once rather than polled forever.
+                        if(refreshed.exceptionOrNull()?.message?.let{it.contains("No call is active")||it.contains("membership changed")}==true){reconnect(backoff=false);break}
                         if(state=="connected" && receivers>=members.size && members.isNotEmpty()){
                             if(start==0.0)start=window.performance.now()
                             usedVideo=usedVideo||video||history.find{it.id==call.id}?.participants?.any{it.camera}==true
