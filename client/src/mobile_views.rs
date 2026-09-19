@@ -161,17 +161,22 @@ impl ClientStore {
         )
     }
     pub(super) fn mobile_summary(&mut self, peer: &str, chat: &mut Value) -> Result<(), Error> {
+        let t = std::time::Instant::now();
         let conversation = self.mobile_conversation(peer)?;
         let prefs = self.conversation_preferences(conversation)?;
-        let now = conversations::now();
         let (_, own) = structured::account_context(&self.db, &self.key)?;
+        crate::perf::mark("summary.prefs", t);
+        let now = conversations::now();
         chat["conversation"] = json!(transport::hex(&conversation));
         chat["pinned"] = json!(prefs.pinned);
         chat["hidden"] = json!(prefs.hidden);
         let mut unread = 0;
         let mut latest = false;
         let mut before = None;
+        let mut pages = 0;
+        let paging = std::time::Instant::now();
         loop {
+            pages += 1;
             let page = self.recent_conversation_page(conversation, before, now)?;
             if !latest {
                 if let Some(message) = page.messages.first() {
@@ -191,11 +196,19 @@ impl ClientStore {
                 .iter()
                 .filter(|m| m.reference.author != own && !m.seen && !m.read.contains(&own))
                 .count();
+            // Reading marks everything up to the newest message, so once a message from the other side has
+            // been seen, everything older has too; the count needs no further pages.
+            let caught_up = page
+                .messages
+                .iter()
+                .any(|m| m.reference.author != own && (m.seen || m.read.contains(&own)));
             before = page.next;
-            if before.is_none() || unread > 99 {
+            if before.is_none() || unread > 99 || caught_up {
                 break;
             }
         }
+        crate::perf::note(format!("summary.pages={pages}"));
+        crate::perf::mark("summary.paging", paging);
         chat["hidden"] = json!(prefs.hidden || (!prefs.cleared.is_empty() && !latest));
         chat["unread"] = json!(unread.min(100).max(usize::from(prefs.unread)));
         chat["snoozed"] = json!(prefs.snoozed_until.is_some_and(|v| v > now));
@@ -209,7 +222,9 @@ impl ClientStore {
         chat["read_receipts"] = json!(prefs.read_receipts);
         chat["typing_indicators"] = json!(prefs.typing_indicators);
         chat["presence_sharing"] = json!(prefs.presence_sharing);
+        let act = std::time::Instant::now();
         let activity = self.conversation_activity(conversation, now)?;
+        crate::perf::mark("summary.activity", act);
         chat["presence"] = json!(activity
             .iter()
             .find(|a| a.author != own && a.online)
