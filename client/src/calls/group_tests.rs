@@ -179,10 +179,12 @@ fn group_call(continuation: bool, pending: bool) {
         .collect();
     for _ in 0..8 {
         round(&mut clients, now);
-        if clients
-            .iter()
-            .all(|c| load(&c.db, &c.key, &id).unwrap().state.ready.len() == 8)
-        {
+        if clients.iter().all(|c| {
+            let record = load(&c.db, &c.key, &id).unwrap();
+            let own = record.own_id().unwrap();
+            record.state.ready.len() == 8
+                && record.state.ready.iter().any(|r| r.member == own && r.sequence == record.ready_sequence)
+        }) {
             break;
         }
     }
@@ -657,7 +659,10 @@ fn shares_overtaking_their_state_on_a_scoped_channel_are_adopted_once_it_lands()
         .unwrap()
         .own_id()
         .unwrap();
-    let mut member_media = clients[member].start_call_media(id, tracks, now).unwrap();
+    // Opening with more than the answer declared makes the member declare again, which is what this exercises.
+    let mut member_media = clients[member]
+        .start_call_media(id, Tracks { audio: true, camera: true, screen: false }, now)
+        .unwrap();
     retry(|| {
         clients[member]
             .resume_calls_online(now)?

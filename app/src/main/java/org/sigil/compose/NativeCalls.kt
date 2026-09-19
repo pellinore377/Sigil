@@ -133,7 +133,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                         val id = if (action == "call_start" || action == "call_redial") {
                             val request = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
                             native(action, mapOf((if (action == "call_start") "peer" else "call") to fields[if (action == "call_start") "peer" else "call"], "request" to request, "timestamp" to System.currentTimeMillis() / 1000)).getString("call")
-                        } else (fields["call"] as String).also { if (action == "call_answer") native("call_answer", mapOf("call" to it, "accept" to true)) }
+                        } else (fields["call"] as String).also { if (action == "call_answer") native("call_answer", mapOf("call" to it, "accept" to true, "video" to video)) }
                         if (generation != current) { end(id); return@launch }
                         desired = id
                         serviceReady = CompletableDeferred()

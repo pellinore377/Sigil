@@ -252,7 +252,7 @@ fn sender_key_renewal_keeps_receiver_replay_state_and_failed_commit_keeps_live_h
 /// real device, so this number is the floor on how long "securing" lasts: joining
 /// up, the roster back, readiness and our key up, the roster and their key back.
 #[test]
-fn direct_call_secures_within_four_round_trips_of_answering() {
+fn direct_call_secures_within_three_harness_trips_of_answering() {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     crate::calls::tests::configure(dir.path());
     let (_alice_peer, peer) = trust(&mut alice, &mut bob);
@@ -276,11 +276,16 @@ fn direct_call_secures_within_four_round_trips_of_answering() {
         let secured = |store: &mut ClientStore, media: Option<&mut Media>| {
             media.is_some_and(|m| matches!(store.refresh_call_media(m, now), Ok(n) if n > 0))
         };
-        if secured(&mut alice, a.as_mut()) && secured(&mut bob, b.as_mut()) {
+        // Both refresh every trip, as live clients do; the owner secures on the callee's first refresh.
+        let alice_secured = secured(&mut alice, a.as_mut());
+        let bob_secured = secured(&mut bob, b.as_mut());
+        if alice_secured && bob_secured {
             break;
         }
         trips += 1;
         crate::calls::tests::round_trip(&mut alice, &mut bob, now);
     }
-    assert_eq!(trips, 4, "round trips from answering to secured");
+    // Join and readiness travel together, so the callee secures on the owner's first reply and the
+    // owner on the callee's first refresh; the harness only refreshes between trips, hence three.
+    assert_eq!(trips, 3, "round trips from answering to secured");
 }

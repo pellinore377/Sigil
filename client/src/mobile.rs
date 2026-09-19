@@ -158,6 +158,8 @@ enum Command {
     CallAnswer {
         call: String,
         accept: bool,
+        #[serde(default)]
+        video: Option<bool>,
     },
     CallHistoryMedia {
         call: String,
@@ -1572,8 +1574,9 @@ impl ClientStore {
                 request,
                 timestamp,
             } => self.mobile_call_redial(id(&call)?, id(&request)?, timestamp),
-            Command::CallAnswer { call, accept } => {
-                self.answer_call(id(&call)?, accept, conversations::now())?;
+            Command::CallAnswer { call, accept, video } => {
+                let tracks = sigil_calls::Tracks { audio: true, camera: video == Some(true), screen: false };
+                self.answer_call_with(id(&call)?, accept, tracks, conversations::now())?;
                 self.mobile_calls()
             }
             Command::CallHistoryMedia { call, duration, video } => {
