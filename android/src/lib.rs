@@ -225,22 +225,120 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_readFileChunk(
         .map(|v| v.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
+/// Open stores are pooled while the app is in use, with the storage key held in native memory, so a command
+/// neither unwraps the key nor opens the database again. `close_pool` drops both when the app leaves the foreground.
+const POOL_LIMIT: usize = 4;
+struct Pooled {
+    directory: String,
+    key: Zeroizing<[u8; 32]>,
+    store: ClientStore,
+}
+struct Pool {
+    idle: Vec<Pooled>,
+    known: Option<(String, Zeroizing<[u8; 32]>)>,
+}
+static POOL: std::sync::Mutex<Pool> = std::sync::Mutex::new(Pool { idle: Vec::new(), known: None });
+/// A store on loan from the pool; it goes back when dropped.
+struct Store(Option<Pooled>);
+impl std::ops::Deref for Store {
+    type Target = ClientStore;
+    fn deref(&self) -> &ClientStore { &self.0.as_ref().expect("store").store }
+}
+impl std::ops::DerefMut for Store {
+    fn deref_mut(&mut self) -> &mut ClientStore { &mut self.0.as_mut().expect("store").store }
+}
+impl Store {
+    /// Takes the store out of the pool's care, for a caller that keeps it.
+    fn into_inner(mut self) -> ClientStore { self.0.take().expect("store").store }
+}
+impl Drop for Store {
+    fn drop(&mut self) {
+        if let Some(pooled) = self.0.take() {
+            if let Ok(mut pool) = POOL.lock() {
+                let current = pool.known.as_ref().is_some_and(|(d, k)| *d == pooled.directory && **k == *pooled.key);
+                if current && pool.idle.len() < POOL_LIMIT { pool.idle.push(pooled); }
+            }
+        }
+    }
+}
+fn valid_directory(directory: &str) -> bool { directory.len() <= 4096 && std::path::Path::new(directory).is_absolute() }
+fn borrow(directory: String, key: Zeroizing<[u8; 32]>) -> Option<Store> {
+    {
+        let mut pool = POOL.lock().ok()?;
+        let same = pool.known.as_ref().is_some_and(|(d, k)| *d == directory && **k == *key);
+        if !same { pool.idle.clear(); pool.known = Some((directory.clone(), key.clone())); }
+        if let Some(at) = pool.idle.iter().position(|p| p.directory == directory && *p.key == *key) {
+            return Some(Store(Some(pool.idle.swap_remove(at))));
+        }
+    }
+    let path = std::path::Path::new(&directory).join("client.db");
+    let storage = StorageKey::new(Secret32::from_bytes(*key)).ok()?;
+    let store = ClientStore::open(&path, storage).ok()?;
+    Some(Store(Some(Pooled { directory, key, store })))
+}
 fn open(
     env: &mut JNIEnv<'_>,
     directory: &JString<'_>,
     key: &JByteArray<'_>,
-) -> Option<ClientStore> {
+) -> Option<Store> {
     if env.get_array_length(key).ok()? != 32 {
         return None;
     }
     let bytes = Zeroizing::new(env.convert_byte_array(key).ok()?);
+    let key = Zeroizing::new(<[u8; 32]>::try_from(bytes.as_slice()).ok()?);
     let directory = String::from(env.get_string(directory).ok()?);
-    if directory.len() > 4096 || !std::path::Path::new(&directory).is_absolute() {
+    if !valid_directory(&directory) {
         return None;
     }
-    let path = std::path::Path::new(&directory).join("client.db");
-    let storage = StorageKey::new(Secret32::from_bytes(bytes.as_slice().try_into().ok()?)).ok()?;
-    ClientStore::open(&path, storage).ok()
+    borrow(directory, key)
+}
+/// A store for a directory whose key is already known to the pool; none when the app has to unwrap the key first.
+fn open_known(env: &mut JNIEnv<'_>, directory: &JString<'_>) -> Option<Store> {
+    let directory = String::from(env.get_string(directory).ok()?);
+    if !valid_directory(&directory) {
+        return None;
+    }
+    let key = {
+        let pool = POOL.lock().ok()?;
+        match &pool.known { Some((d, k)) if *d == directory => k.clone(), _ => return None }
+    };
+    borrow(directory, key)
+}
+fn close_pool() {
+    if let Ok(mut pool) = POOL.lock() { pool.idle.clear(); pool.known = None; }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_closeStore(_env: JNIEnv, _: JObject) {
+    close_pool();
+}
+
+/// The keyless fast path: runs a command on a pooled store, or returns null when the key is not yet known.
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_executeCached(
+    mut env: JNIEnv,
+    _: JObject,
+    directory: JString,
+    request: JString,
+) -> jstring {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<String> {
+        let mut store = open_known(&mut env, &directory)?;
+        let request = Zeroizing::new(String::from(env.get_string(&request).ok()?));
+        let ran = std::time::Instant::now();
+        let response = store.mobile_command(&request);
+        let run_ms = ran.elapsed().as_millis();
+        if let Ok(tag) = std::ffi::CString::new("SigilTiming") {
+            let marks = sigil_client::perf::drain().join(" ");
+            if let Ok(line) = std::ffi::CString::new(format!("native pooled run={run_ms}ms {marks}")) {
+                unsafe { __android_log_write(4, tag.as_ptr(), line.as_ptr()); }
+            }
+        }
+        Some(response)
+    }));
+    match result.ok().flatten() {
+        Some(response) => env.new_string(response).map(|v| v.into_raw()).unwrap_or(std::ptr::null_mut()),
+        None => std::ptr::null_mut(),
+    }
 }
 
 #[no_mangle]

@@ -1353,6 +1353,12 @@ impl ClientStore {
                     .map(|p| self.mobile_conversation(p))
                     .transpose()?
                     .unwrap_or([0; 32]);
+                // A setting already at this value writes nothing: the log stays short and the folds stay cached.
+                if let sigil_protocol::conversation::Private::UiSetting { key, value: Some(current) } = &value {
+                    if self.conversation_preferences(conversation)?.ui.get(key) == Some(current) {
+                        return Ok(json!({}));
+                    }
+                }
                 let operation = self.conversation_operation(
                     id(&request)?,
                     Action::Private {

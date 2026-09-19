@@ -17,6 +17,10 @@ object NativeStorage {
     init { System.loadLibrary("sigil_android") }
     external fun checkStore(directory: String, key: ByteArray): Boolean
     external fun execute(directory: String, key: ByteArray, request: String): String
+    // Runs on a pooled store without the key; null until a keyed call has opened the store for this directory.
+    external fun executeCached(directory: String, request: String): String?
+    // Drops pooled stores and the key held for them; used when the app leaves the foreground.
+    external fun closeStore()
     external fun mailboxWait(directory: String, key: ByteArray, seconds: Int): Boolean
     external fun stageFile(directory: String, key: ByteArray, request: String, index: Int, bytes: ByteArray): Boolean
     external fun readFileChunk(directory: String, key: ByteArray, peer: String, author: String, message: String, index: Int): ByteArray?

@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use super::*;
 use sigil_protocol::text::{composition::Part, structured::Construct, Document};
 
@@ -170,45 +171,52 @@ impl ClientStore {
         chat["conversation"] = json!(transport::hex(&conversation));
         chat["pinned"] = json!(prefs.pinned);
         chat["hidden"] = json!(prefs.hidden);
-        let mut unread = 0;
-        let mut latest = false;
-        let mut before = None;
-        let mut pages = 0;
-        let paging = std::time::Instant::now();
-        loop {
-            pages += 1;
-            let page = self.recent_conversation_page(conversation, before, now)?;
-            if !latest {
-                if let Some(message) = page.messages.first() {
-                    chat["latest_message"] = json!(transport::hex(&message.reference.message));
-                    chat["timestamp"] = json!(message.timestamp);
-                    chat["preview"] = json!(message
-                        .body
-                        .as_ref()
-                        .map(body_text)
-                        .transpose()?
-                        .unwrap_or_default());
-                    latest = true;
+        // The latest message and the unread count are cached, sealed, against the message, private and action logs, so a
+        // snapshot reads them back instead of paging the conversation again until something in it changes.
+        let at = crate::conversations::scope_of(&self.key, &conversation)?;
+        let mut stamp = Vec::new();
+        for kind in [0i64, 1, 3] { stamp.extend(crate::conversations::fold_stamp_of(&self.db, &[at], kind)?); }
+        let cached: Option<Vec<u8>> = self.db.query_row("SELECT ids FROM fold_cache WHERE scope=?1 AND kind=100 AND last=?2", rusqlite::params![at.as_slice(), stamp], |r| r.get(0)).optional()?;
+        let summary = cached.and_then(|sealed| self.key.open(&sealed, b"summary/v0").ok()).and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let (unread, latest) = if let Some(summary) = summary {
+            chat["latest_message"] = summary["latest_message"].clone();
+            chat["timestamp"] = summary["timestamp"].clone();
+            chat["preview"] = summary["preview"].clone();
+            (summary["unread"].as_u64().unwrap_or(0) as usize, !summary["latest_message"].is_null())
+        } else {
+            let mut unread = 0;
+            let mut latest = false;
+            let mut before = None;
+            loop {
+                let page = self.recent_conversation_page(conversation, before, now)?;
+                if !latest {
+                    if let Some(message) = page.messages.first() {
+                        chat["latest_message"] = json!(transport::hex(&message.reference.message));
+                        chat["timestamp"] = json!(message.timestamp);
+                        chat["preview"] = json!(message
+                            .body
+                            .as_ref()
+                            .map(body_text)
+                            .transpose()?
+                            .unwrap_or_default());
+                        latest = true;
+                    }
+                }
+                unread += page
+                    .messages
+                    .iter()
+                    .filter(|m| m.reference.author != own && !m.seen && !m.read.contains(&own))
+                    .count();
+                before = page.next;
+                if before.is_none() || unread > 99 {
+                    break;
                 }
             }
-            unread += page
-                .messages
-                .iter()
-                .filter(|m| m.reference.author != own && !m.seen && !m.read.contains(&own))
-                .count();
-            // Reading marks everything up to the newest message, so once a message from the other side has
-            // been seen, everything older has too; the count needs no further pages.
-            let caught_up = page
-                .messages
-                .iter()
-                .any(|m| m.reference.author != own && (m.seen || m.read.contains(&own)));
-            before = page.next;
-            if before.is_none() || unread > 99 || caught_up {
-                break;
-            }
-        }
-        crate::perf::note(format!("summary.pages={pages}"));
-        crate::perf::mark("summary.paging", paging);
+            let summary = json!({"latest_message":chat["latest_message"],"timestamp":chat["timestamp"],"preview":chat["preview"],"unread":unread});
+            let sealed = self.key.seal(summary.to_string().as_bytes(), b"summary/v0")?;
+            self.db.execute("INSERT OR REPLACE INTO fold_cache VALUES(?1,100,?2,?3)", rusqlite::params![at.as_slice(), stamp, sealed])?;
+            (unread, latest)
+        };
         chat["hidden"] = json!(prefs.hidden || (!prefs.cleared.is_empty() && !latest));
         chat["unread"] = json!(unread.min(100).max(usize::from(prefs.unread)));
         chat["snoozed"] = json!(prefs.snoozed_until.is_some_and(|v| v > now));

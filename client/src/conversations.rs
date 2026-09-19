@@ -233,6 +233,8 @@ fn visit_ids(
 }
 /// A fold over a log only ever depends on a few winning ops. The cache keeps their ids per scope and kind, stamped with the
 /// log's newest id and length, so a read replays those few instead of decrypting the whole log; any change to the log misses.
+pub(crate) fn scope_of(key: &StorageKey, conversation: &Id) -> Result<Id, Error> { scope(key, conversation) }
+pub(crate) fn fold_stamp_of(db: &Connection, scopes: &[Id], kind: i64) -> Result<Vec<u8>, Error> { fold_stamp(db, scopes, kind) }
 fn fold_stamp(db: &Connection, scopes: &[Id], kind: i64) -> Result<Vec<u8>, Error> {
     let mut stamp = Vec::new();
     for at in scopes {
