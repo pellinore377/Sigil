@@ -339,13 +339,25 @@ async fn status(State(state): State<AppState>) -> Response {
         .forwarder
         .as_ref()
         .map_or(0, Forwarder::dropped_packets);
-    Json(serde_json::json!({"ready":current.ready,"calls":calls,"participants":participants,"dropped_packets":dropped}))
+    let traffic = current.forwarder.as_ref().map(Forwarder::traffic).cloned();
+    Json(serde_json::json!({"ready":current.ready,"calls":calls,"participants":participants,"dropped_packets":dropped,"traffic":traffic}))
         .into_response()
 }
 pub(crate) async fn run(state: AppState) {
     let mut refreshed = Instant::now() - Duration::from_secs(1);
+    let mut reported = Instant::now();
     let mut bytes = [0; 2049];
     loop {
+        // Counts only, once a second while a call is up: which way each packet went.
+        if reported.elapsed() >= Duration::from_secs(1) {
+            reported = Instant::now();
+            let current = state.calls.inner.lock().await;
+            if let Some(forwarder) = current.forwarder.as_ref() {
+                if forwarder.counts().1 > 0 {
+                    eprintln!("sigil.call_traffic {:?}", forwarder.traffic());
+                }
+            }
+        }
         if refreshed.elapsed() >= Duration::from_millis(250) {
             let mut current = state.calls.inner.lock().await;
             match with_store(state.clone(), |s| s.call_snapshot(now()?)).await {

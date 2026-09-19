@@ -34,6 +34,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         .unwrap_or_default();
     let reader = invoke(&get(&transformer, "readable")?, "getReader", &[])?;
     let writer = invoke(&get(&transformer, "writable")?, "getWriter", &[])?;
+    let mut dropped = 0u64;
     loop {
         let read = JsFuture::from(invoke(&reader, "read", &[])?.unchecked_into::<js_sys::Promise>())
             .await?;
@@ -41,9 +42,17 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
             return Ok(());
         }
         let frame = get(&read, "value")?;
-        let Ok(Some(payload)) = convert(&frame, sealing, &sender) else {
+        let converted = convert(&frame, sealing, &sender);
+        if converted.is_err() || matches!(converted, Ok(None)) {
+            dropped += 1;
+            if dropped % 50 == 1 {
+                web_sys::console::log_1(&JsValue::from_str(&format!(
+                    "SigilTiming call transform dropped={dropped} sealing={sealing}"
+                )));
+            }
             continue;
-        };
+        }
+        let Ok(Some(payload)) = converted else { continue };
         let buffer = js_sys::Uint8Array::from(payload.as_slice()).buffer();
         set(&frame, "data", &buffer.into())?;
         JsFuture::from(invoke(&writer, "write", &[frame])?.unchecked_into::<js_sys::Promise>())

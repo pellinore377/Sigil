@@ -119,6 +119,18 @@ pub struct RtcCall {
     ready: ready_frames::ReadyFrames,
     ready_cursor: usize,
     incoming_cursor: usize,
+    tally: Tally,
+}
+/// Counts only, so a silent direction can be traced to the step that discards it.
+#[derive(Default)]
+struct Tally {
+    packets: u64,
+    unknown: u64,
+    assembled: u64,
+    rejected: u64,
+    opened: u64,
+    refused: u64,
+    reported: Option<crate::clock::Instant>,
 }
 /// An authenticated frame whose RTP sequence numbers have already been reserved.
 pub struct RtcTransmission {
@@ -382,6 +394,7 @@ impl ClientStore {
             ready: Default::default(),
             ready_cursor: 0,
             incoming_cursor: 0,
+            tally: Tally::default(),
         })
     }
     pub fn rtc_connection_state(
@@ -490,11 +503,14 @@ impl ClientStore {
             let Ok(packet) = call.transport.packets.try_recv() else {
                 break;
             };
+            call.tally.packets += 1;
             if call.streams.iter().any(|s| s.ssrc == packet.ssrc) {
                 call.incoming
                     .entry(packet.ssrc)
                     .or_default()
                     .push(packet.sequence, packet, clock);
+            } else {
+                call.tally.unknown += 1;
             }
         }
         for _ in 0..128 {
@@ -524,6 +540,7 @@ impl ClientStore {
                 .assemble(stream.track.sender, stream.track.kind, &packet.payload)
             {
                 Ok(Some(encrypted)) => {
+                    call.tally.assembled += 1;
                     if call.ready.push(
                         packet.ssrc,
                         stream.track.kind == MediaKind::Audio,
@@ -534,8 +551,9 @@ impl ClientStore {
                         call.video_gaps.insert(packet.ssrc);
                     }
                 }
-                Ok(None)
-                | Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
+                Ok(None) => (),
+                Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
+                    call.tally.rejected += 1;
                 }
                 Err(error) => return Err(error),
             }
@@ -565,6 +583,7 @@ impl ClientStore {
                 now,
             ) {
                 Ok(frame) => {
+                    call.tally.opened += 1;
                     if !call.video_gaps.contains(&stream.ssrc) || frame.keyframe {
                         call.video_gaps.remove(&stream.ssrc);
                         bytes += frame.data.len();
@@ -575,6 +594,7 @@ impl ClientStore {
                     }
                 }
                 Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => {
+                    call.tally.refused += 1;
                     if stream.track.kind != MediaKind::Audio {
                         call.video_gaps.insert(stream.ssrc);
                     }
@@ -584,6 +604,22 @@ impl ClientStore {
             if bytes >= 4 * 1024 * 1024 || clock.elapsed() >= Duration::from_millis(8) {
                 break;
             }
+        }
+        let due = call
+            .tally
+            .reported
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(1));
+        if due && call.tally.packets > 0 {
+            call.tally.reported = Some(crate::clock::Instant::now());
+            crate::perf::note(format!(
+                "call rx packets={} unknown={} assembled={} rejected={} opened={} refused={}",
+                call.tally.packets,
+                call.tally.unknown,
+                call.tally.assembled,
+                call.tally.rejected,
+                call.tally.opened,
+                call.tally.refused
+            ));
         }
         Ok(frames)
     }
