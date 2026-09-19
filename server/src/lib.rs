@@ -467,6 +467,19 @@ async fn readiness(State(state): State<AppState>) -> Response {
     }
 }
 
+/// The status a store failure answers with, for routes that report several outcomes in one body.
+pub(crate) fn store_status(value: &StoreError) -> StatusCode {
+    match value {
+        StoreError::DeviceLinkRequired => StatusCode::PRECONDITION_REQUIRED,
+        StoreError::Forbidden => StatusCode::FORBIDDEN,
+        StoreError::Unauthorized => StatusCode::UNAUTHORIZED,
+        StoreError::AlreadyExists | StoreError::Conflict => StatusCode::CONFLICT,
+        StoreError::NotFound => StatusCode::NOT_FOUND,
+        StoreError::Busy | StoreError::Database(_) | StoreError::InvalidData => StatusCode::SERVICE_UNAVAILABLE,
+        StoreError::MailboxFull => StatusCode::INSUFFICIENT_STORAGE,
+        StoreError::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
+    }
+}
 fn store_error(value: StoreError) -> Response {
     match value {
         StoreError::DeviceLinkRequired => error(

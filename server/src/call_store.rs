@@ -41,12 +41,14 @@ fn clock(db: &Connection, now: u64) -> Result<u64, StoreError> {
         })?,
     )
 }
-/// With no calls on record there is nothing a backwards wall clock could revive, so the idle snapshot loop reads the clock instead of committing it four times a second.
+/// The snapshot loop commits the clock every pass only while a call is live; with only finished rows on record it lets the stored clock lag up to a minute, and with none at all it only reads.
 fn clock_for_snapshot(db: &Connection, now: u64) -> Result<u64, StoreError> {
-    if db.query_row("SELECT EXISTS(SELECT 1 FROM calls WHERE closed=0 AND expires>?1)", [sql(now)?], |r| r.get::<_, bool>(0))? {
+    let stored: u64 = db.query_row("SELECT clock FROM call_configuration WHERE id=1", [], |r| unsigned(r, 0))?;
+    let live = db.query_row("SELECT EXISTS(SELECT 1 FROM calls WHERE closed=0 AND expires>?1)", [sql(now)?], |r| r.get::<_, bool>(0))?;
+    let lingering = !live && db.query_row("SELECT EXISTS(SELECT 1 FROM calls)", [], |r| r.get::<_, bool>(0))?;
+    if live || (lingering && now >= stored.saturating_add(60)) {
         return clock(db, now);
     }
-    let stored: u64 = db.query_row("SELECT clock FROM call_configuration WHERE id=1", [], |r| unsigned(r, 0))?;
     Ok(stored.max(now))
 }
 fn cleanup(db: &Connection, now: u64) -> Result<(), StoreError> {
