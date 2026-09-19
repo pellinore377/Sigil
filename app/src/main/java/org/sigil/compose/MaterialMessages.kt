@@ -21,7 +21,10 @@ internal data class MaterialFrame(val kind:Int,val sides:Int,val face:Int,val fo
 }
 private val materialUi = android.os.Handler(android.os.Looper.getMainLooper())
 private val materialWorker = Executors.newSingleThreadExecutor { task -> Thread(task,"Sigil materials").apply { isDaemon=true } }
-internal class MessageMaterialView(context:android.content.Context, private val limit:Int, private val captured:((MaterialFrame,android.graphics.Bitmap)->Unit)?=null, private val failed:()->Unit):TextureView(context),TextureView.SurfaceTextureListener {
+internal class MessageMaterialView(context:android.content.Context, private val limit:Int, private val captured:((MaterialFrame,android.graphics.Bitmap)->Unit)?=null, private val mirror:((android.graphics.Bitmap)->Unit)?=null, private val failed:()->Unit):TextureView(context),TextureView.SurfaceTextureListener {
+    // Each frame is read back into one of two bitmaps for Compose to draw, so the object lives in the page beneath the glass.
+    private val mirrors=arrayOfNulls<android.graphics.Bitmap>(2)
+    private var mirrorIndex=0
     private val latest=AtomicReference<MaterialFrame?>(null)
     private val queued=AtomicBoolean(false)
     @Volatile private var active=true
@@ -50,7 +53,7 @@ internal class MessageMaterialView(context:android.content.Context, private val 
             var result=1
             if(active && token==generation && nativeId!=0L && frame!=null) {
                 result=MaterialNative.draw(nativeId,frame.kind,frame.sides,frame.face,frame.font,frame.accent,frame.backdrop,frame.progress,frame.rotation,frame.label,frame.transparent,frame.style)
-                if(result==1)post {if(token==generation && !shown) {shown=true;animate().alpha(1f).setDuration(160).start()}}
+                if(result==1)post {if(token==generation && !shown) {shown=true;if(mirror==null)animate().alpha(1f).setDuration(160).start()}}
                 if(result==0)post {if(token==generation)failed()}
             }
             queued.set(false)
@@ -87,6 +90,13 @@ internal class MessageMaterialView(context:android.content.Context, private val 
             onSurfaceTextureAvailable(texture,width,height)
     }
     override fun onSurfaceTextureUpdated(texture:SurfaceTexture) {
+        mirror?.let {send->
+            if(bufferWidth>0 && bufferHeight>0) {
+                val target=mirrors[mirrorIndex]?.takeIf {it.width==bufferWidth && it.height==bufferHeight} ?: android.graphics.Bitmap.createBitmap(bufferWidth,bufferHeight,android.graphics.Bitmap.Config.ARGB_8888).also {mirrors[mirrorIndex]=it}
+                mirrorIndex=(mirrorIndex+1)%2
+                if(getBitmap(target)!=null)send(target)
+            }
+        }
         val capture=captured ?: return
         val frame=first ?: return
         // An unchanged, initially settled view has only ever submitted this exact

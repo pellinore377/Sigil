@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
@@ -48,7 +49,12 @@ import org.sigil.*
         if(visible && looked) {
             val image=snapshot
             if(image!=null) Image(image.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.FillBounds)
-            else AndroidView(factory={MessageMaterialView(it,256,if(cache!=null)({rendered,image->capture(rendered,image)})else null){failed=true}},update={it.update(frame,true)},onRelease={it.close()},modifier=Modifier.fillMaxSize())
+            else {
+                // The surface renders unseen; every frame is mirrored into a bitmap drawn here, in the page, so the glass sees it too.
+                var live by remember {mutableStateOf<android.graphics.Bitmap?>(null)}
+                AndroidView(factory={MessageMaterialView(it,256,if(cache!=null)({rendered,image->capture(rendered,image)})else null,{live=it}){failed=true}},update={it.update(frame,true)},onRelease={it.close()},modifier=Modifier.fillMaxSize().alpha(0f))
+                live?.let {Image(it.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.FillBounds)}
+            }
         }
     }
 }
