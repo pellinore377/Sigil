@@ -1,5 +1,4 @@
 import java.util.zip.GZIPOutputStream
-import java.security.MessageDigest
 
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
@@ -79,8 +78,7 @@ fun webRustTask(name: String, directory: String, roots: List<String>, modules: L
 val buildWebClient = webRustTask("buildWebClient", ".", listOf(".", "core", "crypto", "protocol", "client", "android", "browser", "browser-events", "text", "media", "maps", "calls", "server", "vendor/ece-native"), listOf("sigil_core", "sigil_browser", "sigil_browser_events"), listOf("sigil-core", "sigil-browser", "sigil-browser-events"))
 val buildWebMaterials = webRustTask("buildWebMaterials", "materials", listOf("materials"), listOf("sigil_materials"), fonts = true)
 val buildWebMaps = webRustTask("buildWebMaps", "browser-maps", listOf("browser-maps"), listOf("sigil_browser_maps"), fonts = true)
-val buildWebAudio = webRustTask("buildWebAudio", "browser-audio", listOf("browser-audio"), listOf("sigil_browser_audio"))
-val buildWebNativeModules = tasks.register("buildWebNativeModules") { dependsOn(buildWebClient, buildWebMaterials, buildWebMaps, buildWebAudio) }
+val buildWebNativeModules = tasks.register("buildWebNativeModules") { dependsOn(buildWebClient, buildWebMaterials, buildWebMaps) }
 val trimUnusedBrowserImport by tasks.registering {
     dependsOn(buildWebNativeModules)
     dependsOn("wasmJsProductionExecutableCompileSync")
@@ -108,7 +106,7 @@ val trimUnusedBrowserImport by tasks.registering {
             "Unexpected browser date-library import; audit generated glue before proceeding"
         }
         copy {
-            from(rootProject.file("target/web")) { include("sigil_core.js", "sigil_core_bg.wasm", "sigil_browser.js", "sigil_browser_bg.wasm", "sigil_browser_events.js", "sigil_browser_events_bg.wasm", "sigil_browser_audio.js", "sigil_browser_audio_bg.wasm", "sigil_materials.js", "sigil_materials_bg.wasm", "sigil_browser_maps.js", "sigil_browser_maps_bg.wasm") }
+            from(rootProject.file("target/web")) { include("sigil_core.js", "sigil_core_bg.wasm", "sigil_browser.js", "sigil_browser_bg.wasm", "sigil_browser_events.js", "sigil_browser_events_bg.wasm", "sigil_materials.js", "sigil_materials_bg.wasm", "sigil_browser_maps.js", "sigil_browser_maps_bg.wasm") }
             into(generated)
         }
     }
@@ -132,19 +130,9 @@ tasks.named("wasmJsBrowserDistribution") {
     doLast {
         val destination = layout.buildDirectory.dir("dist/wasmJs/productionExecutable").get().asFile
         copy {
-            from(rootProject.file("target/web")) { include("sigil_browser.js", "sigil_browser_bg.wasm", "sigil_browser_events.js", "sigil_browser_events_bg.wasm", "sigil_browser_audio.js", "sigil_browser_audio_bg.wasm", "sigil_materials.js", "sigil_materials_bg.wasm", "sigil_browser_maps.js", "sigil_browser_maps_bg.wasm") }
+            from(rootProject.file("target/web")) { include("sigil_browser.js", "sigil_browser_bg.wasm", "sigil_browser_events.js", "sigil_browser_events_bg.wasm", "sigil_materials.js", "sigil_materials_bg.wasm", "sigil_browser_maps.js", "sigil_browser_maps_bg.wasm") }
             into(destination)
         }
-        fun digest(bytes:ByteArray)=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)}
-        val audioWasm=destination.resolve("sigil_browser_audio_bg.wasm")
-        val audioWasmName="audio-${digest(audioWasm.readBytes())}.wasm"
-        audioWasm.copyTo(destination.resolve(audioWasmName),overwrite=true)
-        audioWasm.delete()
-        val audioModule=destination.resolve("sigil_browser_audio.js")
-        val audioSource=audioModule.readText().replace("sigil_browser_audio_bg.wasm",audioWasmName)
-        val audioModuleName="audio-${digest(audioSource.toByteArray())}.mjs"
-        destination.resolve(audioModuleName).writeText(audioSource)
-        audioModule.writeText("export * from './$audioModuleName'; export { default } from './$audioModuleName';\n")
         destination.resolve("sigil-material-worker.mjs").writeText("import init, { material_worker_receive } from './sigil_materials.js'; const ready = init(); self.onmessage = async ({data}) => { await ready; material_worker_receive(data); };\n")
         destination.resolve("sigil-notifications.mjs").writeText("import init, { notification_push, notification_open } from './sigil_browser_events.js'; const ready = init(); self.addEventListener('push', event => event.waitUntil(ready.then(() => notification_push(event)))); self.addEventListener('notificationclick', event => event.waitUntil(ready.then(() => notification_open(event))));\n")
         destination.resolve("sigil-worker.mjs").writeText("import init, { worker_start } from './sigil_browser.js'; self.onmessage = async ({data}) => { self.onmessage = null; await init({module_or_path:data}); await worker_start(); };\n")

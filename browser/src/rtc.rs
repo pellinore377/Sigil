@@ -30,10 +30,15 @@ struct Session {
     pending: usize,
     decoding: bool,
     frames: Function,
+    playback: JsValue,
     _message: Closure<dyn FnMut(web_sys::MessageEvent)>,
+    _track: Closure<dyn FnMut(JsValue)>,
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        let _ = set(&self.pc, "ontrack", &JsValue::NULL);
+        let _ = set(&self.playback, "srcObject", &JsValue::NULL);
+        let _ = invoke(&self.playback, "remove", &[]);
         let _ = set(&self.channel, "onmessage", &JsValue::NULL);
         let _ = invoke(&self.channel, "close", &[]);
         let _ = invoke(&self.pc, "close", &[]);
@@ -42,7 +47,7 @@ impl Drop for Session {
 }
 /// Retransmission deadline for media fragments, in milliseconds.
 const CHANNEL_LIFETIME: u16 = 120;
-thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};}
+thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};static MICROPHONE:RefCell<Option<JsValue>>=const {RefCell::new(None)};static MUTED:Cell<bool>=const {Cell::new(false)};}
 pub(crate) fn invoke(value: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let args = args.iter().collect::<Array>();
     get(value, name)?
@@ -108,6 +113,106 @@ pub fn browser_call_transport_state() -> String {
             .unwrap_or_else(|| "closed".into())
     })
 }
+/// Runs one sender or receiver through the worker that holds the call keys.
+fn attach_transform(target: &JsValue, options: serde_json::Value) -> Result<(), JsValue> {
+    let Some(worker) = crate::host::worker() else {
+        return Err(fail("Browser client stopped"));
+    };
+    let constructor: js_sys::Function = Reflect::get(&js_sys::global(), &"RTCRtpScriptTransform".into())?
+        .dyn_into()
+        .map_err(|_| fail("This browser cannot encrypt call media in a worker"))?;
+    let transform = Reflect::construct(&constructor, &Array::of2(&worker.into(), &object(options)?))?;
+    set(target, "transform", &transform)
+}
+/// The microphone, with the browser's own echo cancellation and noise suppression. Held open for
+/// the whole call so a reconnect never prompts again.
+async fn microphone() -> Option<JsValue> {
+    if let Some(track) = MICROPHONE.with(|slot| slot.borrow().clone()) {
+        return Some(track);
+    }
+    let devices = web_sys::window()?.navigator().media_devices().ok()?;
+    let constraints = web_sys::MediaStreamConstraints::new();
+    constraints.set_audio(
+        &object(serde_json::json!({
+            "echoCancellation": true, "noiseSuppression": true, "autoGainControl": true
+        }))
+        .ok()?,
+    );
+    constraints.set_video(&false.into());
+    let stream = JsFuture::from(devices.get_user_media_with_constraints(&constraints).ok()?)
+        .await
+        .ok()?;
+    let tracks = invoke(&stream, "getAudioTracks", &[]).ok()?;
+    let track = Reflect::get(&tracks, &0.into())
+        .ok()
+        .filter(|t| !t.is_undefined())?;
+    let _ = set(&track, "enabled", &(!MUTED.with(Cell::get)).into());
+    MICROPHONE.with(|slot| *slot.borrow_mut() = Some(track.clone()));
+    Some(track)
+}
+/// Opens the microphone before the call is placed, so permission is settled first.
+#[wasm_bindgen]
+pub async fn browser_call_microphone() -> Result<(), JsValue> {
+    microphone()
+        .await
+        .map(|_| ())
+        .ok_or_else(|| fail("Microphone unavailable"))
+}
+/// Muting stops the browser encoding anything at all, rather than sealing silence.
+#[wasm_bindgen]
+pub fn browser_call_mute(muted: bool) {
+    MUTED.with(|value| value.set(muted));
+    MICROPHONE.with(|slot| {
+        if let Some(track) = slot.borrow().as_ref() {
+            let _ = set(track, "enabled", &(!muted).into());
+        }
+    });
+}
+/// Releases the microphone when the call is over.
+#[wasm_bindgen]
+pub fn browser_call_release() {
+    MUTED.with(|value| value.set(false));
+    if let Some(track) = MICROPHONE.with(|slot| slot.borrow_mut().take()) {
+        let _ = invoke(&track, "stop", &[]);
+    }
+}
+/// Calls need a peer connection, a worker transform for the keys, and a capture device.
+#[wasm_bindgen]
+pub fn browser_call_supported() -> bool {
+    let global = js_sys::global();
+    let present = |name: &str| {
+        Reflect::get(&global, &name.into())
+            .map(|value| !value.is_undefined() && !value.is_null())
+            .unwrap_or(false)
+    };
+    present("RTCPeerConnection")
+        && present("RTCRtpScriptTransform")
+        && web_sys::window()
+            .map(|w| w.navigator().media_devices().is_ok())
+            .unwrap_or(false)
+}
+/// Plays every remote audio track the browser hands us, natively.
+fn play_remote(pc: &JsValue) -> Result<(JsValue, Closure<dyn FnMut(JsValue)>), JsValue> {
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or_else(|| fail("Missing document"))?;
+    let element = document.create_element("audio")?;
+    set(&element, "autoplay", &true.into())?;
+    document.body().ok_or_else(|| fail("Missing body"))?.append_child(&element)?;
+    let playback: JsValue = element.clone().into();
+    let sink = playback.clone();
+    let handler = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
+        if let Ok(streams) = get(&event, "streams") {
+            if let Ok(stream) = Reflect::get(&streams, &0.into()) {
+                if !stream.is_undefined() {
+                    let _ = set(&sink, "srcObject", &stream);
+                }
+            }
+        }
+    });
+    set(pc, "ontrack", handler.as_ref())?;
+    Ok((playback, handler))
+}
 #[wasm_bindgen]
 /// The frame callback must copy or decode its bytes before returning.
 pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), JsValue> {
@@ -155,6 +260,8 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             ],
         )?;
         set(&channel, "binaryType", &"arraybuffer".into())?;
+        let microphone = microphone().await;
+        let (playback, track_handler) = play_remote(&pc)?;
         let mut uploads = Vec::new();
         let mut downloads = Vec::new();
         for kind in [MediaKind::Audio, MediaKind::Camera, MediaKind::Screen] {
@@ -163,14 +270,27 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             } else {
                 "video"
             };
-            uploads.push(invoke(
+            let transceiver = invoke(
                 &pc,
                 "addTransceiver",
                 &[
                     media.into(),
                     object(serde_json::json!({"direction":"sendonly"}))?,
                 ],
-            )?);
+            )?;
+            // The browser captures and encodes audio itself; the worker seals each encoded frame.
+            if kind == MediaKind::Audio {
+                let sender = get(&transceiver, "sender")?;
+                if let Some(track) = microphone.as_ref() {
+                    let _ = JsFuture::from(
+                        invoke(&sender, "replaceTrack", &[track.clone()])?
+                            .unchecked_into::<js_sys::Promise>(),
+                    )
+                    .await;
+                }
+                attach_transform(&sender, serde_json::json!({"operation":"seal"}))?;
+            }
+            uploads.push(transceiver);
         }
         for member in &members {
             for kind in [MediaKind::Audio, MediaKind::Camera, MediaKind::Screen] {
@@ -187,6 +307,12 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                         object(serde_json::json!({"direction":"recvonly"}))?,
                     ],
                 )?;
+                if kind == MediaKind::Audio {
+                    attach_transform(
+                        &get(&transceiver, "receiver")?,
+                        serde_json::json!({"operation":"open","sender":call::hex(*member)}),
+                    )?;
+                }
                 downloads.push((*member, kind, transceiver));
             }
         }
@@ -269,7 +395,9 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 pending: 0,
                 decoding: false,
                 frames,
+                playback,
                 _message: message,
+                _track: track_handler,
             })
         });
         promise(invoke(

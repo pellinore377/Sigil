@@ -270,9 +270,6 @@ impl Forwarder {
                             }
                         }
                         Ok(Output::Event(Event::RtpPacket(packet))) => {
-                            if peer.browser {
-                                continue;
-                            }
                             let source = peer
                                 .rtc
                                 .direct_api()
@@ -415,7 +412,9 @@ impl Forwarder {
                     else {
                         continue;
                     };
-                    if peer.browser {
+                    // A browser takes audio as ordinary RTP so the browser itself decodes and plays it;
+                    // video still rides the data channel until it packetizes natively too.
+                    if peer.browser && kind != MediaKind::Audio {
                         if let Some(mut channel) = peer.channel.and_then(|id| peer.rtc.channel(id))
                         {
                             let sent = channel.buffered_amount() <= 192 * 1024

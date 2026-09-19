@@ -9,7 +9,6 @@ import org.w3c.dom.HTMLVideoElement
 import kotlinx.serialization.json.*
 import kotlin.js.*
 
-@JsName("Uint8Array") private external class CallBytes(value:JsAny):JsAny {fun fill(value:Int)}
 @JsName("Date") private external object CallClock:JsAny {fun now():Double}
 
 internal class WebCalls(private val scope:CoroutineScope,private val command:suspend(String,Map<String,Any?>)->JsonObject,private val wake:()->Unit,private val issue:(String)->Unit) {
@@ -23,7 +22,6 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var lastMark:String?=null
     private var connected:String?=null
     private var members=listOf<String>()
-    private var audio:WebAudioEngine?=null
     private var muted=false
     private var video=false
     private var usedVideo=false
@@ -34,9 +32,8 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var start=0.0
     private var retry=0.0
     private var failures=0
-    private var pumping:Job?=null
     private var maintenance:Job?=null
-    suspend fun initialize(){try{initializeAudioWasm().awaitBrowser<JsAny?>();available=webAudioSupported().awaitBrowser<JsBoolean>().toBoolean()}catch(_:Exception){available=false}}
+    fun initialize(){available=runCatching{browserCallSupported()}.getOrDefault(false)}
     private suspend fun control(operation:String,call:String?=null,tracks:Boolean=false):JsonObject {
         val raw=buildJsonObject {put("operation",operation);call?.let{put("call",it)};if(tracks)put("tracks",buildJsonObject{put("audio",!muted);put("camera",video);put("screen",false)})}
         return Json.parseToJsonElement(browserCallControl(raw.toString()).awaitBrowser<JsString>().toString()).jsonObject
@@ -51,17 +48,6 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
         visible=current?.let{ActiveCall(it,it.name.ifBlank{it.participants.filterNot{p->p.own}.joinToString(", "){p->p.name}.ifBlank{"Call"}},visible?.connection?:"connecting",if(start==0.0)0 else ((window.performance.now()-start)/1000).toLong(),muted,camera=video)}
         if(current?.phase=="active" && desired==current.id && !connecting && connected!=current.id && CallClock.now()>=retry)connect(current)
     }
-    private fun createAudio(){
-        if(audio!=null)return
-        val current=generation
-        audio=browserBoundary {WebAudioEngine {timestamp,bytes->
-            if(current==generation && connected!=null && !muted){
-                val copy=CallBytes(bytes)
-                scope.launch {try{browserCallSend(0,timestamp,false,copy).awaitBrowser<JsBoolean>()}catch(_:Exception){}finally{copy.fill(0)}}
-            }
-        }
-    }
-    }
     private fun connect(call:CallSummary){
         connecting=true;val current=generation
         scope.launch {
@@ -71,7 +57,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                 // so the round trips overlap candidate gathering instead of following it.
                 control("call_start",call.id,true)
                 wake()
-                browserCallConnect(call.id){sender,frame->if(current==generation){val index=members.indexOf(sender);if(index>=0 && runCatching{browserVideoReceive(sender,frame)}.getOrDefault(true)==false)runCatching{audio?.receive_frame(index,frame)}}}.awaitBrowser<JsAny?>()
+                browserCallConnect(call.id){sender,frame->if(current==generation && members.contains(sender))runCatching{browserVideoReceive(sender,frame)}}.awaitBrowser<JsAny?>()
                 check(current==generation){"Call changed"}
                 connected=call.id;failures=0
                 if(video && cameraJob==null)applyCamera()
@@ -91,11 +77,8 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                             usedVideo=usedVideo||video||history.find{it.id==call.id}?.participants?.any{it.camera}==true
                             if(video && browserVideoFailed()){video=false;browserVideoStop();cameraJob=null;visible=visible?.copy(camera=false);issue("Camera capture stopped.");desired?.let{id->scope.launch{runCatching{control("call_tracks",id,true)};wake()}}}
                             visible=visible?.copy(connection="connected",seconds=((window.performance.now()-start)/1000).toLong())
-                            audio?.mute(muted)
-                            if(pumping==null)pumping=scope.launch {
-                                try{while(isActive && current==generation){audio?.let{check(!it.failed()){"Audio device failed"};it.pump()};delay(10)}}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){issue("The audio device stopped. The call has ended.");handle("call_end",emptyMap())}
-                            }
-                        }else {audio?.mute(true);visible=visible?.copy(connection="securing")}
+                            browserCallMute(muted)
+                        }else visible=visible?.copy(connection="securing")
                         wake();delay(if(receivers<members.size)250 else 1000)
                     }
                 }
@@ -107,13 +90,13 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
         }
     }
     /** A closed transport means the roster changed: rejoin now. Failures back off. */
-    private fun reconnect(backoff:Boolean=true){audio?.mute(true);pumping?.cancel();pumping=null;connected=null;runCatching{browserCallClose()};if(backoff){failures++;retry=CallClock.now()+(1000L shl failures.coerceAtMost(3))}else{failures=0;retry=0.0};visible=visible?.copy(connection="reconnecting");wake()}
+    private fun reconnect(backoff:Boolean=true){connected=null;runCatching{browserCallClose()};if(backoff){failures++;retry=CallClock.now()+(1000L shl failures.coerceAtMost(3))}else{failures=0;retry=0.0};visible=visible?.copy(connection="reconnecting");wake()}
     fun handle(action:String,fields:Map<String,Any?>):Boolean {
         if(!action.startsWith("call_"))return false
         when(action){
             "call_camera"->{video=!video;visible=visible?.copy(camera=video);applyCamera()}
             "call_flip"->{front=!front;selfVideo.style.transform=if(front)"scaleX(-1)" else "none";if(video)applyCamera()}
-            "call_mute"->{muted=!muted;audio?.mute(muted);visible=visible?.copy(muted=muted);desired?.let{id->scope.launch{runCatching{control("call_tracks",id,true)};wake()}}}
+            "call_mute"->{muted=!muted;browserCallMute(muted);visible=visible?.copy(muted=muted);desired?.let{id->scope.launch{runCatching{control("call_tracks",id,true)};wake()}}}
             "call_end"->{val id=desired?:fields["call"] as? String;close();if(id!=null)scope.launch{runCatching{command("call_leave",mapOf("call" to id))}.onFailure{issue("Call ended locally; the server update is pending.")};wake()}}
             "call_decline"->scope.launch{runCatching{command("call_answer",mapOf("call" to fields["call"],"accept" to false))}.onFailure{issue("Could not decline the call. Try again.")};wake()}
             "call_start","call_redial","call_answer","call_prepare","call_resume"->{
@@ -122,14 +105,8 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                 starting=true;generation++;val current=generation;muted=false;start=0.0;video=fields["video"]==true;usedVideo=false
                 scope.launch {
                     try{
-                        createAudio()
-                        withTimeout(60000) {
-                            while((audio?.count()?:0.0)==0.0) {
-                                check(audio?.failed()!=true){"Microphone unavailable"}
-                                delay(50)
-                                check(current==generation){"Call changed"}
-                            }
-                        }
+                        withTimeout(30000){browserCallMicrophone().awaitBrowser<JsAny?>()}
+                        check(current==generation){"Call changed"}
                         val id=if(action in setOf("call_start","call_redial")){command(action,mapOf((if(action=="call_start")"peer" else "call") to fields[if(action=="call_start")"peer" else "call"],"request" to browserRequestId(),"timestamp" to (CallClock.now()/1000).toLong())).string("call")}
                         else (fields["call"] as String).also {if(action=="call_answer")command("call_answer",mapOf("call" to it,"accept" to true,"video" to video))}
                         if(current!=generation){command("call_leave",mapOf("call" to id));return@launch}
@@ -158,5 +135,5 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
             wake()
         }
     }
-    fun close(){val stopped=desired;val wasVideo=usedVideo;val duration=if(start>0)((window.performance.now()-start)/1000).toLong() else null;generation++;cameraJob?.cancel();cameraJob=null;browserVideoStop();video=false;usedVideo=false;val stoppedGeneration=generation;starting=false;connecting=false;desired=null;connected=null;visible=null;start=0.0;retry=0.0;failures=0;pumping?.cancel();pumping=null;maintenance?.cancel();maintenance=null;audio?.let{it.close();it.free()};audio=null;runCatching{browserCallClose()};scope.launch{if(stopped!=null && duration!=null)runCatching{command("call_history_media",mapOf("call" to stopped,"duration" to duration,"video" to wasVideo))};if(generation==stoppedGeneration && stopped!=null)runCatching{control("call_stop",stopped)}}}
+    fun close(){val stopped=desired;val wasVideo=usedVideo;val duration=if(start>0)((window.performance.now()-start)/1000).toLong() else null;generation++;cameraJob?.cancel();cameraJob=null;browserVideoStop();video=false;usedVideo=false;val stoppedGeneration=generation;starting=false;connecting=false;desired=null;connected=null;visible=null;start=0.0;retry=0.0;failures=0;maintenance?.cancel();maintenance=null;runCatching{browserCallRelease()};runCatching{browserCallClose()};scope.launch{if(stopped!=null && duration!=null)runCatching{command("call_history_media",mapOf("call" to stopped,"duration" to duration,"video" to wasVideo))};if(generation==stoppedGeneration && stopped!=null)runCatching{control("call_stop",stopped)}}}
 }
