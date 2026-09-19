@@ -744,3 +744,36 @@ fn registration_confirmation_replacement_and_cancel_are_revisioned_and_durable()
     let secret_rows:i64=store.0.query_row("SELECT count(*) FROM push_channels WHERE target IS NOT NULL OR proof IS NOT NULL OR proof_hash IS NOT NULL",[],|r|r.get(0)).unwrap();
     assert_eq!(secret_rows, 0);
 }
+
+#[test]
+fn a_batch_commits_once_and_answers_each_message_as_the_single_route_would() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let (mut store, alice, bob) = setup(&path);
+    let sender = store.session(&alice, NOW).unwrap().device_id;
+    let target = store.session(&bob, NOW).unwrap().device_id;
+    store.allow_sender(&bob, &sender, NOW).unwrap();
+    let first = store.submit_message(&alice, message(&target, 1, NOW + 1000), NOW).unwrap();
+    let batch = sigil_protocol::mailbox::SubmitBatch {
+        messages: vec![
+            message(&target, 2, NOW + 1000),
+            message(&target, 1, NOW + 1000),
+            message(&format!("{:064x}", 77u64), 3, NOW + 1000),
+            message(&target, 4, NOW + 1000),
+        ],
+        silent: vec![false, false, false, true],
+    };
+    let results = store.submit_messages(&alice, batch, NOW).unwrap();
+    assert_eq!(results.len(), 4);
+    let second = results[0].as_ref().unwrap();
+    assert!(second.sequence > first.sequence);
+    // The same message again is the same receipt, an unknown device is refused, the rest still land.
+    assert_eq!(results[1].as_ref().unwrap(), &first);
+    assert!(matches!(results[2], Err(StoreError::NotFound)));
+    assert!(results[3].as_ref().unwrap().sequence > second.sequence);
+    assert_eq!(store.mailbox(&bob, NOW).unwrap().len(), 3);
+    assert!(matches!(
+        store.submit_messages(&alice, sigil_protocol::mailbox::SubmitBatch { messages: vec![], silent: vec![] }, NOW),
+        Err(StoreError::Invalid(_))
+    ));
+}

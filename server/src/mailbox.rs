@@ -18,7 +18,7 @@ use rusqlite::{OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use sigil_protocol::{
     accounts::valid_credential,
-    mailbox::{Acknowledge, Delivery, MAX_ACKNOWLEDGE, MAX_BODY, MAX_PAYLOAD_HEX, Receipt, Submit},
+    mailbox::{Acknowledge, BatchOutcome, BatchResult, Delivery, MAX_ACKNOWLEDGE, MAX_BATCH, MAX_BODY, MAX_PAYLOAD_HEX, Receipt, Submit, SubmitBatch},
 };
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
@@ -83,129 +83,46 @@ impl Store {
         silent: bool,
         now: u64,
     ) -> Result<Receipt, StoreError> {
-        if !valid_credential(&request.recipient_device)
-            || !valid_credential(&request.message_id)
-            || !(32..=MAX_PAYLOAD_HEX).contains(&request.payload.len())
-            || !request.payload.len().is_multiple_of(2)
-            || !request
-                .payload
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            || request.expires_at <= now
-            || request.expires_at > now.saturating_add(604800)
-            || request.expires_at > i64::MAX as u64
-        {
-            return Err(StoreError::Invalid(
-                "invalid encrypted payload, identifier, or expiry (maximum 7 days)",
-            ));
-        }
+        validate(&request, now)?;
         let started = std::time::Instant::now();
-        let mut marks: Vec<(&str, u128)> = Vec::new();
-        let mut mark = |name: &'static str| marks.push((name, started.elapsed().as_millis()));
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        mark("begin");
         let sender = authorize(&tx, credential, now)?;
-        mark("auth");
-        if tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM federation_outbox WHERE sender=?1 AND message_id=?2)",
-            (&sender, &request.message_id),
-            |r| r.get::<_, bool>(0),
-        )? {
-            return Err(StoreError::AlreadyExists);
-        }
-        if !active(&tx, &request.recipient_device)? {
-            return Err(StoreError::NotFound);
-        }
-        crate::admission::check(&tx, &sender, &request.recipient_device)?;
-        mark("admit");
-        let recovery = proof
-            .map(|proof| recovery_reserve(&tx, &sender, &request, proof, now))
-            .transpose()?
-            .unwrap_or(false);
-        let hash = Sha256::digest(request.payload.as_bytes());
-        let previous: Option<(i64,String,Vec<u8>,i64)> = tx.query_row("SELECT sequence,recipient,payload_hash,expires_at FROM mailbox WHERE sender=?1 AND message_id=?2", (&sender,&request.message_id), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
-        if let Some((sequence, recipient, old_hash, expiry)) = previous {
-            if recipient != request.recipient_device
-                || old_hash != hash.as_slice()
-                || expiry != request.expires_at as i64
-            {
-                return Err(StoreError::AlreadyExists);
-            }
-            return Ok(Receipt {
-                sequence,
-                expires_at: expiry as u64,
-            });
-        }
-        mark("previous");
-        crate::storage_budget::for_device(&tx, &sender, crate::storage_budget::MAILBOX, now)?;
-        mark("budget");
-        let pending: u32 = tx.query_row(
-            "SELECT count(*) FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2",
-            (&request.recipient_device,now as i64),
-            |r| r.get(0),
-        )?;
-        // A revoked device never collects again, so refuse rather than hold a slot for it.
-        let (account, revoked): (String, bool) = tx.query_row(
-            "SELECT account_id,revoked FROM devices WHERE id=?1",
-            [&request.recipient_device],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        if revoked {
-            return Err(StoreError::NotFound);
-        }
-        mark("pending");
-        let used = crate::recovery::used(&tx, &account, now)?;
-        mark("used");
-        let quota = crate::admin::quota(&tx, &account)?;
-        let peer_pending: u32 = tx.query_row(
-            "SELECT count(*) FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3",
-            (&request.recipient_device, &sender, now as i64),
-            |r| r.get(0),
-        )?;
-        if pending >= DEVICE_ALLOWANCE + 4 * u32::from(recovery)
-            || used.saturating_add(request.payload.len() as u64) > quota
-        {
-            return Err(StoreError::MailboxFull);
-        }
-        // A recipient that stops collecting fills up on traffic that describes a
-        // moment: typing and presence, which the sender marks to lapse within minutes.
-        // Those give way, so the allowance cannot be spent on notices nobody will read.
-        // Everything else keeps its place and a real backlog still refuses, rather than
-        // messages disappearing unseen.
-        let allowance = PEER_ALLOWANCE + u32::from(recovery);
-        if peer_pending >= allowance {
-            let evicted = tx.execute(
-                "UPDATE mailbox SET payload=NULL,expires_at=0 WHERE sequence IN (SELECT sequence FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3 AND expires_at<?4 ORDER BY expires_at,sequence LIMIT ?5)",
-                (
-                    &request.recipient_device,
-                    &sender,
-                    now as i64,
-                    crate::push_config::sql(now.saturating_add(NOTICE_LIFETIME))?,
-                    i64::from(peer_pending + 1 - allowance),
-                ),
-            )?;
-            if evicted == 0 {
-                return Err(StoreError::MailboxFull);
-            }
-        }
-        tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (&sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
-        let sequence = tx.last_insert_rowid();
-        mark("insert");
-        if !silent {
-            crate::push::enqueue(&tx, &request.recipient_device, now)?;
-        }
-        mark("push");
+        let receipt = submit_in(&tx, &sender, &request, proof, silent, now)?;
         tx.commit()?;
-        mark("commit");
         if started.elapsed().as_millis() > 60 {
-            eprintln!("sigil.slow_submit {:?}", marks);
+            eprintln!("sigil.slow_submit {}ms", started.elapsed().as_millis());
         }
-        Ok(Receipt {
-            sequence,
-            expires_at: request.expires_at,
-        })
+        Ok(receipt)
+    }
+    /// A page of ordinary submissions in one transaction and one commit; each item's outcome stands on its own.
+    pub fn submit_messages(
+        &mut self,
+        credential: &str,
+        batch: SubmitBatch,
+        now: u64,
+    ) -> Result<Vec<Result<Receipt, StoreError>>, StoreError> {
+        if batch.messages.is_empty()
+            || batch.messages.len() > MAX_BATCH
+            || batch.silent.len() != batch.messages.len()
+        {
+            return Err(StoreError::Invalid("submit one to sixteen messages"));
+        }
+        let started = std::time::Instant::now();
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let sender = authorize(&tx, credential, now)?;
+        let mut results = Vec::with_capacity(batch.messages.len());
+        for (request, silent) in batch.messages.iter().zip(batch.silent) {
+            results.push(validate(request, now).and_then(|()| submit_in(&tx, &sender, request, None, silent, now)));
+        }
+        tx.commit()?;
+        if started.elapsed().as_millis() > 60 {
+            eprintln!("sigil.slow_submit batch={} {}ms", results.len(), started.elapsed().as_millis());
+        }
+        Ok(results)
     }
 
     pub fn mailbox_device(&mut self, credential: &str, now: u64) -> Result<String, StoreError> {
@@ -318,6 +235,125 @@ impl Store {
     }
 }
 
+fn validate(request: &Submit, now: u64) -> Result<(), StoreError> {
+    if !valid_credential(&request.recipient_device)
+        || !valid_credential(&request.message_id)
+        || !(32..=MAX_PAYLOAD_HEX).contains(&request.payload.len())
+        || !request.payload.len().is_multiple_of(2)
+        || !request
+            .payload
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || request.expires_at <= now
+        || request.expires_at > now.saturating_add(604800)
+        || request.expires_at > i64::MAX as u64
+    {
+        return Err(StoreError::Invalid(
+            "invalid encrypted payload, identifier, or expiry (maximum 7 days)",
+        ));
+    }
+    Ok(())
+}
+/// One submission inside an open transaction; the only write before a refusal evicts lapsed notices.
+fn submit_in(
+    tx: &rusqlite::Transaction<'_>,
+    sender: &str,
+    request: &Submit,
+    proof: Option<&str>,
+    silent: bool,
+    now: u64,
+) -> Result<Receipt, StoreError> {
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM federation_outbox WHERE sender=?1 AND message_id=?2)",
+            (sender, &request.message_id),
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Err(StoreError::AlreadyExists);
+        }
+        if !active(&tx, &request.recipient_device)? {
+            return Err(StoreError::NotFound);
+        }
+        crate::admission::check(&tx, sender, &request.recipient_device)?;
+        let recovery = proof
+            .map(|proof| recovery_reserve(&tx, sender, &request, proof, now))
+            .transpose()?
+            .unwrap_or(false);
+        let hash = Sha256::digest(request.payload.as_bytes());
+        let previous: Option<(i64,String,Vec<u8>,i64)> = tx.query_row("SELECT sequence,recipient,payload_hash,expires_at FROM mailbox WHERE sender=?1 AND message_id=?2", (sender,&request.message_id), |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if let Some((sequence, recipient, old_hash, expiry)) = previous {
+            if recipient != request.recipient_device
+                || old_hash != hash.as_slice()
+                || expiry != request.expires_at as i64
+            {
+                return Err(StoreError::AlreadyExists);
+            }
+            return Ok(Receipt {
+                sequence,
+                expires_at: expiry as u64,
+            });
+        }
+        crate::storage_budget::for_device(&tx, sender, crate::storage_budget::MAILBOX, now)?;
+        let pending: u32 = tx.query_row(
+            "SELECT count(*) FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2",
+            (&request.recipient_device,now as i64),
+            |r| r.get(0),
+        )?;
+        // A revoked device never collects again, so refuse rather than hold a slot for it.
+        let (account, revoked): (String, bool) = tx.query_row(
+            "SELECT account_id,revoked FROM devices WHERE id=?1",
+            [&request.recipient_device],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if revoked {
+            return Err(StoreError::NotFound);
+        }
+        let used = crate::recovery::used(&tx, &account, now)?;
+        let quota = crate::admin::quota(&tx, &account)?;
+        let peer_pending: u32 = tx.query_row(
+            "SELECT count(*) FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3",
+            (&request.recipient_device, sender, now as i64),
+            |r| r.get(0),
+        )?;
+        if pending >= DEVICE_ALLOWANCE + 4 * u32::from(recovery)
+            || used.saturating_add(request.payload.len() as u64) > quota
+        {
+            return Err(StoreError::MailboxFull);
+        }
+        // A recipient that stops collecting fills up on traffic that describes a
+        // moment: typing and presence, which the sender marks to lapse within minutes.
+        // Those give way, so the allowance cannot be spent on notices nobody will read.
+        // Everything else keeps its place and a real backlog still refuses, rather than
+        // messages disappearing unseen.
+        let allowance = PEER_ALLOWANCE + u32::from(recovery);
+        if peer_pending >= allowance {
+            let evicted = tx.execute(
+                "UPDATE mailbox SET payload=NULL,expires_at=0 WHERE sequence IN (SELECT sequence FROM mailbox WHERE recipient=?1 AND sender=?2 AND payload IS NOT NULL AND expires_at>?3 AND expires_at<?4 ORDER BY expires_at,sequence LIMIT ?5)",
+                (
+                    &request.recipient_device,
+                    sender,
+                    now as i64,
+                    crate::push_config::sql(now.saturating_add(NOTICE_LIFETIME))?,
+                    i64::from(peer_pending + 1 - allowance),
+                ),
+            )?;
+            if evicted == 0 {
+                return Err(StoreError::MailboxFull);
+            }
+        }
+        tx.execute("INSERT INTO mailbox(sender,message_id,recipient,payload,payload_hash,expires_at) VALUES(?1,?2,?3,?4,?5,?6)", (sender,&request.message_id,&request.recipient_device,&request.payload,hash.as_slice(),request.expires_at as i64))?;
+        let sequence = tx.last_insert_rowid();
+        if !silent {
+            crate::push::enqueue(&tx, &request.recipient_device, now)?;
+        }
+        if !silent {
+            crate::push::enqueue(tx, &request.recipient_device, now)?;
+        }
+        Ok(Receipt {
+            sequence,
+            expires_at: request.expires_at,
+        })
+}
+
 // One extra packet per pair lets signed recovery proceed without discarding the
 // failed original. Account storage quotas and normal sender admission still apply.
 fn recovery_reserve(
@@ -400,6 +436,9 @@ fn recovery_reserve(
 }
 
 pub(crate) fn routes() -> Router<AppState> {
+    let batch = Router::new()
+        .route("/client/v0/messages/batch", post(submit_batch))
+        .layer(RequestBodyLimitLayer::new(MAX_BODY * MAX_BATCH));
     Router::new()
         .route("/client/v0/messages", post(submit))
         .route("/client/v0/mailbox", get(poll))
@@ -407,7 +446,41 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/client/v0/mailbox/{sequence}", delete(ack))
         .route("/client/v0/mailbox/acknowledge", post(ack_many))
         .layer(RequestBodyLimitLayer::new(MAX_BODY))
+        .merge(batch)
         .route_layer(middleware::from_fn(native_only))
+}
+async fn submit_batch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<SubmitBatch>, JsonRejection>,
+) -> Response {
+    let token = match bearer(&headers) {
+        Ok(v) => v,
+        Err(e) => return store_error(e),
+    };
+    let request = match body {
+        Ok(Json(v)) => v,
+        Err(e) => return error(e.status(), "invalid_request", "Invalid message batch"),
+    };
+    let log = state.ciphertext_log.clone();
+    let captured: Vec<_> = request.messages.iter().map(|m| (log.capture(m), m.recipient_device.clone())).collect();
+    match with_store(state.clone(), move |store| store.submit_messages(&token, request, now()?)).await {
+        Ok(results) => {
+            let mut outcome = Vec::with_capacity(results.len());
+            for ((record, recipient), result) in captured.into_iter().zip(results) {
+                outcome.push(match result {
+                    Ok(receipt) => {
+                        log.accepted(record, receipt.sequence);
+                        let _ = state.mailbox_wake.send(recipient);
+                        BatchResult { status: StatusCode::ACCEPTED.as_u16(), sequence: Some(receipt.sequence), expires_at: Some(receipt.expires_at) }
+                    }
+                    Err(e) => BatchResult { status: crate::store_status(&e).as_u16(), sequence: None, expires_at: None },
+                });
+            }
+            (StatusCode::OK, Json(BatchOutcome { results: outcome })).into_response()
+        }
+        Err(e) => store_error(e),
+    }
 }
 async fn submit(
     State(state): State<AppState>,

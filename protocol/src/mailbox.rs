@@ -6,7 +6,7 @@ pub const RECOVERY_HEADER: &str = "sigil-recovery-request";
 /// "1" marks traffic that never yields a visible notification; servers skip push for it.
 pub const SILENT_HEADER: &str = "sigil-silent";
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Submit {
     pub recipient_device: String,
@@ -15,6 +15,29 @@ pub struct Submit {
     pub payload: String,
     /// Absolute expiry is part of retry identity; retries must not extend it.
     pub expires_at: u64,
+}
+
+/// Up to sixteen ordinary submissions in one request and one commit; each item answers as the single route would.
+pub const MAX_BATCH: usize = 16;
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubmitBatch {
+    pub messages: Vec<Submit>,
+    /// One flag per message, in order.
+    pub silent: Vec<bool>,
+}
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BatchResult {
+    /// The HTTP status the single route would have returned; 202 carries a receipt.
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+}
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BatchOutcome {
+    pub results: Vec<BatchResult>,
 }
 
 /// Up to sixteen deliveries acknowledged in one request; ones the server no longer holds are simply skipped.

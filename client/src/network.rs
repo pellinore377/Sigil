@@ -27,7 +27,7 @@ use ureq::{
 };
 use zeroize::Zeroizing;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Configuration,
     Transport,
@@ -845,6 +845,11 @@ impl HttpsClient {
     }
     /// Concurrent home-server submissions; results keep input order.
     pub fn submit_many(&self, requests: &[(&mailbox::Submit, bool)]) -> Vec<Result<mailbox::Receipt, Error>> {
+        if requests.len() > 1 {
+            if let Some(results) = self.submit_batch(requests) {
+                return results;
+            }
+        }
         let bodies: Vec<Result<Vec<u8>, Error>> = requests.iter().map(|(r, _)| Self::submit_body(r)).collect();
         let built: Vec<Result<Request<&[u8]>, Error>> = bodies
             .iter()
@@ -868,6 +873,43 @@ impl HttpsClient {
                 Err(error) => Err(error),
             })
             .collect()
+    }
+    /// A page of submissions as one request and one server commit; None means send them one by one.
+    fn submit_batch(&self, requests: &[(&mailbox::Submit, bool)]) -> Option<Vec<Result<mailbox::Receipt, Error>>> {
+        if requests.len() > mailbox::MAX_BATCH || requests.iter().any(|(r, _)| Self::submit_body(r).is_err()) {
+            return None;
+        }
+        let batch = mailbox::SubmitBatch {
+            messages: requests.iter().map(|(r, _)| (*r).clone()).collect(),
+            silent: requests.iter().map(|(_, silent)| *silent).collect(),
+        };
+        let bytes = serde_json::to_vec(&batch).ok()?;
+        let http = self
+            .build_request(Method::POST, "/client/v0/messages/batch", &bytes, Some("application/json"), None)
+            .ok()?;
+        let outcome: mailbox::BatchOutcome = match self.send(http).and_then(|response| self.json(response, 200, SMALL)) {
+            Ok(outcome) => outcome,
+            // A server without the route; the single route is still there.
+            Err(Error::Status { code: 404, .. }) => return None,
+            Err(error) => return Some(requests.iter().map(|_| Err(error.clone())).collect()),
+        };
+        if outcome.results.len() != requests.len() {
+            return Some(requests.iter().map(|_| Err(Error::InvalidResponse)).collect());
+        }
+        Some(
+            outcome
+                .results
+                .into_iter()
+                .zip(requests)
+                .map(|(result, (request, _))| match (result.status, result.sequence, result.expires_at) {
+                    (202, Some(sequence), Some(expires_at)) if sequence > 0 && expires_at == request.expires_at => {
+                        Ok(mailbox::Receipt { sequence, expires_at })
+                    }
+                    (202, _, _) => Err(Error::InvalidResponse),
+                    (code, _, _) => Err(Error::Status { code, retry_after_seconds: None }),
+                })
+                .collect(),
+        )
     }
     pub fn mailbox(&self) -> Result<Vec<mailbox::Delivery>, Error> {
         self.mailbox_after(0)
