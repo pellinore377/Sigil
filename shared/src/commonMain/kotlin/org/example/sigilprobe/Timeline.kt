@@ -497,13 +497,20 @@ internal fun MessageDetails(message: ChatMessage, expanded: Boolean, receipt: Bo
     if (receipt) Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         DeliveryReceipt(message, chat, people)
         AnimatedVisibility(expanded, enter = enterSlide, exit = exitSlide, label = "Message details") { details() }
-    } else AnimatedVisibility(expanded, enter = expandVertically(motionPolicy.enter(MotionQuick)) + fadeIn(motionPolicy.enter(MotionQuick)),
-        exit = shrinkVertically(motionPolicy.exit(MotionQuick, MotionQuick)) + fadeOut(motionPolicy.exit(MotionQuick)), label = "Details row") {
-        // The row opens like the last message's: the state sits still while the time and lock slide in from the right and push it; the whole row leaves on close.
-        val shown = remember { MutableTransitionState(false) }.apply { targetState = expanded }
-        Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            if (message.mine) DeliveryReceipt(message, chat, people, animated = false)
-            AnimatedVisibility(shown, enter = enterSlide, exit = exitSlide, label = "Message details") { details() }
+    } else {
+        // The same look as the last message, from one fraction: the row rises into place while the time and lock reveal from the
+        // right, anchored to their right edge, and push the state; on close everything runs back the same way and nothing stays.
+        val open by animateFloatAsState(if (expanded) 1f else 0f, motionPolicy.tween(MotionQuick), label = "Details")
+        if (open > 0f) Row(Modifier.padding(top = 4.dp * open).clipToBounds().layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints)
+                layout(placeable.width, (placeable.height * open).roundToInt()) { placeable.place(0, 0) }
+            }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            if (message.mine) Box(Modifier.alpha(open)) { DeliveryReceipt(message, chat, people, animated = false) }
+            Box(Modifier.alpha(open).clipToBounds().layout { measurable, constraints ->
+                val placeable = measurable.measure(constraints)
+                val width = (placeable.width * open).roundToInt()
+                layout(width, placeable.height) { placeable.place(width - placeable.width, 0) }
+            }) { details() }
         }
     }
 }
