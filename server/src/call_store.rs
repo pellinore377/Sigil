@@ -43,7 +43,7 @@ fn clock(db: &Connection, now: u64) -> Result<u64, StoreError> {
 }
 /// With no calls on record there is nothing a backwards wall clock could revive, so the idle snapshot loop reads the clock instead of committing it four times a second.
 fn clock_for_snapshot(db: &Connection, now: u64) -> Result<u64, StoreError> {
-    if db.query_row("SELECT EXISTS(SELECT 1 FROM calls)", [], |r| r.get::<_, bool>(0))? {
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM calls WHERE closed=0 AND expires>?1)", [sql(now)?], |r| r.get::<_, bool>(0))? {
         return clock(db, now);
     }
     let stored: u64 = db.query_row("SELECT clock FROM call_configuration WHERE id=1", [], |r| unsigned(r, 0))?;
