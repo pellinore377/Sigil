@@ -96,13 +96,14 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val compactHeight=if(panel=="Attachments" || panel=="Voice")ToolPanelHeight else preferredHeights[panel] ?: when(panel){"Attachments"->ToolPanelHeight;"Emoji"->320.dp+with(density){emojiGrow.toDp()};"Create"->380.dp;"Format"->104.dp;"Voice"->ToolPanelHeight;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
     val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin") || panel=="Help" && confirmation.action!=null
     // A panel never rises past the header: the camera and the emoji sheet stop one gap beneath it.
-    val cameraLimit=if(panel in listOf("Camera","Emoji") && panelBottom>0f && headerBottom>0f)
+    val cameraLimit=if(panel=="Camera" && panelBottom>0f && headerBottom>0f)
         with(density){(panelBottom-headerBottom).coerceAtLeast(0f).toDp()}.minus(12.dp).coerceAtLeast(0.dp) else available
     val expandedHeight = if (panel.isNotEmpty()) minOf(compactHeight,available,cameraLimit) else 0.dp
     val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending || emojiGrow > 0f) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
     val panelGap by animateDpAsState(if (expandedHeight > 0.dp) 12.dp else 0.dp, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer panel gap")
     val scope=rememberCoroutineScope()
-    fun emojiReach()=with(density){(minOf(available,cameraLimit)-320.dp).coerceAtLeast(0.dp).toPx()}
+    // The emoji sheet's reach comes from live insets alone; a measured bottom would trail the keyboard by a frame.
+    fun emojiReach()=with(density){(available-320.dp).coerceAtLeast(0.dp).toPx()}
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
     LaunchedEffect(measured, keyboardPending) { if (keyboardPending && measured >= keyboardHeight - 2.dp) keyboardPending = false }
     fun change(value: String) { if (panel.isEmpty() && measured > 120.dp) keyboardHeight = measured; keyboardPending = false; panel = value; if(value=="Format"){editor.requestFocus();keyboard?.show()}else{focus.clearFocus();keyboard?.hide()} }
@@ -152,7 +153,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     // The panel is its own glass above the composer, kept one composer margin away; without a footer host it stays inline.
     val detached = LocalFooterHost.current != null
     val panelContent: @Composable () -> Unit = {
-            Box(Modifier.fillMaxWidth().height(if(panel in listOf("Camera","Emoji"))minOf(panelHeight,cameraLimit)else panelHeight).onGloballyPositioned {panelBottom=it.boundsInWindow().bottom}.testTag("composer-panel")) {
+            Box(Modifier.fillMaxWidth().height(if(panel=="Camera")minOf(panelHeight,cameraLimit)else panelHeight).onGloballyPositioned {panelBottom=it.boundsInWindow().bottom}.testTag("composer-panel")) {
                 CompositionLocalProvider(LocalBuilderAction provides "Attach") {
                 AnimatedContent(panel, transitionSpec = {
                     when {
@@ -219,11 +220,14 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
         // Clamped in layout against the live keyboard inset, so the panel never rises past the header while the keyboard is still moving.
         val imeInsets = WindowInsets.ime; val barInsets = WindowInsets.navigationBars
         val windowHeight = LocalWindowInfo.current.containerSize.height
+        // A sheet that wants all the room takes the ceiling itself, so it tracks the keyboard frame for frame instead of trailing it.
+        val fillsCeiling = panel == "Emoji" && compactHeight >= available
         if (panelHeight > 0.dp) FloatingChrome(backdrop, Modifier.fillMaxWidth().padding(bottom = panelGap).alpha((panelHeight / 96.dp).coerceIn(0f, 1f)).layout { measurable, constraints ->
             val host = footerHost
             val ceiling = if (host == null || host.headerBottom <= 0f) constraints.maxHeight else
                 (windowHeight - maxOf(imeInsets.getBottom(this), barInsets.getBottom(this)) - 8.dp.roundToPx() - host.composerHeight.roundToPx() - 12.dp.roundToPx() - host.headerBottom.toInt() - 12.dp.roundToPx()).coerceAtLeast(0)
-            val placeable = measurable.measure(constraints.copy(maxHeight = minOf(constraints.maxHeight, ceiling)))
+            val limit = minOf(constraints.maxHeight, ceiling)
+            val placeable = measurable.measure(if (fillsCeiling) constraints.copy(minHeight = limit, maxHeight = limit) else constraints.copy(maxHeight = limit))
             layout(placeable.width, placeable.height) { placeable.place(0, 0) }
         }, RoundedCornerShape(24.dp)) { panelContent() }
     }
