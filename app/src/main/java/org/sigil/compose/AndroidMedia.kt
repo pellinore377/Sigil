@@ -87,7 +87,15 @@ internal fun prepareMedia(context: android.content.Context, message: ChatMessage
 internal fun AndroidAttachmentDraft(file: org.sigil.Transfer, modifier: Modifier) {
     val message = remember(file) { ChatMessage(file.request, "", "", true, "", "", false, emptyList(), emptyList(), null, true,
         peer = file.peer, attachment = org.sigil.AttachmentDetails(file.name, file.mediaType, file.bytes, draft = true)) }
-    Box(modifier) { AndroidAttachment(message) }
+    // In the tray a picture of any shape fills its tile.
+    androidx.compose.runtime.CompositionLocalProvider(LocalFillsTile provides true) { Box(modifier) { AndroidAttachment(message) } }
+}
+/// True inside a fixed tile, where a picture fills and crops rather than keeping its shape.
+internal val LocalFillsTile = androidx.compose.runtime.staticCompositionLocalOf { false }
+@Composable
+internal fun MediaFrame(width: Int, height: Int, shape: androidx.compose.ui.graphics.Shape, caption: (@Composable () -> Unit)?, content: @Composable (Modifier) -> Unit) {
+    if (LocalFillsTile.current) Box(Modifier.fillMaxSize().clip(shape)) { content(Modifier.fillMaxSize()) }
+    else org.sigil.ImageMessageFrame(width, height, shape, caption, content)
 }
 internal fun mediaBytes(context: android.content.Context, message: ChatMessage, limit: Int): ByteArray {
     val length = message.attachment!!.bytes
@@ -246,19 +254,19 @@ internal fun AndroidAttachment(message: ChatMessage) {
     val captionBlock: (@Composable () -> Unit)? = if (!captioned) null else { { Box(Modifier.fillMaxWidth().background(org.sigil.LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) { org.sigil.MessageText(file.caption, org.sigil.NativeCore::analyze) } } }
     Column(Modifier.widthIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val picture = bitmap
-        if (playable) org.sigil.ImageMessageFrame(if (imageWidth > 0) imageWidth else picture?.width ?: 16, if (imageHeight > 0) imageHeight else picture?.height ?: 9, frameShape, captionBlock) { frame ->
+        if (playable) MediaFrame(if (imageWidth > 0) imageWidth else picture?.width ?: 16, if (imageHeight > 0) imageHeight else picture?.height ?: 9, frameShape, captionBlock) { frame ->
             val motion = org.sigil.LocalMotion.current
             val poster by animateFloatAsState(if (picture != null) 1f else 0f, motion.enter(org.sigil.MotionMillis), label = "Poster")
             Box(frame.clip(frameShape).background(MaterialTheme.colorScheme.surfaceContainerHigh).combinedClickable(enabled = !requested || ready, onLongClick = org.sigil.LocalMaterialPress.current) { if (ready) opened = true else { openWhenReady = true; requested = true } }, contentAlignment = Alignment.Center) {
-            picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = poster }, contentScale = ContentScale.Fit) }
+            picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = poster }, contentScale = if (LocalFillsTile.current) ContentScale.Crop else ContentScale.Fit) }
             if (requested && !ready) CircularProgressIndicator(Modifier.size(32.dp))
             else Surface(shape = androidx.compose.foundation.shape.CircleShape, color = androidx.compose.ui.graphics.Color.Black.copy(alpha = .6f), contentColor = androidx.compose.ui.graphics.Color.White) { Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) { Glyph(if (failed) "refresh" else "play_arrow", 28, if (failed) "Retry video" else "Play video") } }
         } }
-        else if (image) org.sigil.ImageMessageFrame(picture?.width ?: imageWidth, picture?.height ?: imageHeight, frameShape, captionBlock) { frame ->
+        else if (image) MediaFrame(picture?.width ?: imageWidth, picture?.height ?: imageHeight, frameShape, captionBlock) { frame ->
             val motion = org.sigil.LocalMotion.current
             val arrival by animateFloatAsState(if (picture != null) 1f else 0f, motion.enter(org.sigil.MotionMillis), label = "Picture")
             Box(frame.background(MaterialTheme.colorScheme.surfaceContainerHigh).combinedClickable(enabled = picture != null, onLongClick = org.sigil.LocalMaterialPress.current) { opened = true },contentAlignment=Alignment.Center) {
-                picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = arrival }, contentScale = ContentScale.Fit) }
+                picture?.let { Image(it.asImageBitmap(), file.name, Modifier.fillMaxSize().graphicsLayer { alpha = arrival }, contentScale = if (LocalFillsTile.current) ContentScale.Crop else ContentScale.Fit) }
                 if (picture != null) { if (file.mediaType == "image/gif") org.sigil.GifChip(Modifier.align(Alignment.TopStart)) }
                 else if(failed) SigilIconButton({requested=true}) {Glyph("refresh",28,"Retry image")}
                 else CircularProgressIndicator(Modifier.size(28.dp).graphicsLayer { alpha = 1f - arrival })

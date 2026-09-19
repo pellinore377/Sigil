@@ -352,17 +352,25 @@ fn ingest_only(tx: &Transaction<'_>, key: &StorageKey, entry: &Entry) -> Result<
         Action::Typing { .. } | Action::Presence { .. } => 2,
         _ => 3,
     };
+    let at = scope(key, &entry.conversation)?;
     tx.execute(
         "INSERT INTO conversation_ops VALUES(?1,?2,?3,?4,?5,?6)",
         rusqlite::params![
             id.as_slice(),
-            scope(key, &entry.conversation)?.as_slice(),
+            at.as_slice(),
             target_index(key, &entry.conversation, &target)?.as_slice(),
             stamp.as_slice(),
             kind,
             seal(key, &id, entry)?
         ],
     )?;
+    // Typing and presence are moments, not history: a conversation keeps only its newest few, since older ones can no longer be active.
+    if kind == 2 {
+        tx.execute(
+            "DELETE FROM conversation_ops WHERE scope=?1 AND kind=2 AND id NOT IN (SELECT id FROM conversation_ops WHERE scope=?1 AND kind=2 ORDER BY id DESC LIMIT 64)",
+            [at.as_slice()],
+        )?;
+    }
     Ok(())
 }
 pub(crate) fn validate(content: Content<'_>, _message: &Id, device: &Id) -> Result<(), Error> {

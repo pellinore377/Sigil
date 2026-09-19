@@ -47,7 +47,10 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
     private fun execute(name: String, fields: Map<String, Any?> = emptyMap()): JSONObject {
         val request = JSONObject().put("command", name)
         fields.forEach { (key, value) -> request.put(key, JSONObject.wrap(value)) }
-        val result = StorageKeyProvider(app).withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request.toString())) }
+        val started = android.os.SystemClock.elapsedRealtime()
+        val provider = StorageKeyProvider(app)
+        val result = NativeStorage.executeCached(provider.directory.path, request.toString())?.let { JSONObject(it) } ?: provider.withKey { directory, key -> JSONObject(NativeStorage.execute(directory.path, key, request.toString())) }
+        android.util.Log.i("SigilTiming", "files.$name ${android.os.SystemClock.elapsedRealtime() - started}ms")
         check(result.getBoolean("ok")) { result.optString("error", "File operation failed") }
         return result.getJSONObject("value")
     }
@@ -116,6 +119,8 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
     } }
     suspend fun stage(target: Map<String, Any?>, name: String, type: String, size: Long, stream: InputStream, prepare: suspend () -> Unit = {}) {
         val request = ByteArray(32).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+        val stagingStart = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.i("SigilTiming", "files.stage begin ${size}B")
         try {
             mutex.withLock { execute("file_begin", target + mapOf("request" to request, "timestamp" to System.currentTimeMillis() / 1000, "length" to size, "name" to name, "media_type" to type)); staging[request] = currentCoroutineContext().job; publish() }
             prepare()
@@ -127,12 +132,15 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
                 val bytes = stream.chunk(count)
                 try {
                     check(bytes.size == count)
-                    mutex.withLock { check(StorageKeyProvider(app).withKey { directory, key -> NativeStorage.stageFile(directory.path, key, request, index, bytes) }) }
+                    val chunkStart = android.os.SystemClock.elapsedRealtime()
+                    mutex.withLock { val provider = StorageKeyProvider(app); check(NativeStorage.stageFileCached(provider.directory.path, request, index, bytes) || provider.withKey { directory, key -> NativeStorage.stageFile(directory.path, key, request, index, bytes) }) }
+                    android.util.Log.i("SigilTiming", "files.chunk $index ${android.os.SystemClock.elapsedRealtime() - chunkStart}ms")
                 } finally { bytes.fill(0) }
                 total += count; index++
             }
             check(stream.read() == -1)
             mutex.withLock { execute("file_finish", mapOf("request" to request)); nudge(); publish() }
+            android.util.Log.i("SigilTiming", "files.stage done ${android.os.SystemClock.elapsedRealtime() - stagingStart}ms")
             NativeSync.enqueue(app)
         } catch (error: Exception) {
             withContext(NonCancellable) { mutex.withLock { runCatching { execute("file_cancel", mapOf("request" to request)) }; publish() } }

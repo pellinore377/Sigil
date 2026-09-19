@@ -366,6 +366,15 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val setting = (fields["value"] as? Map<*, *>)?.get("UiSetting") as? Map<*, *>
         val preference = if (name == "organize") (setting?.get("key") as? String)?.let { (fields["peer"] as? String) to it } else null
         if (preference != null) pendingUiSettings[preference] = setting?.get("value")
+        // A reaction shows on the message at the tap; the stored one confirms it.
+        if (name == "react") {
+            val emoji = fields["emoji"] as? String; val active = fields["active"] as? Boolean
+            if (emoji != null && active != null) state = state.copy(messages = state.messages.map { m ->
+                if (m.id != fields["message"] || m.author != fields["author"]) m
+                else m.copy(myReactions = if (active) (m.myReactions + emoji).distinct() else m.myReactions - emoji,
+                    reactions = if (active) m.reactions + emoji else m.reactions.toMutableList().also { it.remove(emoji) })
+            })
+        }
         if (name == "post") {
             if (submittingPost) return
             submittingPost = true
@@ -664,6 +673,10 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             if (timelinePublishes(messages.size, onScreen, timelineWant, before == null)) {
                 state = state.copy(selected = peer, messages = messages.toList(), more = before != null,timelineLoaded=true,timelineBuffer=buffer)
                 if (initialAnchor == null && filter == defaultTimelineFilter) recentTimelines[peer] = state.messages
+            } else if (messages.isNotEmpty()) {
+                // The first page lands at once over what is on screen: its rows replace their counterparts and the rest stay until the next page.
+                val tail = state.messages.indexOfFirst { it.id == messages.last().id && it.author == messages.last().author }
+                if (tail >= 0) state = state.copy(messages = messages.toList() + state.messages.drop(tail + 1), timelineLoaded = true)
             }
             if (before == null) return
             yield()
