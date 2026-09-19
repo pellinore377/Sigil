@@ -138,7 +138,7 @@ impl From<network::Error> for Error {
 pub mod perf {
     use std::sync::Mutex;
     static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    pub fn mark(label: &str, started: std::time::Instant) {
+    pub fn mark(label: &str, started: crate::clock::Instant) {
         if let Ok(mut log) = LOG.lock() { log.push(format!("{label}={}ms", started.elapsed().as_millis())); }
     }
     pub fn note(text: String) { if let Ok(mut log) = LOG.lock() { log.push(text); } }
