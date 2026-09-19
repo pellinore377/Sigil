@@ -260,7 +260,7 @@ impl ClientStore {
                         ..Default::default()
                     },
                     codec: RTCRtpCodec {
-                        mime_type: if audio { "audio/opus" } else { "video/VP9" }.into(),
+                        mime_type: if audio { "audio/opus" } else { "video/AV1" }.into(),
                         clock_rate: if audio { 48000 } else { 90000 },
                         channels: if audio { 2 } else { 0 },
                         sdp_fmtp_line: String::new(),
@@ -457,7 +457,7 @@ impl ClientStore {
                 header: rtc::rtp::header::Header {
                     version: 2,
                     marker: n + 1 == packets.len(),
-                    payload_type: if index == 0 { 111 } else { 98 },
+                    payload_type: if index == 0 { 111 } else { 41 },
                     sequence_number: call.sequence[index],
                     timestamp: (timestamp.wrapping_mul(if index == 0 { 48 } else { 90 }) / 1000)
                         as u32,

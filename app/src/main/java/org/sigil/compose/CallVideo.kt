@@ -15,6 +15,43 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+/// Wire codec identifiers carried in every frame header, so a sender encodes what it can and
+/// each receiver decodes per sender without any negotiation.
+internal const val CODEC_VP9: Byte = 1
+internal const val CODEC_AV1: Byte = 2
+/// Codec, rotation, width and height, each big endian, ahead of the encoded frame.
+internal const val VIDEO_HEADER = 7
+internal fun callVideoMime(codec: Byte) = when (codec) {
+    CODEC_VP9 -> MediaFormat.MIMETYPE_VIDEO_VP9
+    CODEC_AV1 -> MediaFormat.MIMETYPE_VIDEO_AV1
+    else -> null
+}
+/// The decoder to use for a type: a hardware one if the platform offers it.
+internal fun callVideoDecoder(mime: String): MediaCodecInfo? {
+    val all = runCatching { MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos }.getOrDefault(emptyArray())
+        .filter { !it.isEncoder && it.supportedTypes.any { type -> type.equals(mime, true) } }
+    return all.firstOrNull { it.isHardwareAccelerated } ?: all.firstOrNull()
+}
+/// Every codec the platform will admit for a type, in both list modes, with the facts that decide
+/// selection. Logged once per process so a device's real capability is never inferred from a spec sheet.
+internal fun callVideoCodecs(mime: String) {
+    if (!codecsLogged.add(mime)) return
+    for (mode in listOf(MediaCodecList.ALL_CODECS to "all", MediaCodecList.REGULAR_CODECS to "regular")) {
+        for (info in runCatching { MediaCodecList(mode.first).codecInfos }.getOrDefault(emptyArray())) {
+            if (info.supportedTypes.none { it.equals(mime, true) }) continue
+            val video = runCatching { info.getCapabilitiesForType(mime).videoCapabilities }.getOrNull()
+            val best = runCatching { video?.let { "${it.supportedWidths.upper}x${it.supportedHeights.upper}@${it.getSupportedFrameRatesFor(1920, 1080).upper.toInt()}" } }.getOrNull()
+            android.util.Log.i("SigilTiming", "codec ${mode.second} ${info.name} encoder=${info.isEncoder} hardware=${info.isHardwareAccelerated} softwareOnly=${info.isSoftwareOnly} vendor=${info.isVendor} max=$best")
+        }
+    }
+}
+private val codecsLogged = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+/// The encoder to use for a type: a hardware one if the platform offers it, whatever exists otherwise.
+internal fun callVideoEncoder(mime: String): MediaCodecInfo? {
+    val all = runCatching { MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos }.getOrDefault(emptyArray())
+        .filter { it.isEncoder && it.supportedTypes.any { type -> type.equals(mime, true) } }
+    return all.firstOrNull { it.isHardwareAccelerated } ?: all.firstOrNull()
+}
 /// Bits per second for a capture: 1080p at 60 gets 6 Mbit/s, 720p 3, smaller 1.2.
 internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
     val pixels = width * height
@@ -24,14 +61,18 @@ internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
         else -> 1_200_000
     }
 }
-internal class Vp8Encoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
-    private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_VP9)
+internal class CallEncoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
+    private val wire = CODEC_AV1
+    private val mime = requireNotNull(callVideoMime(wire))
+    private val codec = callVideoEncoder(mime)
+        ?.let { android.util.Log.i("SigilTiming", "codec encode ${it.name} hardware=${it.isHardwareAccelerated}"); MediaCodec.createByCodecName(it.name) }
+        ?: MediaCodec.createEncoderByType(mime)
     private val running = AtomicBoolean(true)
     val surface: Surface
     private val worker: Thread
     init {
         try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP9, width, height)
+            val format = MediaFormat.createVideoFormat(mime, width, height)
             format.setInteger(MediaFormat.KEY_PRIORITY, 0)
             format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
@@ -51,11 +92,11 @@ internal class Vp8Encoder(val width: Int, val height: Int, private val rotation:
                     if (index < 0) continue
                     try {
                         if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                            require(info.size <= 1024 * 1024 - 6)
-                            val bytes = ByteArray(info.size + 6)
+                            require(info.size <= 1024 * 1024 - VIDEO_HEADER)
+                            val bytes = ByteArray(info.size + VIDEO_HEADER)
                             try {
-                                ByteBuffer.wrap(bytes).putShort(rotation.toShort()).putShort(width.toShort()).putShort(height.toShort())
-                                requireNotNull(codec.getOutputBuffer(index)).apply { position(info.offset); limit(info.offset + info.size) }.get(bytes, 6, info.size)
+                                ByteBuffer.wrap(bytes).put(wire).putShort(rotation.toShort()).putShort(width.toShort()).putShort(height.toShort())
+                                requireNotNull(codec.getOutputBuffer(index)).apply { position(info.offset); limit(info.offset + info.size) }.get(bytes, VIDEO_HEADER, info.size)
                                 send(info.presentationTimeUs.coerceAtLeast(0), info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, bytes)
                                 counted++
                                 val at = android.os.SystemClock.elapsedRealtime()
@@ -76,10 +117,12 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
     private val handler = Handler(thread.looper)
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
-    private var encoder: Vp8Encoder? = null
+    private var encoder: CallEncoder? = null
     init {
         handler.post {
             try {
+                callVideoCodecs(MediaFormat.MIMETYPE_VIDEO_VP9)
+                callVideoCodecs(MediaFormat.MIMETYPE_VIDEO_AV1)
                 val manager = context.getSystemService(CameraManager::class.java)
                 val id = manager.cameraIdList.firstOrNull { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK } ?: manager.cameraIdList.first()
                 val info = manager.getCameraCharacteristics(id)
@@ -90,7 +133,7 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                 val fps = range?.upper ?: 30
                 val rotation = info.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
                 android.util.Log.i("SigilTiming", "video out ${size.width}x${size.height}@$fps ${callVideoBitrate(size.width, size.height, fps) / 1000}kbps")
-                val video = Vp8Encoder(size.width, size.height, rotation, fps, send) { failed() }
+                val video = CallEncoder(size.width, size.height, rotation, fps, send) { failed() }
                 encoder = video
                 manager.openCamera(id, object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
@@ -148,7 +191,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
             try { previous?.stop() } catch (_: Exception) {}
             try { previous?.release() } catch (_: Exception) {}
         }
-        var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime()
+        var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
         fun drainOutput() {
             val active = codec ?: return
             val info = MediaCodec.BufferInfo()
@@ -171,20 +214,23 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                     if (lostFrame.getAndSet(false)) reset()
                     if (packet.timestamp <= lastTimestamp) { reset(); continue }
                     val bytes = packet.bytes
-                    require(bytes.size > 6)
+                    require(bytes.size > VIDEO_HEADER)
                     val buffer = ByteBuffer.wrap(bytes)
+                    val wire = buffer.get(); val mime = requireNotNull(callVideoMime(wire))
                     val rotation = buffer.short.toInt() and 65535; val width = buffer.short.toInt() and 65535; val height = buffer.short.toInt() and 65535
                     require(rotation in listOf(0, 90, 180, 270) && width in 16..1920 && height in 16..1920 && width * height <= 1920 * 1080)
                     // The header travels inside the authenticated encryption, so its
                     // keyframe flag and dimensions need no bitstream cross-check.
                     val keyframe = packet.keyframe
                     val size = Size(width, height)
-                    if (codec == null || size != dimensions) {
+                    if (codec == null || size != dimensions || wire != decoding) {
                         if (!keyframe) continue
                         reset()
-                        codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_VP9)
-                        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_VP9, width, height).apply { setInteger(MediaFormat.KEY_PRIORITY, 0) }
-                        codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size
+                        val chosen = callVideoDecoder(mime)
+                        android.util.Log.i("SigilTiming", "codec decode ${chosen?.name} hardware=${chosen?.isHardwareAccelerated} ${width}x$height")
+                        codec = chosen?.let { MediaCodec.createByCodecName(it.name) } ?: MediaCodec.createDecoderByType(mime)
+                        val format = MediaFormat.createVideoFormat(mime, width, height).apply { setInteger(MediaFormat.KEY_PRIORITY, 0) }
+                        codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size; decoding = wire
                     }
                     val shape = Triple(width, height, rotation)
                     if (rendered != shape) { geometry(width, height, rotation); rendered = shape }
@@ -196,8 +242,8 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                         input = active.dequeueInputBuffer(10000)
                     }
                     if (input >= 0) {
-                        val target = requireNotNull(active.getInputBuffer(input)); target.clear(); require(bytes.size - 6 <= target.remaining()); target.put(bytes, 6, bytes.size - 6)
-                        active.queueInputBuffer(input, 0, bytes.size - 6, packet.timestamp, 0)
+                        val target = requireNotNull(active.getInputBuffer(input)); target.clear(); require(bytes.size - VIDEO_HEADER <= target.remaining()); target.put(bytes, VIDEO_HEADER, bytes.size - VIDEO_HEADER)
+                        active.queueInputBuffer(input, 0, bytes.size - VIDEO_HEADER, packet.timestamp, 0)
                         lastTimestamp = packet.timestamp
                     } else {
                         reset()

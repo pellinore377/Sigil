@@ -10,8 +10,20 @@ use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::*;
 
-/// VP9 profile 0, level 1.0, eight bit: the WebCodecs spelling of the wire codec.
-const VIDEO_CODEC: &str = "vp09.00.10.08";
+/// Wire codec identifiers carried in every frame header, so a sender encodes what it can
+/// and each receiver decodes per sender without any negotiation.
+/// Codec, rotation, width and height, each big endian, ahead of the encoded frame.
+const HEADER: u32 = 7;
+const CODEC_VP9: u8 = 1;
+const CODEC_AV1: u8 = 2;
+/// The WebCodecs spelling of a wire codec.
+fn codec_name(id: u8) -> Option<&'static str> {
+    match id {
+        CODEC_VP9 => Some("vp09.00.10.08"),
+        CODEC_AV1 => Some("av01.0.08M.08"),
+        _ => None,
+    }
+}
 /// Frames per second to ask the camera for; the encoder follows what it actually delivers.
 const RATE: u32 = 60;
 /// Bits per second for a capture: 1080p at 60 gets 6 Mbit/s, 720p 3, smaller 1.2.
@@ -63,6 +75,7 @@ struct Viewer {
     context: CanvasRenderingContext2d,
     decoder: Option<JsValue>,
     size: (u32, u32),
+    codec: u8,
     rotation: u32,
     last: u64,
     interval: u64,
@@ -184,16 +197,17 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         let Some(length) = number(&chunk, "byteLength") else {
             return;
         };
-        if length <= 0.0 || length > (1024 * 1024 - 6) as f64 {
+        if length <= 0.0 || length > (1024 * 1024 - HEADER as usize) as f64 {
             return;
         }
         let length = length as u32;
-        let bytes = Uint8Array::new_with_length(6 + length);
-        bytes.set_index(2, (width >> 8) as u8);
-        bytes.set_index(3, width as u8);
-        bytes.set_index(4, (height >> 8) as u8);
-        bytes.set_index(5, height as u8);
-        if invoke(&chunk, "copyTo", &[bytes.subarray(6, 6 + length).into()]).is_err() {
+        let bytes = Uint8Array::new_with_length(HEADER + length);
+        bytes.set_index(0, CODEC_AV1);
+        bytes.set_index(3, (width >> 8) as u8);
+        bytes.set_index(4, width as u8);
+        bytes.set_index(5, (height >> 8) as u8);
+        bytes.set_index(6, height as u8);
+        if invoke(&chunk, "copyTo", &[bytes.subarray(HEADER, HEADER + length).into()]).is_err() {
             return;
         }
         let keyframe = get(&chunk, "type").ok().and_then(|v| v.as_string()).as_deref() == Some("key");
@@ -245,7 +259,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             continue;
         }
         let config = serde_json::json!({
-            "codec": VIDEO_CODEC, "width": w, "height": h,
+            "codec": codec_name(CODEC_AV1).unwrap_or_default(), "width": w, "height": h,
             "bitrate": bitrate(w, h, r), "framerate": r, "latencyMode": "realtime",
             "hardwareAcceleration": acceleration
         });
@@ -458,6 +472,7 @@ pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsV
                 context,
                 decoder: None,
                 size: (0, 0),
+                codec: 0,
                 rotation: 0,
                 last: 0,
                 interval: 0,
@@ -479,7 +494,7 @@ pub fn video_detach(sender: String) {
 #[wasm_bindgen]
 pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue> {
     let length = frame.length();
-    if length < 17 || frame.get_index(0) == 0 {
+    if length < 11 + HEADER || frame.get_index(0) == 0 {
         return Ok(false);
     }
     let keyframe = frame.get_index(1) != 0;
@@ -487,8 +502,10 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
     frame.subarray(2, 10).copy_to(&mut raw);
     let timestamp = u64::from_be_bytes(raw);
     let field = |at: u32| (frame.get_index(at) as u32) << 8 | frame.get_index(at + 1) as u32;
-    let (rotation, width, height) = (field(10), field(12), field(14));
-    if !matches!(rotation, 0 | 90 | 180 | 270)
+    let codec = frame.get_index(10);
+    let (rotation, width, height) = (field(11), field(13), field(15));
+    if codec_name(codec).is_none()
+        || !matches!(rotation, 0 | 90 | 180 | 270)
         || !(16..=1920).contains(&width)
         || !(16..=1920).contains(&height)
         || timestamp > 9_007_199_254_740_991
@@ -526,7 +543,7 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
             .as_ref()
             .map(|d| get(d, "state").ok().and_then(|v| v.as_string()).as_deref() != Some("configured"))
             .unwrap_or(true);
-        if closed || viewer.size != (width, height) {
+        if closed || viewer.size != (width, height) || viewer.codec != codec {
             if !keyframe {
                 return Ok(true);
             }
@@ -541,13 +558,14 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
                 &decoder,
                 "configure",
                 &[object(serde_json::json!({
-                    "codec": VIDEO_CODEC, "codedWidth": width, "codedHeight": height,
+                    "codec": codec_name(codec).unwrap_or_default(), "codedWidth": width, "codedHeight": height,
                     // The browser picks; 1080p at 60 in software is a full core, hardware is free.
                     "hardwareAcceleration": "no-preference", "optimizeForLatency": true
                 }))?],
             )?;
             viewer.decoder = Some(decoder);
             viewer.size = (width, height);
+            viewer.codec = codec;
             viewer.interval = 0;
         }
         viewer.rotation = rotation;
@@ -558,7 +576,7 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
         let init = js_sys::Object::new();
         Reflect::set(&init, &"type".into(), &if keyframe { "key" } else { "delta" }.into())?;
         Reflect::set(&init, &"timestamp".into(), &(timestamp as f64).into())?;
-        Reflect::set(&init, &"data".into(), &frame.subarray(16, length))?;
+        Reflect::set(&init, &"data".into(), &frame.subarray(10 + HEADER, length))?;
         let chunk = construct("EncodedVideoChunk", &init)?;
         if invoke(&decoder, "decode", &[chunk]).is_err() {
             let _ = invoke(&decoder, "close", &[]);

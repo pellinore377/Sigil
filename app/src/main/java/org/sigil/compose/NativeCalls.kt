@@ -18,6 +18,10 @@ import java.security.SecureRandom
 
 internal class NativeCalls(private val app: Application, private val update: (List<CallSummary>, ActiveCall?) -> Unit, private val issue: (String) -> Unit, private val synced: () -> Unit = {}) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    init {
+        callVideoCodecs(android.media.MediaFormat.MIMETYPE_VIDEO_VP9)
+        callVideoCodecs(android.media.MediaFormat.MIMETYPE_VIDEO_AV1)
+    }
     private var desired: String? = null
     private var history = emptyList<CallSummary>()
     private var visible: ActiveCall? = null

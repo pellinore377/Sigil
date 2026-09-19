@@ -158,7 +158,7 @@ impl Peer {
                     ..Default::default()
                 },
                 codec: RTCRtpCodec {
-                    mime_type: if audio { "audio/opus" } else { "video/VP9" }.into(),
+                    mime_type: if audio { "audio/opus" } else { "video/AV1" }.into(),
                     clock_rate: if audio { 48000 } else { 90000 },
                     channels: if audio { 2 } else { 0 },
                     sdp_fmtp_line: String::new(),

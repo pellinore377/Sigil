@@ -187,7 +187,7 @@ async fn data_channel_and_rtp_forward_the_same_authenticated_fragmented_media() 
                             .write_rtp(rtc::rtp::packet::Packet {
                                 header: rtc::rtp::header::Header {
                                     version: 2,
-                                    payload_type: if kind == MediaKind::Audio { 111 } else { 96 },
+                                    payload_type: if kind == MediaKind::Audio { 111 } else { 41 },
                                     sequence_number: *seq,
                                     timestamp: iteration as u32 * 3000,
                                     ssrc: kind as u32 + 1,

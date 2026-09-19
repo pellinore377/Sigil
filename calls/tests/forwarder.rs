@@ -141,7 +141,7 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
                     .write_rtp(rtc::rtp::packet::Packet {
                         header: rtc::rtp::header::Header {
                             version: 2,
-                            payload_type: if kind == MediaKind::Audio { 111 } else { 96 },
+                            payload_type: if kind == MediaKind::Audio { 111 } else { 41 },
                             sequence_number: seq,
                             timestamp: u32::from(seq) * 960,
                             ssrc: kind as u32 + 1,
@@ -189,7 +189,7 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
                     if route.kind == MediaKind::Audio {
                         111
                     } else {
-                        96
+                        41
                     }
                 );
                 first[i].get_or_insert(packet.received.duration_since(start));
