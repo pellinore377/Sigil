@@ -51,6 +51,10 @@ pub struct Traffic {
     pub rejected: [u64; 3],
     pub unrouted: [u64; 3],
     pub no_payload_type: [u64; 3],
+    /// Audio written to a native peer, and audio written to a browser peer.
+    pub rtp_out_native: u64,
+    pub rtp_out_browser: u64,
+    pub no_tx_stream: u64,
 }
 pub struct Forwarder {
     address: SocketAddr,
@@ -202,6 +206,14 @@ impl Forwarder {
                 ssrc: *stream.ssrc(),
             });
         }
+        // Counts only: whether the answer names the streams we are about to create.
+        eprintln!(
+            "sigil.call_answer browser={} ssrc_lines={} mids={} downloads={}",
+            applications == 1,
+            sdp.lines().filter(|l| l.starts_with("a=ssrc:")).count(),
+            sdp.lines().filter(|l| l.starts_with("a=mid:")).count(),
+            streams.len()
+        );
         let answer = Answer {
             sdp,
             sequence: value.sequence,
@@ -463,6 +475,9 @@ impl Forwarder {
                         self.traffic.no_payload_type[kind as usize] += 1;
                     }
                     if let Some(pt) = pt {
+                        if peer.rtc.direct_api().stream_tx_by_mid(mid, None).is_none() {
+                            self.traffic.no_tx_stream += 1;
+                        }
                         if let Some(stream) = peer.rtc.direct_api().stream_tx_by_mid(mid, None) {
                             let sample = stream
                                 .queue_info()
@@ -499,6 +514,13 @@ impl Forwarder {
                                 .nackable(kind != MediaKind::Audio),
                             );
                             self.traffic.rtp_out[kind as usize] += 1;
+                            if kind == MediaKind::Audio {
+                                if peer.browser {
+                                    self.traffic.rtp_out_browser += 1;
+                                } else {
+                                    self.traffic.rtp_out_native += 1;
+                                }
+                            }
                         }
                     }
                 }

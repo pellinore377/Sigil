@@ -433,7 +433,8 @@ impl ClientStore {
         if recipients.is_empty() || recipients.len() > 7 || direct && recipients.len() != 1 {
             return Err(Error::Limit);
         }
-        self.create_call_kind(id, now, 86400, direct, !direct, recipients)
+        // Caps how long one call may run, and how long an abandoned one holds a slot.
+        self.create_call_kind(id, now, 28800, direct, !direct, recipients)
     }
     #[allow(clippy::too_many_arguments)]
     fn create_call_kind(

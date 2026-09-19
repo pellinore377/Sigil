@@ -228,9 +228,11 @@ impl Store {
                     |r| Ok((unsigned(r, 0)?, unsigned(r, 1)?)),
                 )?;
                 let (own_live,own_total):(u64,u64)=tx.query_row("SELECT count(*) FILTER(WHERE c.closed=0 AND c.expires>?1),count(*) FROM calls c JOIN devices d ON d.id=c.device WHERE d.account_id=(SELECT account_id FROM devices WHERE id=?2)",(sql(now)?,&device),|r|Ok((unsigned(r,0)?,unsigned(r,1)?)))?;
+                // A call only closes when its owner says so, so any call lost to a crash or a
+                // restart holds a slot until it expires. Leave room for several of those.
                 if live >= u64::from(settings.max_calls)
                     || total >= 4096
-                    || own_live >= 2
+                    || own_live >= 8
                     || own_total >= 256
                 {
                     return Err(StoreError::Busy);
