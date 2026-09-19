@@ -110,7 +110,7 @@ async fn media(
                         .write_rtp(rtc::rtp::packet::Packet {
                             header: rtc::rtp::header::Header {
                                 version: 2,
-                                payload_type: if kind == MediaKind::Audio { 111 } else { 96 },
+                                payload_type: if kind == MediaKind::Audio { 111 } else { 98 },
                                 sequence_number: *seq,
                                 timestamp: frame as u32
                                     * if kind == MediaKind::Audio { 960 } else { 3000 },
@@ -141,7 +141,7 @@ async fn media(
                     if route.kind == MediaKind::Audio {
                         111
                     } else {
-                        96
+                        98
                     }
                 );
                 if let Some(frame) = stores[i]

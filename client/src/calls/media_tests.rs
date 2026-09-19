@@ -289,3 +289,38 @@ fn direct_call_secures_within_three_harness_trips_of_answering() {
     // owner on the callee's first refresh; the harness only refreshes between trips, hence three.
     assert_eq!(trips, 3, "round trips from answering to secured");
 }
+
+#[test]
+fn a_track_change_keeps_both_sides_secured_throughout() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    crate::calls::tests::configure(dir.path());
+    let (_alice_peer, peer) = trust(&mut alice, &mut bob);
+    let id = [84; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    let tracks = Tracks { audio: true, camera: false, screen: false };
+    let mut a = alice.start_call_media(id, tracks, now).unwrap();
+    let mut b = None;
+    for _ in 0..6 {
+        if b.is_none() {
+            b = bob.start_call_media(id, tracks, now).ok();
+        }
+        let _ = alice.refresh_call_media(&mut a, now);
+        if let Some(b) = b.as_mut() {
+            let _ = bob.refresh_call_media(b, now);
+        }
+        crate::calls::tests::round_trip(&mut alice, &mut bob, now);
+    }
+    let mut b = b.unwrap();
+    assert_eq!(alice.refresh_call_media(&mut a, now).unwrap(), 1);
+    assert_eq!(bob.refresh_call_media(&mut b, now).unwrap(), 1);
+    // Bob mutes: readiness changes, the roster does not, and nobody loses a receiver while it propagates.
+    bob.set_call_tracks(&mut b, Tracks { audio: false, camera: false, screen: false }, now).unwrap();
+    assert_eq!(bob.refresh_call_media(&mut b, now).map_err(|e| format!("{e:?}")), Ok(1));
+    for _ in 0..4 {
+        crate::calls::tests::round_trip(&mut alice, &mut bob, now);
+        assert_eq!(alice.refresh_call_media(&mut a, now).map_err(|e| format!("{e:?}")), Ok(1));
+        assert_eq!(bob.refresh_call_media(&mut b, now).map_err(|e| format!("{e:?}")), Ok(1));
+    }
+}
