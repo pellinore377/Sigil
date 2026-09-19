@@ -248,8 +248,10 @@ impl ClientStore {
             Some((super::recovery::Operation::Upload, head)) => head,
             _ => return Err(Error::Unprepared),
         };
-        for object in self.pending_recovery_objects()? {
-            network.upload_recovery_object(&object)?;
+        // The pending objects go up together; each success is acknowledged in order, so a failure leaves the prefix durable.
+        let objects = self.pending_recovery_objects()?;
+        for (object, outcome) in objects.iter().zip(network.upload_recovery_objects(&objects)) {
+            outcome?;
             self.acknowledge_recovery_object(head, object.id())?;
         }
         if !self.pending_recovery_objects()?.is_empty() {
