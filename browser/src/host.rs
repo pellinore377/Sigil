@@ -43,6 +43,10 @@ fn shutdown() {
         }
     });
 }
+/// The worker that holds the call keys; encoded transforms run inside it.
+pub(crate) fn worker() -> Option<Worker> {
+    HOST.with(|slot| slot.borrow().as_ref().map(|host| host.worker.clone()))
+}
 #[wasm_bindgen]
 pub async fn start_browser() -> Result<(), JsValue> {
     if HOST.with(|slot| slot.borrow().is_some()) {

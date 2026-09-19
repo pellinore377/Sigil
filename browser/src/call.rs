@@ -233,6 +233,45 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
         }
     })
 }
+/// Seal one encoded audio frame and return the single RTP payload that carries it. Audio frames
+/// are well under a fragment, so the packetizer always yields exactly one.
+pub(crate) fn seal_audio(bytes: &[u8], timestamp: u64) -> Result<Vec<u8>, JsValue> {
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    STORE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
+        ACTIVE.with(|active| -> Result<Vec<u8>, JsValue> {
+            let mut active = active.borrow_mut();
+            let active = active.as_mut().ok_or_else(|| fail("No call is active"))?;
+            let sealed = store
+                .seal_call_frame(&mut active.media, MediaKind::Audio, timestamp, false, bytes, now)
+                .map_err(|_| fail("Call state is unavailable or changed"))?;
+            let mut packets = sigil_calls::packetize(MediaKind::Audio, &sealed)
+                .map_err(|_| fail("Invalid audio frame"))?;
+            if packets.len() != 1 {
+                return Err(fail("Audio frame does not fit one packet"));
+            }
+            Ok(packets.remove(0))
+        })
+    })
+}
+/// Open one received audio payload; None means the frame is not yet complete or was rejected.
+pub(crate) fn open_audio(sender: &str, bytes: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, JsValue> {
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let sender = id(sender)?;
+    STORE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
+        ACTIVE.with(|active| -> Result<Option<Zeroizing<Vec<u8>>>, JsValue> {
+            let mut active = active.borrow_mut();
+            let active = active.as_mut().ok_or_else(|| fail("No call is active"))?;
+            Ok(store
+                .open_call_packet(&mut active.media, sender, MediaKind::Audio, bytes, now)
+                .map_err(|_| fail("Call state is unavailable or changed"))?
+                .map(|frame| frame.data))
+        })
+    })
+}
 pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
     let data = event.data();
     if get(&data, "binary").ok().and_then(|v| v.as_bool()) != Some(true) {

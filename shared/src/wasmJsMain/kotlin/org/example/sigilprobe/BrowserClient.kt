@@ -47,6 +47,10 @@ import kotlin.js.*
 @JsName("browser_call_control") external fun browserCallControl(request:String):Promise<JsString>
 @JsName("browser_call_send") external fun browserCallSend(kind:Int,timestamp:Double,keyframe:Boolean,bytes:JsAny):Promise<JsBoolean>
 @JsName("browser_call_close") external fun browserCallClose()
+@JsName("browser_call_microphone") external fun browserCallMicrophone():Promise<JsAny?>
+@JsName("browser_call_mute") external fun browserCallMute(muted:Boolean)
+@JsName("browser_call_release") external fun browserCallRelease()
+@JsName("browser_call_supported") external fun browserCallSupported():Boolean
 @JsName("browser_call_transport_state") external fun browserCallTransportState():String
 
 @JsName("LocationWatch") external class BrowserLocationWatch(changed:(String)->Unit,failed:(String)->Unit):JsAny {

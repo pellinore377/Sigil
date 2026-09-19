@@ -16,6 +16,7 @@ mod files;
 mod media_cache;
 mod host;
 mod recording;
+mod transform;
 mod transport;
 mod vault;
 fn fail(message: &str) -> JsValue {
@@ -78,6 +79,7 @@ pub async fn worker_start() -> Result<(), JsValue> {
     .map_err(|_| fail("Cannot initialize encryption"))?;
     let store = ClientStore::open(std::path::Path::new("/sigil/messages.db"), key)
         .map_err(|_| fail("Cannot open encrypted browser storage"))?;
+    transform::install()?;
     sigil_client::browser_transport::install(transport::send);
     sigil_client::browser_transport::install_many(transport::send_many);
     STORE.with(|slot| *slot.borrow_mut() = Some(store));
