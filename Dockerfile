@@ -1,3 +1,5 @@
+# Which stage supplies the web bundle: web-build compiles it here, web-prebuilt takes a local build.
+ARG WEB_SOURCE=web-build
 FROM rust:1.98-slim-bookworm@sha256:af0579d28b9a7ec5251aaafcb0c0a23dcde5c97065112aae0cc3abeda42d5394 AS toolchain
 FROM toolchain AS source
 WORKDIR /src
@@ -46,7 +48,6 @@ RUN --mount=type=cache,target=/root/.gradle --mount=type=cache,target=/src/build
 # A bundle built on the developer's machine, selected with --build-arg WEB_SOURCE=web-prebuilt.
 FROM scratch AS web-prebuilt
 COPY prebuilt-web /web
-ARG WEB_SOURCE=web-build
 FROM ${WEB_SOURCE} AS web-final
 
 FROM debian:bookworm-slim@sha256:5ae3c39ebd15e229dcedd5cee596b2497182493d41ff162e824ba13fc1b2b867
