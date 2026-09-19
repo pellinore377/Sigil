@@ -253,6 +253,11 @@ pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
     let _ = set(&reply, "binary", &true.into());
     let _ = set(&reply, "id", &reply_id);
     let _ = set(&reply, "ok", &result.is_ok().into());
+    if let Err(error) = &result {
+        // The message names the failed step; it carries no call content.
+        let text = error.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(|| error.as_string()).unwrap_or_default();
+        let _ = set(&reply, "error", &text.into());
+    }
     let output = result
         .map(|bytes| Uint8Array::from(bytes.as_slice()))
         .unwrap_or_else(|_| Uint8Array::new_with_length(0));

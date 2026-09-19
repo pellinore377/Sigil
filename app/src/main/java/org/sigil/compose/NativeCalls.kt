@@ -117,6 +117,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     private fun emit() { update(history, visible) }
     fun command(action: String, fields: Map<String, Any?>) {
         if (NativeSignOut.pending(app)) return
+        // A call action is the person's activity too: upkeep waits while a call is being set up.
+        NativeSync.lastInteraction = SystemClock.elapsedRealtime()
         when (action) {
             "call_start", "call_redial", "call_answer", "call_resume" -> {
                 val needsCamera = fields["video"] == true
@@ -179,9 +181,9 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 if (call == null || call.phase in listOf("ended", "left", "declined")) { end(); return }
                 NativeSync.presence(app, true)
                 if (call.phase == "active" && media == null) media = scope.launch { mediaLoop(id, current) }
-                // Setting up costs a handful of round trips, and each poll is one of them.
+                // Setting up costs a handful of round trips, and each poll is one of them; a pass that found the schedule reserved by the message loop must not wait out that reservation.
                 val until = (result.getLong("next_at") * 1000 - System.currentTimeMillis()).coerceIn(if (setup) 100 else 1000, 300000)
-                delay(until)
+                delay(if (setup) minOf(until, 150) else until)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { visible = visible?.copy(connection = "reconnecting"); emit(); delay(5000) }
         }

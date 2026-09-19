@@ -201,7 +201,7 @@ pub(crate) fn install(
             if creator.fingerprint().map_err(failure)? != known.fingerprint
                 || state.roster.roster.call != wire.call
                 || state.roster.roster.expires < wire.expires
-                || wire.expires > now.saturating_add(60)
+                || wire.expires > now.saturating_add(60 + sigil_calls::CLOCK_SKEW)
                 || state
                     .participants
                     .iter()

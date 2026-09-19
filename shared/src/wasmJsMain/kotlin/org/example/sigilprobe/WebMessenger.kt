@@ -61,7 +61,7 @@ private fun json(value:Any?):JsonElement=when(value) {
 }
 private val stamped=setOf("post","place","group_create","react","pin","read","mark_read","snooze","forward","organize","edit","delete","clear_conversation","note","typing","draft")
 
-@JsFun("(m) => console.log(m)") private external fun browserTimingLog(message:String)
+@JsFun("(m) => console.log(m)") internal external fun browserTimingLog(message:String)
 
 @Composable internal fun WebMessenger() {
     var state by remember {mutableStateOf(MessengerState(loginAddress=window.location.hostname))}

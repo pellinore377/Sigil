@@ -114,7 +114,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
     call::id(&id)?;
     browser_call_close();
     let generation = GENERATION.with(Cell::get);
-    control(serde_json::json!({"operation":"call_stop"})).await?;
+    // The page has already started this call's media so readiness overlaps gathering; stopping here would discard it.
     let info = control(serde_json::json!({"operation":"call_info","call":id})).await?;
     if !current(generation) {
         return Err(fail("Call interrupted"));

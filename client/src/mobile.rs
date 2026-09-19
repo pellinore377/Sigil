@@ -1718,9 +1718,11 @@ impl ClientStore {
                         "sends": count(step.sends.len(), step.sends.iter().filter(|i| i.result.is_err()).count()),
                         "outbound": count(step.outbound.len(), step.outbound.iter().filter(|i| i.result.is_err()).count()),
                         "calls": count(step.calls.len(), step.calls.iter().filter(|i| i.result.is_err()).count()),
+                        "call_errors": step.calls.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {}", &transport::hex(&i.id)[..8], error_message(e)))).collect::<Vec<_>>(),
                         "receipts": step.delivery_receipts,
                         "copies": step.conversation_copies,
                         "outbound_errors": step.outbound.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {}", &transport::hex(&i.session)[..8], error_message(e)))).collect::<Vec<_>>(),
+                        "outbound_sessions": step.outbound.iter().map(|i| format!("{}: {}", &transport::hex(&i.session)[..8], match &i.result { Ok(p) => format!("accepted {}", p.accepted), Err(e) => error_message(e) })).collect::<Vec<_>>(),
                         "send_errors": step.sends.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {}", &transport::hex(&i.id)[..8], error_message(e)))).collect::<Vec<_>>(),
                         "retry_errors": step.retries.iter().filter_map(|i| i.result.as_ref().err().map(|e| format!("{}: {e:?}", &transport::hex(&i.id)[..8]))).collect::<Vec<_>>(),
                     })

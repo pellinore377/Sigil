@@ -72,7 +72,8 @@ pub async fn start_browser() -> Result<(), JsValue> {
                             if get(&data, "ok").ok().and_then(|v| v.as_bool()) == Some(true) {
                                 get(&data, "data")
                             } else {
-                                Err(fail("Media operation could not complete"))
+                                let detail = get(&data, "error").ok().and_then(|v| v.as_string()).filter(|v| !v.is_empty());
+                                Err(fail(&detail.map_or_else(|| "Media operation could not complete".to_owned(), |v| format!("Media operation could not complete: {v}"))))
                             };
                         let _ = reply.send(result);
                     }
