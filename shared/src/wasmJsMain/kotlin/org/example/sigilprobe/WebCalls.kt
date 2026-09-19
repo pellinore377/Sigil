@@ -135,7 +135,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                         if(current!=generation){command("call_leave",mapOf("call" to id));return@launch}
                         desired=id;wake()
                     }catch(cancelled:CancellationException){throw cancelled}
-                    catch(_:Exception){if(current==generation){close();issue("Could not start the call. Check microphone permission and try again.")}}
+                    catch(e:Exception){browserTimingLog("SigilTiming call start_error=${e.message?.take(120)}");if(current==generation){close();issue(if(e.message?.contains("Microphone")==true)"Could not start the call. Check microphone permission and try again." else "Could not start the call: ${e.message?.take(80)?:"unknown error"}. Reload and try again.")}}
                     finally{if(current==generation)starting=false}
                 }
             }

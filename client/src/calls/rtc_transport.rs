@@ -154,11 +154,28 @@ where
     }
     Ok(())
 }
+impl RtcCall {
+    /// The media handle outlives the transport: a rebuild reuses it through `connect_rtc_call_with`.
+    pub fn into_media(self) -> Media {
+        self.media
+    }
+}
 impl ClientStore {
     pub async fn connect_rtc_call(
         &mut self,
         id: Id,
         tracks: Tracks,
+        now: u64,
+    ) -> Result<RtcCall, Error> {
+        self.connect_rtc_call_with(id, tracks, None, now).await
+    }
+    /// A transport rebuilt after a roster change keeps its media handle: same lease, same keys,
+    /// no fresh declaration for the others to wait on. A handle whose lease lapsed starts over.
+    pub async fn connect_rtc_call_with(
+        &mut self,
+        id: Id,
+        tracks: Tracks,
+        reuse: Option<Media>,
         now: u64,
     ) -> Result<RtcCall, Error> {
         let record = load(&self.db, &self.key, &id)?;
@@ -167,7 +184,13 @@ impl ClientStore {
         let own = record.own.as_ref().ok_or(Error::Unprepared)?.member.id;
         // The readiness and key exchange runs over the mailbox and costs a round trip each
         // way, so it starts here and overlaps candidate gathering instead of following it.
-        let media = self.start_call_media(id, tracks, crate::conversations::now())?;
+        let media = match reuse {
+            Some(mut media) if media.call() == id => match self.refresh_call_media(&mut media, now) {
+                Ok(_) | Err(Error::Unprepared) => media,
+                Err(_) => self.start_call_media(id, tracks, crate::conversations::now())?,
+            },
+            _ => self.start_call_media(id, tracks, crate::conversations::now())?,
+        };
         let relay = self.call_relay_online(id, now)?;
         let mut config = RTCConfigurationBuilder::new();
         let mut runtime: Arc<dyn webrtc::runtime::Runtime> =
@@ -302,10 +325,12 @@ impl ClientStore {
             .set_local_description(offer)
             .await
             .map_err(|_| Error::Unprepared)?;
+        let gathering_from = crate::clock::Instant::now();
         tokio::time::timeout(Duration::from_secs(15), transport.gathered.recv())
             .await
             .map_err(|_| Error::Unprepared)?
             .ok_or(Error::Unprepared)?;
+        crate::perf::mark("rtc gather", gathering_from);
         let sdp = transport
             .pc
             .local_description()
@@ -335,7 +360,9 @@ impl ClientStore {
             layout.downloads.push(track);
         }
         let proof = self.prepare_call_connection(id, sdp, layout, crate::conversations::now())?;
+        let connecting_from = crate::clock::Instant::now();
         let answer = self.connect_call_online(&proof, crate::conversations::now())?;
+        crate::perf::mark("rtc connect", connecting_from);
         transport
             .pc
             .set_remote_description(

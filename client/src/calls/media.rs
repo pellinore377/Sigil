@@ -22,6 +22,9 @@ pub struct Media {
     assembly: sigil_calls::Assembly,
 }
 impl Media {
+    pub fn call(&self) -> Id {
+        self.call
+    }
     pub(super) fn assemble(
         &mut self,
         sender: Id,

@@ -12,6 +12,8 @@ struct NativeCall {
 }
 type Handle = Arc<Mutex<NativeCall>>;
 static ACTIVE: Mutex<Option<(i64, Option<Handle>)>> = Mutex::new(None);
+/// The media handle of the last closed transport, kept for the rebuild that follows a roster change.
+static PARKED: Mutex<Option<sigil_client::calls::Media>> = Mutex::new(None);
 static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
 fn runtime() -> Option<&'static tokio::runtime::Runtime> {
     RUNTIME
@@ -34,9 +36,17 @@ fn handle(id: i64) -> Option<Handle> {
         .clone()
 }
 fn remove(id: i64) {
-    if let Ok(mut active) = ACTIVE.lock() {
-        if active.as_ref().is_some_and(|(token, _)| *token == id) {
-            *active = None;
+    let taken = match ACTIVE.lock() {
+        Ok(mut active) if active.as_ref().is_some_and(|(token, _)| *token == id) => active.take(),
+        _ => None,
+    };
+    if let Some((_, Some(handle))) = taken {
+        if let Ok(mutex) = Arc::try_unwrap(handle) {
+            if let Ok(native) = mutex.into_inner() {
+                if let Ok(mut parked) = PARKED.lock() {
+                    *parked = Some(native.call.into_media());
+                }
+            }
         }
     }
 }
@@ -100,7 +110,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_openCall(
         }
         let reservation = Reservation(token);
         let mut store = open(&mut env, &directory, &key)?;
-        let value = match runtime()?.block_on(store.connect_rtc_call(id, enabled, now())) {
+        let reuse = PARKED.lock().ok().and_then(|mut parked| parked.take()).filter(|media| media.call() == id);
+        let value = match runtime()?.block_on(store.connect_rtc_call_with(id, enabled, reuse, now())) {
             Ok(value) => value,
             Err(sigil_client::Error::Network(sigil_client::network::Error::Status {
                 retry_after_seconds: Some(delay),

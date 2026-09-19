@@ -121,6 +121,23 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
                     .roster
                     .digest()
                     .map_err(|_| fail("Invalid call roster"))?;
+                // A rebuild for the same call keeps its media: same lease, same keys, nothing to re-declare.
+                let kept = ACTIVE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    match slot.as_mut() {
+                        Some(active) if active.id == call => match store.refresh_call_media(&mut active.media, now) {
+                            Ok(_) | Err(sigil_client::Error::Unprepared) => {
+                                active.roster = digest;
+                                true
+                            }
+                            Err(_) => false,
+                        },
+                        _ => false,
+                    }
+                });
+                if kept {
+                    return Ok(json(serde_json::json!({"started":true,"kept":true})));
+                }
                 let media = store.start_call_media(call, tracks, now).map_err(error)?;
                 ACTIVE.with(|slot| {
                     *slot.borrow_mut() = Some(Active {
