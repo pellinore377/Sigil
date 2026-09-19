@@ -22,6 +22,8 @@ import androidx.compose.ui.focus.*
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.platform.*
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.input.ImeAction
@@ -84,14 +86,14 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val footerHost=LocalFooterHost.current
     val roughAvailable=(screenHeight-measured-navigation.toFloat().let {with(density){it.toDp()}}-180.dp).coerceAtLeast(120.dp)
     // The true ceiling: the window less the header, the composer with its insets, and a gap on either side of the panel.
-    var panelHeightNow by remember {mutableStateOf(0.dp)}
-    var gapNow by remember {mutableStateOf(0.dp)}
-    val available=if(footerHost!=null && footerHost.headerBottom>0f) minOf(roughAvailable,(screenHeight-with(density){footerHost.headerBottom.toDp()}-(footerHost.height-panelHeightNow-gapNow).coerceAtLeast(56.dp)-24.dp).coerceAtLeast(120.dp)) else roughAvailable
+    // Live geometry: the window less the keyboard or bar, the composer itself, the header, and a gap on either side of the panel.
+    val navDp=with(density){navigation.toDp()}
+    val available=if(footerHost!=null && footerHost.headerBottom>0f && footerHost.composerHeight>0.dp) minOf(roughAvailable,(screenHeight-measured-navDp-8.dp-footerHost.composerHeight-12.dp-with(density){footerHost.headerBottom.toDp()}-12.dp).coerceAtLeast(120.dp)) else roughAvailable
     val preferredHeights=remember {mutableStateMapOf<String,Dp>()}
     // The emoji sheet has two heights, peek and full; a drag rides between them and settles on the nearer when let go.
     var emojiGrow by remember {mutableStateOf(0f)}
     LaunchedEffect(panel) {if(panel!="Emoji")emojiGrow=0f}
-    val compactHeight=preferredHeights[panel] ?: when(panel){"Attachments"->ToolPanelHeight;"Emoji"->320.dp+with(density){emojiGrow.toDp()};"Create"->380.dp;"Format"->104.dp;"Voice"->ToolPanelHeight;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
+    val compactHeight=if(panel=="Attachments" || panel=="Voice")ToolPanelHeight else preferredHeights[panel] ?: when(panel){"Attachments"->ToolPanelHeight;"Emoji"->320.dp+with(density){emojiGrow.toDp()};"Create"->380.dp;"Format"->104.dp;"Voice"->ToolPanelHeight;"Camera"->maxOf(420.dp,available-12.dp);else->maxOf(keyboardHeight,420.dp)}
     val contextual=panel in createItems.map {it.first}.filter {it!="Help"} || panel in listOf("Code block","Camera","One-time location","Real-time location","Drop a pin") || panel=="Help" && confirmation.action!=null
     // A panel never rises past the header: the camera and the emoji sheet stop one gap beneath it.
     val cameraLimit=if(panel in listOf("Camera","Emoji") && panelBottom>0f && headerBottom>0f)
@@ -99,7 +101,6 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     val expandedHeight = if (panel.isNotEmpty()) minOf(compactHeight,available,cameraLimit) else 0.dp
     val panelHeight by animateDpAsState(expandedHeight, if (measured > 0.dp || keyboardPending || emojiGrow > 0f) snap() else motionPolicy.tween(MotionMillis), label = "Composer height")
     val panelGap by animateDpAsState(if (expandedHeight > 0.dp) 12.dp else 0.dp, if (measured > 0.dp || keyboardPending) snap() else motionPolicy.tween(MotionMillis), label = "Composer panel gap")
-    SideEffect {panelHeightNow=panelHeight;gapNow=panelGap}
     val scope=rememberCoroutineScope()
     fun emojiReach()=with(density){(minOf(available,cameraLimit)-320.dp).coerceAtLeast(0.dp).toPx()}
     LaunchedEffect(keyboardPending) { if (keyboardPending) { kotlinx.coroutines.delay(1500); keyboardPending = false } }
@@ -135,9 +136,11 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
     }
     DisposableEffect(peer) { onDispose { if (canType) command("typing", mapOf("peer" to peer, "active" to false)) } }
     val voiceReady = voice.peer == peer && voice.phase in listOf("Ready", "Sending")
+    // A stopped recording counts as attached only once the panel has handed it over.
+    val voiceAttached = voiceReady && panel != "Voice"
     val attachmentDrafts = attachments.filter { it.draft }
     LaunchedEffect(attachmentDrafts.map {it.request to it.phase}) {if(attachmentDrafts.isNotEmpty() && (panel=="Attachments" || panel=="Voice" && attachmentDrafts.any {it.phase!="Staging"}))change("")}
-    val hasAttachment = voiceReady || attachmentDrafts.isNotEmpty()
+    val hasAttachment = voiceAttached || attachmentDrafts.isNotEmpty()
     val hasStructured=stagedSource.isNotEmpty() || stagedQuery!=null || stagedContact!=null
     val previewer=LocalStructuredPreview.current
     LaunchedEffect(stagedSource,previewer) {stagedPreviewSource="";if(stagedSource.isNotEmpty()){stagedPreview=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){previewer?.invoke(stagedSource)};stagedPreviewSource=stagedSource}}
@@ -212,7 +215,17 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
             }
     }
     if (detached) FooterPanel { backdrop ->
-        if (panelHeight > 0.dp) FloatingChrome(backdrop, Modifier.fillMaxWidth().padding(bottom = panelGap), RoundedCornerShape(24.dp)) { panelContent() }
+        // The panel fades through its last stretch, so it never collapses into a thin ruled line above the composer.
+        // Clamped in layout against the live keyboard inset, so the panel never rises past the header while the keyboard is still moving.
+        val imeInsets = WindowInsets.ime; val barInsets = WindowInsets.navigationBars
+        val windowHeight = LocalWindowInfo.current.containerSize.height
+        if (panelHeight > 0.dp) FloatingChrome(backdrop, Modifier.fillMaxWidth().padding(bottom = panelGap).alpha((panelHeight / 96.dp).coerceIn(0f, 1f)).layout { measurable, constraints ->
+            val host = footerHost
+            val ceiling = if (host == null || host.headerBottom <= 0f) constraints.maxHeight else
+                (windowHeight - maxOf(imeInsets.getBottom(this), barInsets.getBottom(this)) - 8.dp.roundToPx() - host.composerHeight.roundToPx() - 12.dp.roundToPx() - host.headerBottom.toInt() - 12.dp.roundToPx()).coerceAtLeast(0)
+            val placeable = measurable.measure(constraints.copy(maxHeight = minOf(constraints.maxHeight, ceiling)))
+            layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+        }, RoundedCornerShape(24.dp)) { panelContent() }
     }
     Surface(shape = RoundedCornerShape(24.dp), color = if (!detached) MaterialTheme.colorScheme.surface else androidx.compose.ui.graphics.Color.Transparent) {
         Column {
@@ -247,7 +260,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                             Symbol("delete","Discard audio attachment") {command("file_cancel",mapOf("request" to file.request))}
                         }
                     }
-                    if (voiceReady) VoiceDraft(voice, Modifier.fillMaxWidth(), { command("record_preview", emptyMap()) }, { command("record_cancel", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
+                    if (voiceAttached) VoiceDraft(voice, Modifier.fillMaxWidth(), { command("record_preview", emptyMap()) }, { command("record_cancel", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
             }
             val barTop by animateDpAsState(if (previewShown) 0.dp else 8.dp, motionPolicy.tween(MotionMillis), label = "Composer bar inset")
             ComposerBar(top = barTop) {
