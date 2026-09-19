@@ -232,7 +232,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                             // One layer that stays put: only its blur changes, so nothing beneath is re-rasterised when the menu closes.
                             val menuBlur = with(LocalDensity.current) { (18.dp * footer.menu).toPx() }
                             Box(Modifier.matchParentSize().graphicsLayer { renderEffect = if (menuBlur > 0f) BlurEffect(menuBlur, menuBlur, TileMode.Clamp) else null; clip = true }) {
-                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize().captureBackdrop(backdrop), contentKey = { it.destination }, transitionSpec = {
+                        // The page and the objects in flight above it are one captured layer, so the glass shows both.
+                        Box(Modifier.fillMaxSize().captureBackdrop(backdrop)) {
+                        AnimatedContent(Screen(destination, page, chat, conversationPage, state, newTitle, thread?.id), Modifier.fillMaxSize(), contentKey = { it.destination }, transitionSpec = {
                             val enter = if (targetState.destination == "conversation") EnterTransition.None
                                 else if (goingBack) fadeIn(motionPolicy.enter(MotionMillis)) else slideInVertically(motionPolicy.enter(MotionMillis)) { it } + fadeIn(motionPolicy.enter(MotionMillis))
                             val exit = if (initialState.destination == "conversation") ExitTransition.None
@@ -286,6 +288,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                     }
                                 }
                             }
+                        }
+                        MaterialOverlayViewport(materialOverlayHost, Modifier.matchParentSize())
                         }
                             }
                             }
@@ -350,7 +354,6 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         }
                         }
                             }
-                        MaterialOverlayViewport(materialOverlayHost, Modifier.matchParentSize().zIndex(3.5f))
                         PresentationViewport(presentationHost, Modifier.matchParentSize().zIndex(5f))
                         var lastIssue by remember { mutableStateOf("") }
                         SideEffect { state.issue?.let { lastIssue = it } }

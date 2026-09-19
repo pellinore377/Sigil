@@ -72,7 +72,8 @@ internal val LocalMaterialLaunchWindow = staticCompositionLocalOf<Rect?> { null 
             path.moveTo(a.x, a.y); path.lineTo(b.x, b.y); path.lineTo(c.x, c.y); path.lineTo(d.x, d.y)
             path.close()
         }
-        materialClipRegions(timeline.viewport, occlusion?.launch(timeline.viewport, source), occlusion?.covered(timeline.viewport).orEmpty()).forEach(::add)
+        // The chrome is glass over the page, so objects pass beneath it and show through; only the viewport and launch corridor bound them.
+        materialClipRegions(timeline.viewport, occlusion?.launch(timeline.viewport, source), emptyList()).forEach(::add)
         clipPath(path) { this@drawWithContent.drawContent() }
     }
 }
