@@ -77,11 +77,12 @@ impl AudioEngine {
         let device = host
             .default_input_device()
             .ok_or(JsValue::from_str("No audio input"))?;
-        let input = Arc::new(Mutex::new(Ring::new(3840)));
+        // A second of capture: the page's single thread can stall for hundreds of milliseconds in a sync pass.
+        let input = Arc::new(Mutex::new(Ring::new(48000)));
         let output = Arc::new(Mutex::new(
             (0..7)
                 .map(|_| Playback {
-                    samples: Ring::new(9600),
+                    samples: Ring::new(48000),
                     decoded: 0,
                     ready: false,
                 })
@@ -120,7 +121,8 @@ impl AudioEngine {
                     render.fill(0.0);
                     if let Ok(mut voices) = playback.try_lock() {
                         for voice in voices.iter_mut() {
-                            if !voice.ready && voice.samples.len >= 1920 {
+                            // Sixty milliseconds of margin before a voice starts; after an underrun it resumes at twenty.
+                            if !voice.ready && voice.samples.len >= if voice.decoded == 0 { 2880 } else { 960 } {
                                 voice.ready = true;
                             }
                             if voice.ready {
