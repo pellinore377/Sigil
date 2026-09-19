@@ -272,7 +272,10 @@ impl HttpsClient {
             .timeout_global(extended)
             .timeout_recv_response(extended)
             .build();
-        let mut response = self.agent.run(request).map_err(|_| Error::Transport)?;
+        let started = std::time::Instant::now();
+        let outcome = self.agent.run(request).map_err(|_| Error::Transport);
+        crate::perf::mark("http GET mailbox/wait", started);
+        let mut response = outcome?;
         if !response.status().is_success() {
             let error = Error::Status {
                 code: response.status().as_u16(),
@@ -505,7 +508,12 @@ impl HttpsClient {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send(&self, request: Request<&[u8]>) -> Result<Response<Body>, Error> {
-        let mut response = self.agent.run(request).map_err(|_| Error::Transport)?;
+        // Method and path only: the timing log never carries a query or a body.
+        let label = format!("http {} {}", request.method(), request.uri().path());
+        let started = std::time::Instant::now();
+        let outcome = self.agent.run(request).map_err(|_| Error::Transport);
+        crate::perf::mark(&label, started);
+        let mut response = outcome?;
         if !response.status().is_success() {
             let error = Error::Status {
                 code: response.status().as_u16(),
@@ -1042,6 +1050,30 @@ impl HttpsClient {
                 ciphertext: super::transport::hex(object.bytes()),
             }),
         )?)
+    }
+    /// Uploads several objects at once over the pooled connections; results keep object order.
+    pub fn upload_recovery_objects(&self, objects: &[Object]) -> Vec<Result<(), Error>> {
+        let bodies: Vec<Result<Vec<u8>, Error>> = objects
+            .iter()
+            .map(|object| serde_json::to_vec(&recovery::PutObject { ciphertext: super::transport::hex(object.bytes()) }).map_err(|_| Error::Configuration))
+            .collect();
+        let built: Vec<Result<Request<&[u8]>, Error>> = bodies
+            .iter()
+            .zip(objects)
+            .map(|(body, object)| match body {
+                Ok(bytes) if bytes.len() <= recovery::MAX_BODY => self.build_request(Method::PUT, &format!("/client/v0/recovery/objects/{}", super::transport::hex(&object.id())), bytes, Some("application/json"), None),
+                Ok(_) => Err(Error::Limit),
+                Err(_) => Err(Error::Configuration),
+            })
+            .collect();
+        let mut responses = self.send_many(built.iter().filter_map(|r| r.as_ref().ok().cloned()).collect()).into_iter();
+        built
+            .into_iter()
+            .map(|request| match request {
+                Ok(_) => responses.next().unwrap_or(Err(Error::Transport)).and_then(|response| self.empty(response)),
+                Err(error) => Err(error),
+            })
+            .collect()
     }
     pub fn download_recovery_object(&self, id: super::Id) -> Result<Object, Error> {
         let encoded = super::transport::hex(&id);
