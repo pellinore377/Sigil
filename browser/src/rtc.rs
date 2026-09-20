@@ -577,6 +577,15 @@ pub async fn browser_call_send(
     }
     receive.await.map_err(|_| fail("Call changed"))?
 }
+thread_local! {
+    /// Frames and fragments actually written to the channel, so the rate that leaves here can be
+    /// compared with the rate that arrives rather than with the rate the encoder produced.
+    static WRITTEN: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+}
+/// Frames and fragments written since the last call.
+pub(crate) fn written() -> (u32, u32) {
+    WRITTEN.with(|v| v.replace((0, 0)))
+}
 /// True only when a newer frame is already waiting, so the pipeline always makes progress.
 fn stale(generation: u64, media: usize) -> bool {
     SESSION.with(|slot| {
@@ -619,6 +628,7 @@ async fn send_queued(generation: u64, kind: MediaKind) {
     if get(&session.channel,"bufferedAmount")?.as_f64().unwrap_or(f64::INFINITY)+total as f64>BACKLOG*4.0/3.0{note("send: channel backed up");return Ok(false);}
     note(&format!("send: writing kind={media} fragments={} bytes={total}",fragments.len()));
     let count=fragments.len();
+    if media==1{WRITTEN.with(|v|{let(f,p)=v.get();v.set((f+1,p+count as u32));});}
     for(index,payload)in fragments.into_iter().enumerate(){
      session.sequence[media]=session.sequence[media].checked_add(1).ok_or_else(||fail("Call sequence exhausted"))?;
      let packet=Packet{sender:session.own,kind,sequence:session.sequence[media],timestamp:(frame.timestamp*(if media==0{48000.0}else{90000.0})/1_000_000.0) as u64 as u32,marker:index+1==count,payload:payload.into()}.encode().map_err(|_|fail("Invalid encrypted packet"))?;
