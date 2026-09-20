@@ -5,6 +5,11 @@ services:
     platform: linux/amd64
     environment:
       SIGIL_LOG_CIPHERTEXT: "false"
+    labels:
+      # This image is built on the host and never pushed, so the registry copy is always older.
+      # An updater that pulls it replaces a working build with one whose schema cannot open the
+      # database, and the server then refuses to start at all.
+      com.centurylinklabs.watchtower.enable: "false"
     logging:
       driver: json-file
       options:
