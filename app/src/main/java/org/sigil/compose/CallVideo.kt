@@ -188,7 +188,7 @@ internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidt
         postScale(if (aspect < display) aspect / display else 1f, if (aspect > display) display / aspect else 1f, viewWidth / 2f, viewHeight / 2f)
     }
 }
-internal class CallVideoDecoder(private val surface: Surface, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
+internal class CallVideoDecoder(private val surface: Surface, private val paced: Boolean, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val queue = ArrayBlockingQueue<VideoPacket>(4)
     private val lostFrame = AtomicBoolean(false)
@@ -213,6 +213,12 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                 if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
                 if (output < 0) break
                 if (!running.get()) { active.releaseOutputBuffer(output, false); continue }
+                // Our own camera took no journey, so there is no jitter to smooth and a schedule
+                // would only hold the picture back.
+                if (!paced) { active.releaseOutputBuffer(output, true); shown++
+                    val at = android.os.SystemClock.elapsedRealtime()
+                    if (at - shownSince >= 5000) { android.util.Log.i("SigilTiming", "video in ${dimensions?.width}x${dimensions?.height} fps=${shown * 1000 / (at - shownSince)} paced=false"); shown = 0; shownSince = at }
+                    continue }
                 // Paint on the sender's cadence, not on arrival. A frame reaches here whenever the
                 // network let it, so releasing the moment it decodes turns the jitter of its
                 // journey into judder however steady the frame rate itself is. The lead is the
@@ -330,7 +336,7 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
                 val measured = { w: Int, h: Int, rotation: Int -> target.post {
                     if (target.surfaceTexture === texture) { geometry = Triple(w, h, rotation); resize() }
                 }; Unit }
-                decoder = CallVideoDecoder(Surface(texture), measured)
+                decoder = CallVideoDecoder(Surface(texture), member != "self", measured)
                 calls.videoOutput(member, screen, decoder)
             }
             override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, width: Int, height: Int) { resize() }
