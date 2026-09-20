@@ -50,7 +50,7 @@ impl Settings {
             || self.advertised.ip().is_unspecified()
             || self.advertised.ip().is_multicast()
             || self.advertised.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::BROADCAST)
-            || !(1..=8).contains(&self.max_calls)
+            || !(1..=64).contains(&self.max_calls)
             || self.turn_urls.len() > 4
         {
             return Err(StoreError::Invalid("invalid calling address or capacity"));

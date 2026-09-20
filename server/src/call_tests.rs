@@ -42,6 +42,14 @@ fn setup(path: &std::path::Path) -> (Store, String, String) {
     store.configure_calls(config(0)).unwrap();
     (store, credentials.remove(0), credentials.remove(0))
 }
+/// Room for more calls than one account may hold, so the per-account cap is what is measured.
+fn spacious(revision: u64) -> Configure {
+    let mut value = config(revision);
+    if let Some(settings) = value.settings.as_mut() {
+        settings.max_calls = 32;
+    }
+    value
+}
 fn config(revision: u64) -> Configure {
     Configure {
         expected_revision: revision,
@@ -242,14 +250,17 @@ fn capacities_revocation_disable_and_failed_writes_fail_closed() {
     let path = dir.path().join("sigil.db");
     let (mut store, alice, bob) = setup(&path);
     let owner = IdentityKey::generate().unwrap();
-    for n in 1..=2 {
+    // One account's own live calls are capped below the server's, so a device that abandons
+    // calls cannot take every slot from everyone else.
+    store.configure_calls(spacious(1)).unwrap();
+    for n in 1..=4 {
         store.publish_call(&alice, roster(&owner, n), 1000).unwrap();
     }
     assert!(matches!(
-        store.publish_call(&alice, roster(&owner, 3), 1000),
+        store.publish_call(&alice, roster(&owner, 5), 1000),
         Err(StoreError::Busy)
     ));
-    store.publish_call(&bob, roster(&owner, 3), 1000).unwrap();
+    store.publish_call(&bob, roster(&owner, 5), 1000).unwrap();
     let proof = join(&roster(&owner, 1).roster, &owner, 1);
     store.0.pragma_update(None, "query_only", true).unwrap();
     assert!(store.admit_call(&proof, 1000).is_err());
@@ -264,15 +275,15 @@ fn capacities_revocation_disable_and_failed_writes_fail_closed() {
     assert!(store.admit_call(&proof, 1001).is_err());
     store
         .configure_calls(Configure {
-            expected_revision: 1,
+            expected_revision: 2,
             settings: None,
             turn_secret: SecretUpdate::Clear,
         })
         .unwrap();
     assert!(store.call_snapshot(1001).unwrap().rosters.is_empty());
-    store.configure_calls(config(2)).unwrap();
+    store.configure_calls(config(3)).unwrap();
     assert!(matches!(
-        store.publish_call(&bob, roster(&owner, 3), 1001),
+        store.publish_call(&bob, roster(&owner, 5), 1001),
         Err(StoreError::Conflict)
     ));
 }

@@ -10,6 +10,8 @@ use sigil_calls::{Id, SignedConnect, SignedRoster};
 #[path = "call_tests.rs"]
 mod tests;
 
+/// Seconds without a connection after which a call is treated as abandoned.
+const ABANDONED: u64 = 600;
 pub(crate) fn failure(error: sigil_calls::Error) -> StoreError {
     use sigil_calls::Error::*;
     match error {
@@ -54,6 +56,10 @@ fn clock_for_snapshot(db: &Connection, now: u64) -> Result<u64, StoreError> {
 fn cleanup(db: &Connection, now: u64) -> Result<(), StoreError> {
     db.execute("DELETE FROM calls WHERE id IN (SELECT id FROM calls WHERE expires<=?1 ORDER BY expires LIMIT 64)",[sql(now)?])?;
     db.execute("UPDATE calls SET closed=1 WHERE closed=0 AND NOT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE d.id=calls.device AND d.revoked=0 AND d.expires_at>?1 AND a.disabled=0)",[sql(now)?])?;
+    // A call only closes when its owner says so, and an owner that crashed or walked away never
+    // does, so the slot was held until the roster expired hours later. One nobody has connected
+    // to for this long is over: the ring gave up long before.
+    db.execute("UPDATE calls SET closed=1 WHERE closed=0 AND started<=?1 AND coalesce((SELECT max(updated) FROM call_connections c WHERE c.call=calls.id),0)<=?1",[sql(now.saturating_sub(ABANDONED))?])?;
     db.execute(
         "DELETE FROM call_connections WHERE call IN (SELECT id FROM calls WHERE closed=1)",
         [],
@@ -228,22 +234,23 @@ impl Store {
                     |r| Ok((unsigned(r, 0)?, unsigned(r, 1)?)),
                 )?;
                 let (own_live,own_total):(u64,u64)=tx.query_row("SELECT count(*) FILTER(WHERE c.closed=0 AND c.expires>?1),count(*) FROM calls c JOIN devices d ON d.id=c.device WHERE d.account_id=(SELECT account_id FROM devices WHERE id=?2)",(sql(now)?,&device),|r|Ok((unsigned(r,0)?,unsigned(r,1)?)))?;
-                // A call only closes when its owner says so, so any call lost to a crash or a
-                // restart holds a slot until it expires. Leave room for several of those.
+                // Abandoned calls are closed on a timer now, so one account holding a handful of
+                // slots is a fault, not the normal cost of a crash. The server cap is shared.
                 if live >= u64::from(settings.max_calls)
                     || total >= 4096
-                    || own_live >= 8
+                    || own_live >= 4
                     || own_total >= 256
                 {
                     return Err(StoreError::Busy);
                 }
                 tx.execute(
-                    "INSERT INTO calls VALUES(?1,?2,?3,0,?4)",
+                    "INSERT INTO calls VALUES(?1,?2,?3,0,?4,?5)",
                     (
                         id.as_slice(),
                         device,
                         sql(value.roster.expires)?,
                         value.to_bytes().map_err(failure)?,
+                        sql(now)?,
                     ),
                 )?;
             }

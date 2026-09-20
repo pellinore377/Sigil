@@ -46,8 +46,6 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     @Volatile private var token = 0L
     private var microphone: CallMicrophone? = null
     private var camera: CallCamera? = null
-    private var preview: android.graphics.SurfaceTexture? = null
-    private var previewGeometry: ((Int, Int, Int) -> Unit)? = null
     private var screen: CallScreen? = null
     private var sharing = false
     var projectionRequest by mutableStateOf<String?>(null)
@@ -80,13 +78,6 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         }
     }
     private fun stopScreen() { sharing = false; projectionRequest = null; screen?.close(); screen = null; applyTracks() }
-    /** The camera draws its own preview, so the phone never decodes the stream it just encoded. */
-    fun cameraPreview(surface: android.graphics.SurfaceTexture?, geometry: ((Int, Int, Int) -> Unit)?) {
-        preview = surface
-        previewGeometry = geometry
-        camera?.close()
-        camera = null
-    }
     fun videoOutput(member: String, screen: Boolean, decoder: CallVideoDecoder?) { val key = "$member:${if (screen) 2 else 1}"; if (decoder == null) videoOutputs.remove(key) else videoOutputs[key] = decoder }
     private var lastMark: String? = null
     private var ringer: android.media.Ringtone? = null
@@ -239,7 +230,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                             retry = 1000
                             if (started == 0L && history.find { it.id == id }?.participants?.size?.let { it > 1 } == true) started = SystemClock.elapsedRealtime()
                             if (microphone == null) microphone = CallMicrophone({ timestamp, bytes -> send(0, timestamp, false, bytes) }, { amplitude -> scope.launch { levels = levels + ("self" to amplitude) } }, { scope.launch { issue("Microphone capture stopped."); end() } }).apply { muted = this@NativeCalls.muted }
-                            if (video && cameraReady && camera == null) camera = CallCamera(app, front, preview, { w, h, rotation -> previewGeometry?.invoke(w, h, rotation) }, { timestamp, keyframe, bytes -> send(1, timestamp, keyframe, bytes) }, { scope.launch { video = false; camera?.close(); camera = null; applyTracks(); issue("Camera capture stopped.") } })
+                            if (video && cameraReady && camera == null) camera = CallCamera(app, front, { timestamp, keyframe, bytes -> send(1, timestamp, keyframe, bytes); videoOutputs["self:1"]?.offer(timestamp, keyframe, bytes) }, { scope.launch { video = false; camera?.close(); camera = null; applyTracks(); issue("Camera capture stopped.") } })
                             received = withContext(Dispatchers.IO) { NativeStorage.receiveCallFrames(handle)?.let { bytes -> try { receive(handle, bytes); bytes.isNotEmpty() } finally { bytes.fill(0) } } == true }
                         }
                         delay(if (received) 5 else 20)
