@@ -541,7 +541,7 @@ pub async fn browser_call_send(
             .ok()
             .and_then(|v| v.as_f64())
             .unwrap_or(-1.0);
-        if queued >= if media == 0 { 4 } else { 2 }
+        if queued >= if media == 0 { 4 } else { 3 }
             || state != "open"
             || buffered > 192.0 * 1024.0
         {

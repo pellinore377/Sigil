@@ -216,8 +216,9 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             // A frame the transport drops leaves the peer decoding against a reference it
             // never received; the next capture becomes a keyframe instead of smearing.
             match crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await {
-                Ok(true) => (),
-                Ok(false) => FORCE_KEY.with(|f| f.set(true)),
+                // Shedding for pacing is normal backpressure. Asking for a keyframe each time turned
+                // every frame into a 50-fragment keyframe, which is what made the pipeline collapse.
+                Ok(_) => (),
                 Err(error) => {
                     web_sys::console::log_1(&JsValue::from_str(&format!(
                         "SigilTiming call send: error {:?}",

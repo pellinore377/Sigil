@@ -137,7 +137,9 @@ internal class CallCamera(context: Context, front: Boolean, private val preview:
                 val video = CallEncoder(size.width, size.height, rotation, fps, send) { failed() }
                 encoder = video
                 // The preview draws the camera itself; decoding our own stream would show it late.
-                geometry(size.width, size.height, rotation)
+                // The camera writes the preview surface with its own transform already applied, so the
+                // view has to undo the sensor orientation rather than apply it as a decoded frame needs.
+                geometry(size.width, size.height, (360 - rotation) % 360)
                 // The preview buffer has to match a size the camera can actually deliver.
                 val shown = preview?.let { it.setDefaultBufferSize(size.width, size.height); Surface(it) }
                 surface = shown
