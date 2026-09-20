@@ -43,13 +43,14 @@ impl Drop for Session {
     }
 }
 /// Retransmission deadline for media fragments, in milliseconds.
-/// A fragment is worth retransmitting: the assembler holds a partial frame for two seconds, and
-/// one fragment given up on destroys the whole frame. At 120ms the channel discarded fragments
-/// before SCTP could resend them and a third of frames never completed.
-const CHANNEL_LIFETIME: u16 = 500;
-/// Bytes the transport may hold before a frame is shed. Anything still queued is already older
-/// than the channel's own lifetime, so a deep buffer only turns latency into stale pictures.
-const BACKLOG: f64 = 48.0 * 1024.0;
+/// Measured, not chosen: at 500ms the channel carried no video at all and the server counted
+/// nothing arriving; at 250ms the encoder queue jammed and output fell to one frame a second.
+/// 120ms is the only one of the three that works, so the sending rate has to fit it instead.
+const CHANNEL_LIFETIME: u16 = 120;
+/// Bytes the transport may hold before a frame is shed. Frames in flight are retransmittable for
+/// the channel's lifetime and count here while they are, so this cannot be tight: the queue depth
+/// above is what bounds latency. At 48 KiB it refused nearly every frame.
+const BACKLOG: f64 = 192.0 * 1024.0;
 thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};static MICROPHONE:RefCell<Option<JsValue>>=const {RefCell::new(None)};static MUTED:Cell<bool>=const {Cell::new(false)};static PLAYBACK:RefCell<Vec<JsValue>>=const {RefCell::new(Vec::new())};}
 pub(crate) fn invoke(value: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let args = args.iter().collect::<Array>();

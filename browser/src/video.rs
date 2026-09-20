@@ -25,14 +25,16 @@ fn codec_name(id: u8) -> Option<&'static str> {
     }
 }
 /// Frames per second to ask the camera for; the encoder follows what it actually delivers.
-const RATE: u32 = 24;
+const RATE: u32 = 20;
 /// The largest picture a call sends. Frames cross an unordered channel in 1 KB fragments and a
 /// frame missing one fragment is discarded whole, so a big frame is a frame that rarely arrives.
-const WIDTH: u32 = 640;
-const HEIGHT: u32 = 480;
-/// Bits per second for a capture, sized so a delta frame is a few fragments and a keyframe tens.
+const WIDTH: u32 = 480;
+const HEIGHT: u32 = 360;
+/// Bits per second for a capture. The browser sends video as 1 KB fragments over a data channel
+/// that measurably carries about forty a second before it starts discarding them, so the rate is
+/// set by the channel, not by the picture: two fragments a frame at twenty frames a second.
 fn bitrate(width: u32, height: u32, _rate: u32) -> u32 {
-    if width * height > WIDTH * HEIGHT { 900_000 } else { 600_000 }
+    if width * height > WIDTH * HEIGHT { 500_000 } else { 350_000 }
 }
 struct Capture {
     stream: MediaStream,
@@ -262,7 +264,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
     let ladder: [(u32, u32, u32, &str); 4] = [
         (WIDTH, HEIGHT, RATE, "prefer-hardware"),
         (WIDTH, HEIGHT, RATE, "no-preference"),
-        (480, 360, RATE, "no-preference"),
+        (400, 304, RATE, "no-preference"),
         (320, 240, 15, "no-preference"),
     ];
     let portrait = height > width;
