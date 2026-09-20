@@ -324,8 +324,8 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             "createDataChannel",
             &[
                 sigil_calls::channel::LABEL.into(),
-                // Unordered, but a lost fragment discards its whole frame, so allow
-                // retransmission inside a deadline well under the keyframe interval.
+                // Unordered with a short lifetime. Send-once delivery may well be better here,
+                // but it is unverified: this is the configuration last seen carrying video.
                 object(serde_json::json!({"ordered":false,"maxPacketLifeTime":CHANNEL_LIFETIME}))?,
             ],
         )?;
