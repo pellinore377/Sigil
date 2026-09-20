@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -234,6 +234,18 @@ impl Store {
         if version < 37 {
             // Polling walks only live rows, not every row a device has ever collected.
             transaction.execute_batch("CREATE INDEX IF NOT EXISTS mailbox_live_sequence ON mailbox(recipient,sequence) WHERE payload IS NOT NULL;")?;
+        }
+        if version < 38 {
+            // When a call started, so one nobody ever joined can be closed rather than holding a
+            // slot until it expires. Rows from before this know no better and read as abandoned.
+            let present: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('calls') WHERE name='started')",
+                [],
+                |r| r.get(0),
+            )?;
+            if !present {
+                transaction.execute_batch("ALTER TABLE calls ADD COLUMN started INTEGER NOT NULL DEFAULT 0;")?;
+            }
         }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         transaction.commit()?;

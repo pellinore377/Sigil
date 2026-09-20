@@ -28,7 +28,33 @@ Map decoding rejects compressed/decompressed inputs over 2 MiB and preflights la
 
 Browser audio calling is present but has no successful live-call acceptance in this pass; it requires supported Opus WebCodecs and cross-origin isolation.
 
-Call video connects both ways but was sized for a network it does not have. The phone captured 1920x1080 at 60fps and 6 Mbit/s and the browser 1080p30 at 4 Mbit/s, while every frame crosses an unordered data channel in 1 KB fragments and a frame missing one fragment is discarded whole: a keyframe was fifty fragments, the receivers decoded one to ten frames a second, and the picture ran twenty to thirty seconds behind with persistent smearing. Both senders are now held to 640x480 at 24fps and 600 kbit/s, the phone's sensor rate is the rate the encoder is told, and the browser sheds a frame once the transport holds 48 KiB rather than 192. Unverified on device: no live call has been run against this build. The local camera preview no longer applies the sensor orientation, which laid it on its side at 90 and at 270; the preview surface is treated as arriving upright and only its displayed shape is corrected. Also unverified. Browser screen sharing remains unconnected. Android supports the existing encrypted audio/video/screen paths. The new RTC send path seals and reserves sequence numbers under the call lock, then transmits outside it. Per-media lanes preserve ordering; video I/O no longer blocks audio, receive or status processing. Audio thread/codec latency hints were added; jitter buffers and video bitrate were not blindly reduced/increased.
+Call video now runs both ways at 640x480 and 24fps, verified on the phone and the browser against
+this build: each side encodes 24 frames a second and the other decodes 24, with frames of one to six
+fragments. It had been sized for a network it does not have. The phone captured 1920x1080 at 60fps
+and 6 Mbit/s and the browser 1080p30 at 4 Mbit/s, while every frame crosses an unordered channel in
+1 KB fragments and a frame missing one fragment is discarded whole: a keyframe was fifty fragments,
+the receivers decoded one to ten frames a second, and the picture ran twenty to thirty seconds
+behind with persistent smearing. Three faults were behind the rest. Sealing or opening a frame
+re-read the call record in an immediate transaction and recomputed the whole state digest, so every
+frame queued behind a sync pass holding the same connection for hundreds of milliseconds; that
+authority is now taken five times a second and carries the store's authority revision, so blocking a
+peer still stops media on the next frame. The browser stamped frames from a wall clock driven by an
+unpunctual timer, and both receivers treated any step over one and a half frames as a lost frame and
+held everything until the next keyframe, so the picture froze and jumped continuously; stamps are
+now counted, the threshold is one and three quarters, and a frame the transport sheds asks for a
+keyframe at most twice a second. The phone's own preview is the encoded stream decoded back, as a
+screen share already was: a second camera target has to be a size the camera can deliver, and the
+camera cropped the upright picture into that landscape buffer, losing its top and bottom. Remaining:
+1080p needs the native video track, not this fragmented channel. Browser screen sharing remains
+unconnected.
+
+Abandoned calls no longer hold a slot until their roster expires. A call closed only when its owner
+said so, so one lost to a crash or a closed tab held a slot for hours; the live server reached its
+cap of eight and stopped admitting calls entirely, which presents as a call that rings out. Calls
+record when they started and are closed after ten minutes with no connection. The per-account cap
+had also been raised to eight against a server maximum of eight, which removed it: one account could
+take every slot. It is four again, the server maximum is sixty-four, and the test that covers it was
+failing unnoticed because it was never run. Android supports the existing encrypted audio/video/screen paths. The new RTC send path seals and reserves sequence numbers under the call lock, then transmits outside it. Per-media lanes preserve ordering; video I/O no longer blocks audio, receive or status processing. Audio thread/codec latency hints were added; jitter buffers and video bitrate were not blindly reduced/increased.
 
 Received browser voice recordings discover missing WebM duration through a bounded local-blob seek without playback. Duration, playback, waveform seeking and reload were checked on an encrypted received recording. Waveform samples remain staging-only; received/reloaded recordings use a flat seek line. Persisted waveform metadata is not implemented.
 

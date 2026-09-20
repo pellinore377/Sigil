@@ -110,14 +110,13 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
     }
     override fun close() { running.set(false); worker.interrupt() }
 }
-internal class CallCamera(context: Context, front: Boolean, private val preview: android.graphics.SurfaceTexture?, private val geometry: (Int, Int, Int) -> Unit, send: (Long, Boolean, ByteArray) -> Unit, private val failed: () -> Unit) : AutoCloseable {
+internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Unit, private val failed: () -> Unit) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val thread = HandlerThread("Sigil camera").apply { start() }
     private val handler = Handler(thread.looper)
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var encoder: CallEncoder? = null
-    private var surface: Surface? = null
     init {
         handler.post {
             try {
@@ -139,16 +138,10 @@ internal class CallCamera(context: Context, front: Boolean, private val preview:
                 android.util.Log.i("SigilTiming", "video out ${size.width}x${size.height}@$fps ${callVideoBitrate(size.width, size.height, fps) / 1000}kbps")
                 val video = CallEncoder(size.width, size.height, rotation, fps, send) { failed() }
                 encoder = video
-                // The preview draws the camera itself; decoding our own stream would show it late.
-                // The camera applies its own transform to a preview surface, so the picture arrives
-                // upright: rotating it by the sensor orientation, either way round, lays it on its
-                // side. Only the shape it is shown in has to be the upright one.
-                val shape = if (rotation == 90 || rotation == 270) Size(size.height, size.width) else size
-                geometry(shape.width, shape.height, 0)
-                // The preview buffer has to match a size the camera can actually deliver.
-                val shown = preview?.let { it.setDefaultBufferSize(size.width, size.height); Surface(it) }
-                surface = shown
-                val targets = listOfNotNull(video.surface, shown)
+                // The preview is this stream decoded back, as a screen share already is. A second
+                // camera target must be a size the camera can deliver, and the camera crops the
+                // upright picture into that landscape buffer, losing its top and bottom.
+                val targets = listOf(video.surface)
                 manager.openCamera(id, object : CameraDevice.StateCallback() {
                     override fun onOpened(camera: CameraDevice) {
                         if (!running.get()) { camera.close(); return }
@@ -177,7 +170,7 @@ internal class CallCamera(context: Context, front: Boolean, private val preview:
     }
     override fun close() {
         if (!running.getAndSet(false)) return
-        handler.post { try { session?.stopRepeating() } catch (_: Exception) {}; session?.close(); device?.close(); encoder?.close(); surface?.release(); thread.quitSafely() }
+        handler.post { try { session?.stopRepeating() } catch (_: Exception) {}; session?.close(); device?.close(); encoder?.close(); thread.quitSafely() }
     }
 }
 private data class VideoPacket(val timestamp: Long, val keyframe: Boolean, val bytes: ByteArray)
@@ -283,7 +276,10 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
             val delta = timestamp - offered
             if (delta <= 0L) return
             if (interval == 0L) interval = delta
-            else if (delta > interval * 3 / 2) awaitingKey = true
+            // A gap is a missing frame, not a late one: three halves of a frame is inside the
+            // jitter a capture timer produces, and treating that as loss froze the picture
+            // until the next keyframe, over and over.
+            else if (delta * 4 > interval * 7) awaitingKey = true
             else interval = (interval * 7 + delta) / 8
         }
         offered = timestamp
@@ -301,11 +297,8 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
 }
 @Composable
 internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, modifier: Modifier) {
-    val own = member == "self" && !screen
     var decoder by remember(member, screen) { mutableStateOf<CallVideoDecoder?>(null) }
-    DisposableEffect(member, screen) { onDispose {
-        if (own) calls.cameraPreview(null, null) else { calls.videoOutput(member, screen, null); decoder?.close(); decoder = null }
-    } }
+    DisposableEffect(member, screen) { onDispose { calls.videoOutput(member, screen, null); decoder?.close(); decoder = null } }
     AndroidView(factory = { context -> TextureView(context).apply {
         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             private var geometry: Triple<Int, Int, Int>? = null
@@ -320,16 +313,12 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
                 val measured = { w: Int, h: Int, rotation: Int -> target.post {
                     if (target.surfaceTexture === texture) { geometry = Triple(w, h, rotation); resize() }
                 }; Unit }
-                // Our own camera draws straight into the view; everyone else's arrives encoded.
-                if (own) calls.cameraPreview(texture, measured)
-                else {
-                    decoder = CallVideoDecoder(Surface(texture), measured)
-                    calls.videoOutput(member, screen, decoder)
-                }
+                decoder = CallVideoDecoder(Surface(texture), measured)
+                calls.videoOutput(member, screen, decoder)
             }
             override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, width: Int, height: Int) { resize() }
             override fun onSurfaceTextureDestroyed(texture: android.graphics.SurfaceTexture): Boolean {
-                if (own) calls.cameraPreview(null, null) else { calls.videoOutput(member, screen, null); decoder?.close(); decoder = null }
+                calls.videoOutput(member, screen, null); decoder?.close(); decoder = null
                 return true
             }
             override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) {}

@@ -92,6 +92,8 @@ impl Drop for Viewer {
 thread_local! {
     static CAPTURE: RefCell<Option<Capture>> = const { RefCell::new(None) };
     static FORCE_KEY: Cell<bool> = const { Cell::new(false) };
+    /// When the last keyframe was asked for after a frame failed to go.
+    static RECOVERED: Cell<f64> = const { Cell::new(0.0) };
     static GENERATION: Cell<u32> = const { Cell::new(0) };
     static FAILED: Cell<bool> = const { Cell::new(false) };
     static VIEWERS: RefCell<HashMap<String, Viewer>> = RefCell::new(HashMap::new());
@@ -213,17 +215,24 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         wasm_bindgen_futures::spawn_local(async move {
             // A frame the transport drops leaves the peer decoding against a reference it
             // never received; the next capture becomes a keyframe instead of smearing.
-            match crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await {
-                // Shedding for pacing is normal backpressure. Asking for a keyframe each time turned
-                // every frame into a 50-fragment keyframe, which is what made the pipeline collapse.
-                Ok(_) => (),
-                Err(error) => {
-                    web_sys::console::log_1(&JsValue::from_str(&format!(
-                        "SigilTiming call send: error {:?}",
-                        error.as_string().unwrap_or_default()
-                    )));
-                    FORCE_KEY.with(|f| f.set(true));
-                }
+            let sent = crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await;
+            if let Err(error) = &sent {
+                web_sys::console::log_1(&JsValue::from_str(&format!(
+                    "SigilTiming call send: error {:?}",
+                    error.as_string().unwrap_or_default()
+                )));
+            }
+            // A frame that never went leaves the peer decoding against a reference it does not
+            // have, and it holds everything until the next keyframe. Ask for one, but no more
+            // than twice a second: asking on every shed is what turned the stream into keyframes.
+            if !matches!(sent, Ok(true)) {
+                let at = js_sys::Date::now();
+                RECOVERED.with(|last| {
+                    if at - last.get() >= 500.0 {
+                        last.set(at);
+                        FORCE_KEY.with(|f| f.set(true));
+                    }
+                });
             }
         });
     });
@@ -309,12 +318,9 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
                     capture.width as f64,
                     capture.height as f64,
                 )?;
-            let timestamp = (web_sys::window()
-                .and_then(|w| w.performance())
-                .map(|p| p.now())
-                .unwrap_or(0.0)
-                * 1000.0)
-                .floor();
+            // Counted, not clocked: the capture timer is not punctual, and a wall clock turned
+            // every late tick into a step the receiver could not tell from a lost frame.
+            let timestamp = (capture.frames * 1_000_000 / u64::from(capture.rate)) as f64;
             let frame = construct2(
                 "VideoFrame",
                 &capture.canvas,
@@ -541,7 +547,7 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
             }
             if viewer.interval == 0 {
                 viewer.interval = delta;
-            } else if delta > viewer.interval * 3 / 2 {
+            } else if delta * 4 > viewer.interval * 7 {
                 viewer.awaiting_key = true;
             } else {
                 viewer.interval = (viewer.interval * 7 + delta) / 8;
