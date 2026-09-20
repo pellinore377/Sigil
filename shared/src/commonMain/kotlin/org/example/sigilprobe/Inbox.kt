@@ -150,7 +150,8 @@ private fun NotesHeader(height: Dp, query: String, update: (String) -> Unit) {
 internal fun Inbox(state: MessengerState, collection: String, choose: (String) -> Unit, selected: Set<String>, select: (String) -> Unit,
     open: (String) -> Unit, read: (String) -> String?) {
     val insets = LocalHomeContentPadding.current
-    val chats = state.chats.filter { !it.hidden && !it.contactOnly && (!state.collectionsEnabled || collection.isEmpty() || collection in it.collections) }
+    val requests = state.chats.filter { it.request == "incoming" }
+    val chats = state.chats.filter { it.request != "incoming" && !it.hidden && (!it.contactOnly || it.request in listOf("pending", "sending", "resolving")) && (!state.collectionsEnabled || collection.isEmpty() || collection in it.collections) }
     val labels = read("collection_labels") != "false"
     LazyColumn(Modifier.fillMaxSize().testTag("inbox-list"), contentPadding = PaddingValues(
         top = insets.calculateTopPadding(), bottom = maxOf(92.dp, insets.calculateBottomPadding()))) {
@@ -173,10 +174,18 @@ internal fun Inbox(state: MessengerState, collection: String, choose: (String) -
                 }
             }
         }
+        if (requests.isNotEmpty()) {
+            item(key = "request-heading") {
+                Text("Message requests (${requests.size})", Modifier.padding(horizontal = 24.dp, vertical = 12.dp), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            items(requests, key = { "request:${it.id}" }) { chat ->
+                ChatRow(chat.copy(preview = "Wants to connect"), modifier = itemMotion(), open = { open(chat.id) })
+            }
+        }
         items(chats, key = { "chat:${it.id}" }) { chat ->
             ChatRow(chat, chat.id in selected, itemMotion(), { if (selected.isNotEmpty()) select(chat.id) else open(chat.id) }, { select(chat.id) })
         }
-        if (chats.isEmpty()) item(key = "empty") {
+        if (chats.isEmpty() && requests.isEmpty()) item(key = "empty") {
             Box(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 64.dp), contentAlignment = Alignment.Center) {
                 Text(if (!state.collectionsEnabled || collection.isEmpty()) "No conversations yet" else "No conversations in this collection", style = MaterialTheme.typography.titleLarge)
             }
