@@ -43,7 +43,10 @@ impl Drop for Session {
     }
 }
 /// Retransmission deadline for media fragments, in milliseconds.
-const CHANNEL_LIFETIME: u16 = 120;
+/// A fragment is worth retransmitting: the assembler holds a partial frame for two seconds, and
+/// one fragment given up on destroys the whole frame. At 120ms the channel discarded fragments
+/// before SCTP could resend them and a third of frames never completed.
+const CHANNEL_LIFETIME: u16 = 500;
 /// Bytes the transport may hold before a frame is shed. Anything still queued is already older
 /// than the channel's own lifetime, so a deep buffer only turns latency into stale pictures.
 const BACKLOG: f64 = 48.0 * 1024.0;

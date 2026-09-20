@@ -174,6 +174,10 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
     }
 }
 private data class VideoPacket(val timestamp: Long, val keyframe: Boolean, val bytes: ByteArray)
+/// How long a decoded frame waits before it is painted, and how far the sender's clock may run
+/// from ours before the schedule is taken again from the frame in hand.
+private const val LEAD = 90_000_000L
+private const val SLIP = 400_000_000L
 internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidth: Int, viewHeight: Int): Matrix {
     val sideways = rotation == 90 || rotation == 270
     val aspect = if (sideways) height.toFloat() / width else width.toFloat() / height
@@ -193,12 +197,14 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
         var dimensions: Size? = null
         var rendered: Triple<Int, Int, Int>? = null
         var lastTimestamp = Long.MIN_VALUE
+        var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
+        var resynced = 0L; var anchor = 0L; var anchorStamp = Long.MIN_VALUE
         fun reset() {
+            anchorStamp = Long.MIN_VALUE
             val previous = codec; codec = null; dimensions = null
             try { previous?.stop() } catch (_: Exception) {}
             try { previous?.release() } catch (_: Exception) {}
         }
-        var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
         fun drainOutput() {
             val active = codec ?: return
             val info = MediaCodec.BufferInfo()
@@ -206,10 +212,21 @@ internal class CallVideoDecoder(private val surface: Surface, private val geomet
                 val output = active.dequeueOutputBuffer(info, 0)
                 if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
                 if (output < 0) break
-                active.releaseOutputBuffer(output, running.get())
+                if (!running.get()) { active.releaseOutputBuffer(output, false); continue }
+                // Paint on the sender's cadence, not on arrival. A frame reaches here whenever the
+                // network let it, so releasing the moment it decodes turns the jitter of its
+                // journey into judder however steady the frame rate itself is. The lead is the
+                // whole of the smoothing: frames wait that long and no longer.
+                val now = System.nanoTime()
+                if (anchorStamp == Long.MIN_VALUE) { anchorStamp = info.presentationTimeUs; anchor = now + LEAD }
+                var due = anchor + (info.presentationTimeUs - anchorStamp) * 1000
+                if (due < now - SLIP || due > now + LEAD + SLIP) {
+                    anchorStamp = info.presentationTimeUs; anchor = now + LEAD; due = anchor; resynced++
+                }
+                active.releaseOutputBuffer(output, due)
                 shown++
                 val at = android.os.SystemClock.elapsedRealtime()
-                if (at - shownSince >= 5000) { android.util.Log.i("SigilTiming", "video in ${dimensions?.width}x${dimensions?.height} fps=${shown * 1000 / (at - shownSince)}"); shown = 0; shownSince = at }
+                if (at - shownSince >= 5000) { android.util.Log.i("SigilTiming", "video in ${dimensions?.width}x${dimensions?.height} fps=${shown * 1000 / (at - shownSince)} resynced=$resynced"); shown = 0; resynced = 0; shownSince = at }
             }
         }
         try {
