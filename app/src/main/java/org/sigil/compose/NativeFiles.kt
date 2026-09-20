@@ -15,7 +15,8 @@ import java.io.InputStream
 import java.security.SecureRandom
 
 internal class NativeFiles(private val app: Application, private val scope: CoroutineScope,
-    private val update: (List<Transfer>, Boolean) -> Unit, private val issue: (String) -> Unit) {
+    private val update: (List<Transfer>, Boolean) -> Unit, private val issue: (String) -> Unit,
+    private val workNotices: (Map<String, String?>) -> Unit) {
     private val mutex = Mutex()
     private val staging = java.util.concurrent.ConcurrentHashMap<String, Job>()
     private val wake = Channel<Unit>(Channel.CONFLATED)
@@ -36,7 +37,11 @@ internal class NativeFiles(private val app: Application, private val scope: Coro
                         val work = NativeSync.files(app)
                         mutex.withLock { next = if (generation == revision.get()) work.getLong("next_at") else 0 }
                         sent = work.getInt("sent") > 0
-                        if (!work.isNull("issue")) withContext(Dispatchers.Main) { issue(work.getString("issue")) }
+                        withContext(Dispatchers.Main) {
+                            val notices = work.optJSONObject("notices")
+                            if (notices != null) workNotices(notices.keys().asSequence().associateWith { if (notices.isNull(it)) null else notices.getString(it) })
+                            else if (!work.isNull("issue")) issue(work.getString("issue"))
+                        }
                     }
                     mutex.withLock { publish(sent) }
                 } catch (cancelled: CancellationException) { throw cancelled }

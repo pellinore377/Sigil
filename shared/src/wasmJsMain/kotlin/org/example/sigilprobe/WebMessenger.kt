@@ -81,6 +81,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var linkingBusy by remember {mutableStateOf(false)}
     var linkingIssue by remember {mutableStateOf<String?>(null)}
     var syncIssue by remember {mutableStateOf<String?>(null)}
+    val workNotices = remember { WorkNotices() }
     var contactQr by remember {mutableStateOf<JsonObject?>(null)}
     var photoRevision by remember {mutableIntStateOf(0)}
     var wallpaperRevision by remember {mutableIntStateOf(0)}
@@ -202,7 +203,12 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     }
     suspend fun fileWork() {
         val work=execute("file_work",mapOf("steps" to 1));fileNext=work.long("next_at")
-        work.optional("issue")?.let {state=state.copy(issue=it)}
+        val notices = work["notices"]?.jsonObject
+        if (notices != null) {
+            var notice = state.issue
+            for ((source, message) in notices) notice = workNotices.update(notice, source, fileWorkNotice(source, message.jsonPrimitive.contentOrNull))
+            state = state.copy(issue = notice)
+        } else work.optional("issue")?.let {state=state.copy(issue=it)}
         transfers()
         if(work.long("sent")>0){timeline();wake.trySend(Unit)}
     }
@@ -300,9 +306,9 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
                     nextSync=result.long("next_at")
                     if(((result.bool("ran") && (result["changed"]?.jsonPrimitive?.booleanOrNull ?: true)) || nudged) && !sending)mutex.withLock {if(!sending)refresh()}
                     val issue=result.optional("issue")
-                    if(issue!=null || result.bool("ran")){if(state.issue==syncIssue || issue!=null)state=state.copy(issue=issue);syncIssue=issue}
+                    if(issue!=null || result.bool("ran")){state=state.copy(issue=workNotices.update(state.issue,"sync",issue));syncIssue=issue}
                 } catch(cancelled:CancellationException){throw cancelled}
-                catch(e:Exception){nextSync=(BrowserDate.now()/1000).toLong()+1;syncIssue=e.message?:"Synchronization failed. Your queued messages are preserved.";state=state.copy(issue=syncIssue)}
+                catch(e:Exception){nextSync=(BrowserDate.now()/1000).toLong()+1;syncIssue=e.message?:"Synchronization failed. Your queued messages are preserved.";state=state.copy(issue=workNotices.update(state.issue,"sync",syncIssue))}
             }
         }
     }
@@ -487,7 +493,7 @@ recoverAccount=true;return@command}
 
             "sign_out"->{if(state.voice.phase!="Idle"){state=state.copy(issue="Send or discard your recording before signing out.");return@command};signOut=true;signOutFailed=false;signOutSaved=false;return@command}
             "edit_source_used"->{state=state.copy(editDraft=null);return@command}
-            "dismiss"->{state=state.copy(issue=null);return@command}
+            "dismiss"->{workNotices.dismiss();state=state.copy(issue=null);return@command}
             "server_changed"->{state=state.copy(loginAddress=fields["server"] as String,loginMethods=null,discoveryIssue=null);return@command}
             "search"->{search(fields["query"] as String, fields["category"] as? String ?: "");return@command}
             "search_more"->{search(state.searchQuery, searchCategory, true);return@command}
@@ -575,7 +581,7 @@ if(name=="edit_source")state=state.copy(editDraft=EditDraft(fields["peer"] as St
 if(name in setOf("devices","revoke_device"))state=StateDecoder.devices(value,state,fields["cursor"]!=null)
 if(name=="contact_policy")state=state.copy(allowRequests=value.bool("enabled"))
                         if(name in setOf("post","edit"))timeline() else if(name in setOf("file_send","file_cancel"))transfers() else refresh()
-                        if(name=="post"){val flush=execute("flush");if(flush.long("sent")>0)timeline();flush.optional("issue")?.let {state=state.copy(issue=it)}}
+                        if(name=="post"){val flush=execute("flush");if(flush.long("sent")>0)timeline();flush.optional("issue")?.let {syncIssue=it;state=state.copy(issue=workNotices.update(state.issue,"sync",it))}}
                     }
                 }
             }}catch(e:Exception) {state=state.copy(searching=if(name in setOf("search","search_more"))false else state.searching,issue=e.message?:"Could not complete this action. Your draft is preserved.")}

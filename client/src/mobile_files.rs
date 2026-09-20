@@ -215,7 +215,15 @@ impl ClientStore {
         }
         let mut cache = self.mobile_cache()?;
         let started = crate::clock::Instant::now();
+        let mut notices = serde_json::Map::new();
+        let mut record_transfer = |result: &attachments::ScheduledTransfers| {
+            if result.attempt.is_some() || result.scheduling_error.is_some() {
+                let error = result.scheduling_error.as_ref().or_else(|| result.attempt.as_ref().and_then(|a| a.result.as_ref().err()));
+                notices.insert("attachments".into(), json!(error.map(error_message)));
+            }
+        };
         let mut result = self.sync_attachments_due_online(&mut cache)?;
+        record_transfer(&result);
         for _ in 1..steps {
             if result.scheduling_error.is_some()
                 || !result.attempt.as_ref().is_some_and(|a| a.result.is_ok())
@@ -225,6 +233,7 @@ impl ClientStore {
                 break;
             }
             result = self.sync_attachments_due_online(&mut cache)?;
+            record_transfer(&result);
         }
         let mut issue = result.scheduling_error.as_ref().map(error_message);
         if let Some(error) = result
@@ -232,6 +241,7 @@ impl ClientStore {
             .as_ref()
             .and_then(|a| a.result.as_ref().err())
         {
+            crate::perf::note(format!("file work failed stage=attachments {}", error_message(error)));
             issue = Some(error_message(error));
         }
         let mut sent = 0;
@@ -280,13 +290,16 @@ impl ClientStore {
         if sent > 0 {
             // Publish the durable message before unrelated recovery/push I/O.
             // Keep the worker scheduled so the next pass performs maintenance.
-            return Ok(json!({"next_at":now,"sent":sent,"issue":issue,"pending":true}));
+            return Ok(json!({"next_at":now,"sent":sent,"issue":issue,"notices":notices,"pending":true}));
         }
         let mut next = result.next_at.min(now.saturating_add(30));
+        let mut background_stage = "maintenance";
         let background = (|| -> Result<(), Error> {
             self.maintain_history(now)?;
             self.erase_obsolete_journals(now)?;
+            notices.insert("maintenance".into(), Value::Null);
             if recovery::configured(&self.db)? {
+                background_stage = "backup";
                 let work = self.sync_recovery_due_online()?;
                 next = next.min(work.next_at);
                 if let Some(error) = work.scheduling_error {
@@ -294,19 +307,26 @@ impl ClientStore {
                 }
                 if let Some(progress) = work.progress {
                     pending |= !matches!(progress?, recovery::RecoveryProgress::Idle);
+                    notices.insert("backup".into(), Value::Null);
                 }
                 pending |= self.recovery_status()?.pending.is_some();
                 pending |= self.history_recovery_progress()?.unprotected_records > 0;
+            } else {
+                notices.insert("backup".into(), Value::Null);
             }
+            background_stage = "recovery_media";
             pending |= matches!(
                 self.prepare_recovery_media_step(&mut cache, now)?,
                 attachments::MediaRecovery::Download(_)
                     | attachments::MediaRecovery::Staged(_, _)
                     | attachments::MediaRecovery::Upload(_)
             );
+            notices.insert("recovery_media".into(), Value::Null);
             Ok(())
         })();
         if let Err(error) = background {
+            notices.insert(background_stage.into(), json!(error_message(&error)));
+            crate::perf::note(format!("file work failed stage={background_stage} {}", error_message(&error)));
             if issue.is_none() {
                 issue = Some(error_message(&error));
             }
@@ -316,22 +336,30 @@ impl ClientStore {
             match self.sync_push_due_online() {
                 Ok(work) => {
                     next = next.min(work.next_at);
+                    if work.progress.is_some() || work.scheduling_error.is_some() {
+                        let error = work.scheduling_error.as_ref().or_else(|| work.progress.as_ref().and_then(|p| p.as_ref().err()));
+                        notices.insert("push".into(), json!(error.map(error_message)));
+                    }
                     if let Some(error) = work
                         .scheduling_error
                         .as_ref()
                         .or_else(|| work.progress.as_ref().and_then(|p| p.as_ref().err()))
                     {
+                        crate::perf::note(format!("file work failed stage=push {}", error_message(error)));
                         issue.get_or_insert(error_message(error));
                     }
                     pending |= work.next_at <= now.saturating_add(900);
                 }
                 Err(error) => {
+                    notices.insert("push".into(), json!(error_message(&error)));
+                    crate::perf::note(format!("file work failed stage=push {}", error_message(&error)));
                     issue.get_or_insert(error_message(&error));
                     pending = true;
                 }
             }
         }
-        Ok(json!({"next_at":next,"sent":sent,"issue":issue,"pending":pending}))
+        if !self.push_state()?.configured { notices.insert("push".into(), Value::Null); }
+        Ok(json!({"next_at":next,"sent":sent,"issue":issue,"notices":notices,"pending":pending}))
     }
     pub(super) fn mobile_file_get(
         &mut self,
@@ -389,5 +417,38 @@ impl ClientStore {
         }
         self.mobile_cache()?
             .staged_chunk(upload.file, index, conversations::now())
+    }
+}
+
+#[cfg(test)]
+mod work_notice_tests {
+    use super::*;
+
+    #[test]
+    fn maintenance_notice_reports_failure_then_recovery() {
+        let (_dir, _server, mut client, _peer, _) = crate::claims::tests::pair();
+        client.db.execute_batch("CREATE TRIGGER fail_maintenance BEFORE INSERT ON conversation_cleanup BEGIN SELECT RAISE(ABORT,'synthetic maintenance failure'); END").unwrap();
+        let failed = client.mobile_file_work(1).unwrap();
+        assert!(failed["notices"]["maintenance"].is_string());
+        assert!(!failed["notices"].as_object().unwrap().contains_key("backup"));
+        client.db.execute_batch("DROP TRIGGER fail_maintenance").unwrap();
+        let recovered = client.mobile_file_work(1).unwrap();
+        assert_eq!(recovered["notices"].as_object().unwrap().get("maintenance"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn waiting_for_backup_is_not_a_successful_retry() {
+        let (_dir, _server, mut client, _peer, now) = crate::claims::tests::pair();
+        let account = crate::connection::decode_id(&client.connection_session().unwrap().unwrap().account_id).unwrap();
+        client.configure_recovery("chat.example", account, sigil_crypto::Secret32::from_bytes([7; 32])).unwrap();
+        let scope = client.recovery_scope().unwrap();
+        let tx = client.db.transaction().unwrap();
+        let (mut state, _) = crate::schedule::read_recovery(&tx, &client.key, &scope).unwrap();
+        state.last = now;
+        state.next = now + 300;
+        crate::schedule::write(&tx, &client.key, &scope, &state).unwrap();
+        tx.commit().unwrap();
+        let waiting = client.mobile_file_work(1).unwrap();
+        assert!(!waiting["notices"].as_object().unwrap().contains_key("backup"));
     }
 }
