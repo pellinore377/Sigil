@@ -577,6 +577,20 @@ impl ClientStore {
                 Ok(None) => (),
                 Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
                     call.tally.rejected += 1;
+                    if call.tally.rejected % 200 == 1 {
+                        // The leading bytes tell a sealed packet apart from a bare codec frame.
+                        let head: String = packet
+                            .payload
+                            .iter()
+                            .take(6)
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
+                        crate::perf::note(format!(
+                            "call rx reject kind={:?} len={} head={head}",
+                            stream.track.kind,
+                            packet.payload.len()
+                        ));
+                    }
                 }
                 Err(error) => return Err(error),
             }

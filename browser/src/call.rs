@@ -193,7 +193,12 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
                         let receivers = store
                             .refresh_call_media(&mut active.media, now)
                             .map_err(error)?;
-                        Ok(json(serde_json::json!({"receivers":receivers})))
+                        let (sealed, opened) = TRANSFORMED.with(std::cell::Cell::get);
+                        Ok(json(serde_json::json!({
+                            "receivers": receivers,
+                            "sealed": sealed,
+                            "opened": opened
+                        })))
                     }
                     Operation::CallSeal {
                         kind,
@@ -235,7 +240,16 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
 }
 /// Seal one encoded audio frame and return the single RTP payload that carries it. Audio frames
 /// are well under a fragment, so the packetizer always yields exactly one.
+thread_local! {
+    /// Frames the worker has sealed and opened, so the page can tell whether the
+    /// encoded transforms are in the media path at all.
+    pub(crate) static TRANSFORMED: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
 pub(crate) fn seal_audio(bytes: &[u8], timestamp: u64) -> Result<Vec<u8>, JsValue> {
+    TRANSFORMED.with(|v| {
+        let (sealed, opened) = v.get();
+        v.set((sealed + 1, opened));
+    });
     let now = (js_sys::Date::now() / 1000.0) as u64;
     STORE.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -257,6 +271,10 @@ pub(crate) fn seal_audio(bytes: &[u8], timestamp: u64) -> Result<Vec<u8>, JsValu
 }
 /// Open one received audio payload; None means the frame is not yet complete or was rejected.
 pub(crate) fn open_audio(sender: &str, bytes: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, JsValue> {
+    TRANSFORMED.with(|v| {
+        let (sealed, opened) = v.get();
+        v.set((sealed, opened + 1));
+    });
     let now = (js_sys::Date::now() / 1000.0) as u64;
     let sender = id(sender)?;
     STORE.with(|slot| {

@@ -120,7 +120,12 @@ fn attach_transform(target: &JsValue, options: serde_json::Value) -> Result<(), 
         .dyn_into()
         .map_err(|_| fail("This browser cannot encrypt call media in a worker"))?;
     let transform = Reflect::construct(&constructor, &Array::of2(&worker.into(), &object(options)?))?;
-    set(target, "transform", &transform)
+    set(target, "transform", &transform)?;
+    // A silently ignored assignment would send media in the clear, so refuse to continue.
+    if get(target, "transform")?.is_undefined() || get(target, "transform")?.is_null() {
+        return Err(fail("This browser did not accept the call media transform"));
+    }
+    Ok(())
 }
 /// The microphone, with the browser's own echo cancellation and noise suppression. Held open for
 /// the whole call so a reconnect never prompts again.
@@ -340,6 +345,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             // The browser captures and encodes audio itself; the worker seals each encoded frame.
             if kind == MediaKind::Audio {
                 let sender = get(&transceiver, "sender")?;
+                attach_transform(&sender, serde_json::json!({"operation":"seal"}))?;
                 if let Some(track) = microphone.as_ref() {
                     let _ = JsFuture::from(
                         invoke(&sender, "replaceTrack", &[track.clone()])?
@@ -347,7 +353,6 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                     )
                     .await;
                 }
-                attach_transform(&sender, serde_json::json!({"operation":"seal"}))?;
             }
             uploads.push(transceiver);
         }
