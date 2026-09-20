@@ -149,6 +149,9 @@ pub struct ClientStore {
     db: Connection,
     key: StorageKey,
     connection: std::cell::RefCell<Option<(Vec<u8>, crate::clock::Instant, network::HttpsClient)>>,
+    /// Bumped whenever a stored call record or a peer's standing changes, so a live call can
+    /// tell that its authority needs reading again without touching the database per frame.
+    authority: u64,
 }
 fn binding(kind: u8, session: &Id, record: &[u8]) -> Vec<u8> {
     let mut bytes = b"Sigil/client/v0".to_vec();
@@ -533,6 +536,7 @@ impl ClientStore {
             db,
             key,
             connection: Default::default(),
+            authority: 0,
         })
     }
 
