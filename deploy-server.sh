@@ -48,7 +48,8 @@ rm -rf "$source/prebuilt-web"
 mkdir -p "$source/prebuilt-web"
 if [ -n "$fast" ]; then
   printf 'Building the web bundle locally\n'
-  (cd "$source" && gradle --quiet :shared:wasmJsBrowserDistribution)
+  # Matches the container build: the wasm compile needs more than the default heap.
+  (cd "$source" && gradle --quiet -Pkotlin.daemon.jvmargs=-Xmx6g :shared:wasmJsBrowserDistribution)
   cp -r "$source/shared/build/dist/wasmJs/productionExecutable/." "$source/prebuilt-web/"
 else
   : > "$source/prebuilt-web/.keep"

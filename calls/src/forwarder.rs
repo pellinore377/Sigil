@@ -55,6 +55,14 @@ pub struct Traffic {
     pub rtp_out_native: u64,
     pub rtp_out_browser: u64,
     pub no_tx_stream: u64,
+    /// Datagrams actually handed to the socket, by peer kind. Queuing is not sending.
+    pub sent_native: u64,
+    pub sent_browser: u64,
+    pub oversize: u64,
+}
+/// Short identifier for a log line; never the whole value.
+fn hex8(value: &Id) -> String {
+    value[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 pub struct Forwarder {
     address: SocketAddr,
@@ -207,12 +215,24 @@ impl Forwarder {
             });
         }
         // Counts only: whether the answer names the streams we are about to create.
+        let advertised: Vec<String> = sdp
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=ssrc:"))
+            .filter_map(|l| l.split_whitespace().next())
+            .map(str::to_string)
+            .collect();
         eprintln!(
-            "sigil.call_answer browser={} ssrc_lines={} mids={} downloads={}",
+            "sigil.call_answer_streams sending={:?} advertised={:?}",
+            streams.iter().map(|s| s.ssrc).collect::<Vec<_>>(),
+            advertised
+        );
+        eprintln!(
+            "sigil.call_answer call={} peer={} browser={} downloads={} members={}",
+            hex8(&value.call),
+            hex8(&value.participant),
             applications == 1,
-            sdp.lines().filter(|l| l.starts_with("a=ssrc:")).count(),
-            sdp.lines().filter(|l| l.starts_with("a=mid:")).count(),
-            streams.len()
+            streams.len(),
+            room.roster.roster.members.len()
         );
         let answer = Answer {
             sdp,
@@ -288,10 +308,17 @@ impl Forwarder {
                         }
                         Ok(Output::Transmit(v)) => {
                             if v.contents.len() <= 2048 {
+                                if peer.browser {
+                                    self.traffic.sent_browser += 1;
+                                } else {
+                                    self.traffic.sent_native += 1;
+                                }
                                 datagrams.push(Datagram {
                                     destination: v.destination,
                                     contents: v.contents.to_vec(),
                                 });
+                            } else {
+                                self.traffic.oversize += 1;
                             }
                         }
                         Ok(Output::Event(Event::RtpPacket(packet))) => {
