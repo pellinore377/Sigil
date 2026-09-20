@@ -74,7 +74,6 @@ impl PeerConnectionEventHandler for Handler {
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         let packets = self.packets.clone();
         tokio::spawn(async move {
-            crate::perf::note("call track opened".into());
             let mut seen = 0u64;
             let mut refused = 0u64;
             while let Some(event) = track.poll().await {
@@ -91,16 +90,9 @@ impl PeerConnectionEventHandler for Handler {
                         {
                             refused += 1;
                         }
-                        if seen % 100 == 1 {
-                            crate::perf::note(format!(
-                                "call track ssrc={} seen={seen} refused={refused}",
-                                packet.header.ssrc
-                            ));
-                        }
                     }
                 }
             }
-            crate::perf::note(format!("call track closed seen={seen}"));
         });
     }
 }
