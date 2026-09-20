@@ -484,6 +484,20 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
     }
     result
 }
+/// Throttled so a per-frame fault reports itself without flooding the console.
+fn note(message: &str) {
+    thread_local! { static SEEN: RefCell<std::collections::HashMap<String, u32>> = RefCell::new(std::collections::HashMap::new()); }
+    let head = message.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+    let show = SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        let count = seen.entry(head).or_insert(0);
+        *count += 1;
+        *count == 1 || *count % 100 == 0
+    });
+    if show {
+        web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming call {message}")));
+    }
+}
 fn kind(value: u8) -> Result<MediaKind, JsValue> {
     match value {
         0 => Ok(MediaKind::Audio),
@@ -514,15 +528,26 @@ pub async fn browser_call_send(
     let (reply, receive) = futures_channel::oneshot::channel();
     let context = SESSION.with(|slot| {
         let mut slot = slot.borrow_mut();
-        let session = slot.as_mut()?;
-        if session.outgoing[media as usize].len() >= if media == 0 { 4 } else { 2 }
-            || get(&session.channel, "readyState")
-                .ok()?
-                .as_string()
-                .as_deref()
-                != Some("open")
-            || get(&session.channel, "bufferedAmount").ok()?.as_f64()? > 192.0 * 1024.0
+        let Some(session) = slot.as_mut() else {
+            note("send: no session");
+            return None;
+        };
+        let queued = session.outgoing[media as usize].len();
+        let state = get(&session.channel, "readyState")
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "missing".into());
+        let buffered = get(&session.channel, "bufferedAmount")
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(-1.0);
+        if queued >= if media == 0 { 4 } else { 2 }
+            || state != "open"
+            || buffered > 192.0 * 1024.0
         {
+            note(&format!(
+                "send: refused kind={media} queued={queued} state={state} buffered={buffered:.0}"
+            ));
             return None;
         }
         session.outgoing[media as usize].push_back(Outgoing {
@@ -573,16 +598,19 @@ async fn send_queued(generation: u64, kind: MediaKind) {
         let result=async{
    // Shed load by queue depth, not by a fixed deadline: sealing is a round trip to the worker,
    // which also carries the audio transform, so a deadline short enough to matter drops every frame.
-   if stale(generation,media){return Ok(false);}
+   if stale(generation,media){note("send: superseded before seal");return Ok(false);}
    let data=Uint8Array::from(frame.bytes.as_slice());
    let result=command(serde_json::json!({"operation":"call_seal","call":id,"kind":kind,"timestamp":frame.timestamp as u64,"keyframe":frame.keyframe}),data.clone()).await;
-   data.fill(0,0,data.length());let encrypted=result?;
-   if stale(generation,media){return Ok(false);}
+   data.fill(0,0,data.length());
+   if let Err(e)=&result{note(&format!("send: seal failed {:?}",e.as_string().unwrap_or_default()));}
+   let encrypted=result?;
+   if stale(generation,media){note("send: superseded after seal");return Ok(false);}
    let fragments=sigil_calls::packetize(kind,&encrypted.to_vec()).map_err(|_|fail("Invalid encrypted frame"))?;
    SESSION.with(|slot|{
     let mut slot=slot.borrow_mut();let session=slot.as_mut().filter(|s|s.generation==generation).ok_or_else(||fail("Call changed"))?;
     let total=fragments.iter().map(|p|p.len()+51).sum::<usize>();
-    if get(&session.channel,"bufferedAmount")?.as_f64().unwrap_or(f64::INFINITY)+total as f64>256.0*1024.0{return Ok(false);}
+    if get(&session.channel,"bufferedAmount")?.as_f64().unwrap_or(f64::INFINITY)+total as f64>256.0*1024.0{note("send: channel backed up");return Ok(false);}
+    note(&format!("send: writing kind={media} fragments={} bytes={total}",fragments.len()));
     let count=fragments.len();
     for(index,payload)in fragments.into_iter().enumerate(){
      session.sequence[media]=session.sequence[media].checked_add(1).ok_or_else(||fail("Call sequence exhausted"))?;

@@ -215,8 +215,16 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         wasm_bindgen_futures::spawn_local(async move {
             // A frame the transport drops leaves the peer decoding against a reference it
             // never received; the next capture becomes a keyframe instead of smearing.
-            if !matches!(crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await, Ok(true)) {
-                FORCE_KEY.with(|f| f.set(true));
+            match crate::rtc::browser_call_send(1, timestamp, keyframe, bytes).await {
+                Ok(true) => (),
+                Ok(false) => FORCE_KEY.with(|f| f.set(true)),
+                Err(error) => {
+                    web_sys::console::log_1(&JsValue::from_str(&format!(
+                        "SigilTiming call send: error {:?}",
+                        error.as_string().unwrap_or_default()
+                    )));
+                    FORCE_KEY.with(|f| f.set(true));
+                }
             }
         });
     });
