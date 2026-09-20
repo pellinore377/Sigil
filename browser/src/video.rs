@@ -566,8 +566,10 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
                 "configure",
                 &[object(serde_json::json!({
                     "codec": codec_name(codec).unwrap_or_default(), "codedWidth": width, "codedHeight": height,
-                    // The browser picks; 1080p at 60 in software is a full core, hardware is free.
-                    "hardwareAcceleration": "no-preference", "optimizeForLatency": true
+                    // Software: Chrome's hardware AV1 decode returns black frames, without ever
+                    // reporting an error, on drivers we cannot detect cheaply (measured on VA-API at
+                    // 640x480 and above, correct only at thumbnail sizes). dav1d keeps up with 1080p.
+                    "hardwareAcceleration": "prefer-software", "optimizeForLatency": true
                 }))?],
             )?;
             viewer.decoder = Some(decoder);
