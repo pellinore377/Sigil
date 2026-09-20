@@ -32,6 +32,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     private var start=0.0
     private var retry=0.0
     private var failures=0
+    private var immediate=0
     private var maintenance:Job?=null
     /** Must run after the browser module is initialized: the probe is one of its exports. */
     fun initialize(){val probe=runCatching{browserCallSupported()};available=probe.getOrDefault(false);if(!available)browserTimingLog("SigilTiming call unsupported error=${probe.exceptionOrNull()?.message?.take(80)?:"none"}")}
@@ -60,7 +61,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
                 wake()
                 browserCallConnect(call.id){sender,frame->if(current==generation && members.contains(sender))runCatching{browserVideoReceive(sender,frame)}}.awaitBrowser<JsAny?>()
                 check(current==generation){"Call changed"}
-                connected=call.id;failures=0
+                connected=call.id;failures=0;immediate=0
                 if(video && cameraJob==null)applyCamera()
                 maintenance?.cancel()
                 maintenance=scope.launch {
@@ -94,8 +95,16 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
             finally{if(current==generation)connecting=false}
         }
     }
-    /** A closed transport means the roster changed: rejoin now. Failures back off. */
-    private fun reconnect(backoff:Boolean=true){connected=null;runCatching{browserCallClose()};if(backoff){failures++;retry=CallClock.now()+(1000L shl failures.coerceAtMost(3))}else{failures=0;retry=0.0};visible=visible?.copy(connection="reconnecting");wake()}
+    /** A closed transport means the roster changed: rejoin now. Failures back off, and a rejoin
+     *  that keeps failing stops rather than spinning: retrying without a pause every pass pinned
+     *  the page and left the call unusable anyway. */
+    private fun reconnect(backoff:Boolean=true){
+        connected=null;runCatching{browserCallClose()}
+        val pause=backoff || ++immediate>4
+        if(pause){failures++;immediate=0;retry=CallClock.now()+(1000L shl failures.coerceAtMost(5))}else retry=0.0
+        if(failures>=8){issue("Could not connect the call. Try again.");close();return}
+        visible=visible?.copy(connection="reconnecting");wake()
+    }
     fun handle(action:String,fields:Map<String,Any?>):Boolean {
         if(!action.startsWith("call_"))return false
         when(action){
@@ -140,5 +149,5 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
             wake()
         }
     }
-    fun close(){val stopped=desired;val wasVideo=usedVideo;val duration=if(start>0)((window.performance.now()-start)/1000).toLong() else null;generation++;cameraJob?.cancel();cameraJob=null;browserVideoStop();video=false;usedVideo=false;val stoppedGeneration=generation;starting=false;connecting=false;desired=null;connected=null;visible=null;start=0.0;retry=0.0;failures=0;maintenance?.cancel();maintenance=null;runCatching{browserCallRelease()};runCatching{browserCallClose()};scope.launch{if(stopped!=null && duration!=null)runCatching{command("call_history_media",mapOf("call" to stopped,"duration" to duration,"video" to wasVideo))};if(generation==stoppedGeneration && stopped!=null)runCatching{control("call_stop",stopped)}}}
+    fun close(){val stopped=desired;val wasVideo=usedVideo;val duration=if(start>0)((window.performance.now()-start)/1000).toLong() else null;generation++;cameraJob?.cancel();cameraJob=null;browserVideoStop();video=false;usedVideo=false;val stoppedGeneration=generation;starting=false;connecting=false;desired=null;connected=null;visible=null;start=0.0;retry=0.0;failures=0;immediate=0;maintenance?.cancel();maintenance=null;runCatching{browserCallRelease()};runCatching{browserCallClose()};scope.launch{if(stopped!=null && duration!=null)runCatching{command("call_history_media",mapOf("call" to stopped,"duration" to duration,"video" to wasVideo))};if(generation==stoppedGeneration && stopped!=null)runCatching{control("call_stop",stopped)}}}
 }

@@ -54,12 +54,20 @@ internal fun callVideoEncoder(mime: String): MediaCodecInfo? {
 }
 /// The largest picture a call sends. Frames cross an unordered channel in 1 KB fragments and a
 /// frame missing one fragment is discarded whole, so a big frame is a frame that rarely arrives.
-internal const val CALL_VIDEO_WIDTH = 640
-internal const val CALL_VIDEO_HEIGHT = 480
-internal const val CALL_VIDEO_FPS = 24
-/// Bits per second for a capture, sized so a delta frame is a few fragments and a keyframe tens.
-internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int =
-    if (width * height > CALL_VIDEO_WIDTH * CALL_VIDEO_HEIGHT) 900_000 else 600_000
+internal const val CALL_VIDEO_WIDTH = 1920
+internal const val CALL_VIDEO_HEIGHT = 1080
+internal const val CALL_VIDEO_FPS = 30
+/// Bits per second for a capture. This side sends over a native track, which loses nothing, so it
+/// is sized for the picture rather than for a channel that discards fragments.
+internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
+    val pixels = width * height
+    return when {
+        pixels >= 1920 * 1080 -> 3_500_000
+        pixels >= 1280 * 720 -> 2_000_000
+        pixels >= 960 * 540 -> 1_200_000
+        else -> 600_000
+    }
+}
 internal class CallEncoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
     private val wire = CODEC_AV1
     private val mime = requireNotNull(callVideoMime(wire))

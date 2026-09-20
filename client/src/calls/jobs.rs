@@ -603,12 +603,16 @@ impl ClientStore {
                         break;
                     };
                     let published = self.connected_client()?.publish_call(roster);
-                    let rejected_initial = matches!(
+                    // The server refuses a roster it cannot apply, and resending the same one
+                    // cannot change that: the call was closed under us, or another head won. This
+                    // used to be retried every pass forever, which jammed the lane behind it and
+                    // stopped later calls being placed at all.
+                    let rejected = matches!(
                         published,
                         Err(crate::network::Error::Status { code: 409, .. })
-                    ) && roster.roster.revision == 0
-                        && now.saturating_sub(roster.roster.created) > 60;
-                    if !rejected_initial {
+                    ) && (roster.roster.revision > 0
+                        || now.saturating_sub(roster.roster.created) > 60);
+                    if !rejected {
                         published?;
                     }
                     let tx = self
@@ -618,8 +622,7 @@ impl ClientStore {
                     if current.commits.first() != Some(roster) {
                         return Err(Error::Conflict);
                     }
-                    if rejected_initial {
-                        // A rejected initial roster past its admission window cannot be retried.
+                    if rejected {
                         current.finish(Phase::Ended);
                         current.commits.clear();
                         current.notify.clear();
