@@ -272,10 +272,11 @@ impl ClientStore {
             Err(Error::Network(e)) => Some(e),
             _ => None,
         };
-        let delay = if matches!(progress, Ok(RecoveryProgress::Idle)) {
-            30
-        } else {
-            1
+        let delay = match &progress {
+            Ok(RecoveryProgress::Idle) => 30,
+            // Sixteen-object batches leave write capacity for interactive work.
+            Ok(RecoveryProgress::Upload(None)) => 3,
+            _ => 1,
         };
         let completed = clock().and_then(|finished| {
             schedule::complete(

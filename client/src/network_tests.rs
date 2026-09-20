@@ -444,6 +444,26 @@ fn actual_server_enrollment_delivery_and_recovery_work_over_tls() {
 
 #[test]
 fn dns_timeouts_retain_worker_slots_until_the_lookup_finishes() {
+    let results = std::thread::scope(|scope| {
+        let start = Arc::new(std::sync::Barrier::new(17));
+        let handles: Vec<_> = (0..16).map(|_| {
+            let start = start.clone();
+            scope.spawn(move || {
+                start.wait();
+                lookup(NextTimeout {
+                    after: ureq::unversioned::transport::time::Duration::from_secs(2),
+                    reason: ureq::Timeout::Resolve,
+                }, || {
+                    std::thread::sleep(Duration::from_millis(30));
+                    Ok(vec![SocketAddr::from(([127, 0, 0, 1], 443))])
+                })
+            })
+        }).collect();
+        start.wait();
+        handles.into_iter().map(|h| h.join().unwrap()).collect::<Vec<_>>()
+    });
+    assert!(results.iter().all(Result::is_ok), "healthy batched lookups failed: {results:?}");
+
     let barrier = Arc::new(std::sync::Barrier::new(5));
     let timeout = || NextTimeout {
         after: ureq::unversioned::transport::time::Duration::from_millis(5),
@@ -461,7 +481,7 @@ fn dns_timeouts_retain_worker_slots_until_the_lookup_finishes() {
     }
     assert_eq!(DNS_JOBS.load(Ordering::Acquire), 4);
     assert!(
-        matches!(lookup(timeout(), || panic!("bounded lookup must not start")), Err(ureq::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock)
+        matches!(lookup(timeout(), || panic!("bounded lookup must not start")), Err(ureq::Error::Timeout(_)))
     );
     barrier.wait();
     let deadline = std::time::Instant::now() + Duration::from_secs(1);

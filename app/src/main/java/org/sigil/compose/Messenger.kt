@@ -37,11 +37,16 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     var signOutIssue by mutableStateOf<String?>(null)
         private set
-    internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) }, { if (syncIssue != null && state.issue == syncIssue) { state = state.copy(issue = null); syncIssue = null } })
+    private val workNotices = WorkNotices()
+    internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) }, { if (syncIssue != null && state.issue == syncIssue) { state = state.copy(issue = workNotices.update(state.issue, "sync", null)); syncIssue = null } })
     private val files = NativeFiles(application, scope, { uploads, sent ->
         state = state.copy(transfers = uploads)
         if (sent) { loadTimeline(); syncWake.trySend(Unit); scope.launch { serialized(false) { refresh() } } }
-    }, { state = state.copy(issue = it) })
+    }, { state = state.copy(issue = it) }, { outcomes ->
+        var notice = state.issue
+        for ((source, message) in outcomes) notice = workNotices.update(notice, source, fileWorkNotice(source, message))
+        state = state.copy(issue = notice)
+    })
     private val voice = VoiceRecorder(scope, { peer, bytes, target ->
         bytes.inputStream().use { files.stage(target + ("peer" to peer), "Voice message.aac", "audio/aac", bytes.size.toLong(), it) }
         withContext(Dispatchers.Main) { state = state.copy(sent = state.sent + 1, sentText = target["caption"] as? String, sentMessage = null) }
@@ -187,7 +192,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                             android.util.Log.w("SigilStorage","$stage: $code")
                         }
                         if (issue != null || result.getBoolean("ran")) {
-                            if (state.issue == syncIssue || issue != null) state = state.copy(issue = issue)
+                            state = state.copy(issue = workNotices.update(state.issue, "sync", issue))
                             syncIssue = issue
                         }
                         if ((result.getBoolean("ran") && result.optBoolean("changed", true)) || nudged) serialized(false) { refresh() }
@@ -336,7 +341,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 (fields["peers"] as? List<*>)?.filterIsInstance<String>()?.forEach { command("organize", mapOf("peer" to it, "value" to mapOf("CollectionMember" to mapOf("id" to id, "present" to true)))) }
                 return
             }
-            "dismiss" -> { state = state.copy(issue = null); return }
+            "dismiss" -> { workNotices.dismiss(); state = state.copy(issue = null); return }
             "close" -> { timelineJob?.cancel(); state = state.copy(selected = null, messages = emptyList(), historical = false, timelineLoaded=false); anchor = null; resetPreload(); return }
             "open" -> {
                 anchor = (fields["author"] as? String)?.let { author -> (fields["message"] as? String)?.let { author to it } }
@@ -442,7 +447,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         loadTimeline()
                     }
                     // Send after the timeline shows the message; the flush pass reports only its own issue.
-                    if (name == "post") { val flush = native(request("flush")); android.util.Log.i("SigilTiming", "flush result ${flush.optJSONArray("outbound")}"); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { state = state.copy(issue = it) } }
+                    if (name == "post") { val flush = native(request("flush")); android.util.Log.i("SigilTiming", "flush result ${flush.optJSONArray("outbound")}"); if (flush.getInt("sent") > 0) loadTimeline(); flush.optString("issue").takeIf { it.isNotEmpty() && !flush.isNull("issue") }?.let { syncIssue = it; state = state.copy(issue = workNotices.update(state.issue, "sync", it)) } }
                 }
                 // Typing and draft commands change nothing the inbox shows; everything else refreshes the snapshot once.
                 if (name !in listOf("post", "typing", "draft")) refresh()
@@ -536,7 +541,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                 try { refresh() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
             }
             if (!progress) syncIssue = issue
-            state = state.copy(issue = issue)
+            state = state.copy(issue = if (progress) issue else workNotices.update(state.issue, "sync", issue))
         } finally { if (progress) { busyOperations--; state = state.copy(busy = busyOperations > 0 || submittingPost) } }
     }
     private fun request(name: String, fields: Map<String, Any?> = emptyMap()): String {

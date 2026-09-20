@@ -52,6 +52,22 @@ fn run(store: &mut ClientStore, begin: u64, end: u64) -> ScheduledRecovery {
         .unwrap()
 }
 #[test]
+fn upload_batches_wait_before_resuming_the_same_snapshot() {
+    let (_dir, _fixture, mut store, _bob, now) = pair();
+    configure(&mut store);
+    for id in 1..=32 {
+        store.retain_recovery_record(&text(id, now)).unwrap();
+    }
+    let first = run(&mut store, now, now);
+    assert_eq!(first.progress.unwrap().unwrap(), RecoveryProgress::Upload(None));
+    assert_eq!(first.next_at, now + 3);
+    let pending = store.recovery_status().unwrap().pending;
+    assert!(run(&mut store, now + 2, now + 2).progress.is_none());
+    assert_eq!(store.recovery_status().unwrap().pending, pending);
+    assert!(run(&mut store, now + 3, now + 3).progress.unwrap().is_ok());
+}
+
+#[test]
 fn file_expiry_erases_local_keys_after_remote_retention() {
     let (_dir, _fixture, mut store, _, now) = pair();
     configure(&mut store);
