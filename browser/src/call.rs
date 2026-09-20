@@ -258,7 +258,7 @@ pub(crate) fn seal_audio(bytes: &[u8], timestamp: u64) -> Result<Vec<u8>, JsValu
             let active = active.as_mut().ok_or_else(|| fail("No call is active"))?;
             let sealed = store
                 .seal_call_frame(&mut active.media, MediaKind::Audio, timestamp, false, bytes, now)
-                .map_err(|_| fail("Call state is unavailable or changed"))?;
+                .map_err(|error| fail(&format!("audio not sealed: {error:?}")))?;
             let mut packets = sigil_calls::packetize(MediaKind::Audio, &sealed)
                 .map_err(|_| fail("Invalid audio frame"))?;
             if packets.len() != 1 {

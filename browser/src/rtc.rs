@@ -44,6 +44,9 @@ impl Drop for Session {
 }
 /// Retransmission deadline for media fragments, in milliseconds.
 const CHANNEL_LIFETIME: u16 = 120;
+/// Bytes the transport may hold before a frame is shed. Anything still queued is already older
+/// than the channel's own lifetime, so a deep buffer only turns latency into stale pictures.
+const BACKLOG: f64 = 48.0 * 1024.0;
 thread_local! {static SESSION:RefCell<Option<Session>>=const {RefCell::new(None)};static GENERATION:Cell<u64>=const {Cell::new(0)};static MICROPHONE:RefCell<Option<JsValue>>=const {RefCell::new(None)};static MUTED:Cell<bool>=const {Cell::new(false)};static PLAYBACK:RefCell<Vec<JsValue>>=const {RefCell::new(Vec::new())};}
 pub(crate) fn invoke(value: &JsValue, name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
     let args = args.iter().collect::<Array>();
@@ -543,7 +546,7 @@ pub async fn browser_call_send(
             .unwrap_or(-1.0);
         if queued >= if media == 0 { 4 } else { 3 }
             || state != "open"
-            || buffered > 192.0 * 1024.0
+            || buffered > BACKLOG
         {
             note(&format!(
                 "send: refused kind={media} queued={queued} state={state} buffered={buffered:.0}"
@@ -609,7 +612,7 @@ async fn send_queued(generation: u64, kind: MediaKind) {
    SESSION.with(|slot|{
     let mut slot=slot.borrow_mut();let session=slot.as_mut().filter(|s|s.generation==generation).ok_or_else(||fail("Call changed"))?;
     let total=fragments.iter().map(|p|p.len()+51).sum::<usize>();
-    if get(&session.channel,"bufferedAmount")?.as_f64().unwrap_or(f64::INFINITY)+total as f64>256.0*1024.0{note("send: channel backed up");return Ok(false);}
+    if get(&session.channel,"bufferedAmount")?.as_f64().unwrap_or(f64::INFINITY)+total as f64>BACKLOG*4.0/3.0{note("send: channel backed up");return Ok(false);}
     note(&format!("send: writing kind={media} fragments={} bytes={total}",fragments.len()));
     let count=fragments.len();
     for(index,payload)in fragments.into_iter().enumerate(){

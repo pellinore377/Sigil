@@ -52,15 +52,14 @@ internal fun callVideoEncoder(mime: String): MediaCodecInfo? {
         .filter { it.isEncoder && it.supportedTypes.any { type -> type.equals(mime, true) } }
     return all.firstOrNull { it.isHardwareAccelerated } ?: all.firstOrNull()
 }
-/// Bits per second for a capture: 1080p at 60 gets 6 Mbit/s, 720p 3, smaller 1.2.
-internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
-    val pixels = width * height
-    return when {
-        pixels >= 1920 * 1080 -> if (fps >= 50) 6_000_000 else 4_000_000
-        pixels >= 1280 * 720 -> if (fps >= 50) 3_500_000 else 2_500_000
-        else -> 1_200_000
-    }
-}
+/// The largest picture a call sends. Frames cross an unordered channel in 1 KB fragments and a
+/// frame missing one fragment is discarded whole, so a big frame is a frame that rarely arrives.
+internal const val CALL_VIDEO_WIDTH = 640
+internal const val CALL_VIDEO_HEIGHT = 480
+internal const val CALL_VIDEO_FPS = 24
+/// Bits per second for a capture, sized so a delta frame is a few fragments and a keyframe tens.
+internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int =
+    if (width * height > CALL_VIDEO_WIDTH * CALL_VIDEO_HEIGHT) 900_000 else 600_000
 internal class CallEncoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
     private val wire = CODEC_AV1
     private val mime = requireNotNull(callVideoMime(wire))
@@ -128,18 +127,24 @@ internal class CallCamera(context: Context, front: Boolean, private val preview:
                 val id = manager.cameraIdList.firstOrNull { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK } ?: manager.cameraIdList.first()
                 val info = manager.getCameraCharacteristics(id)
                 val choices = requireNotNull(info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)).getOutputSizes(MediaCodec::class.java)
-                // The largest capture up to 1080p, and the steadiest frame rate up to 60 the camera offers.
-                val size = choices.filter { it.width <= 1920 && it.height <= 1080 }.maxByOrNull { it.width * it.height } ?: error("Unsupported camera size")
-                val range = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.filter { it.upper <= 60 && it.upper >= 24 }?.maxWithOrNull(compareBy({ it.upper }, { it.lower }))
-                val fps = range?.upper ?: 30
+                // The largest capture the call size allows, and the steadiest rate up to 30 the camera offers.
+                val size = choices.filter { it.width <= CALL_VIDEO_WIDTH && it.height <= CALL_VIDEO_HEIGHT }.maxByOrNull { it.width * it.height }
+                    ?: choices.minByOrNull { it.width * it.height } ?: error("Unsupported camera size")
+                // The encoder is told the rate the sensor is actually held to, so the two agree.
+                val rates = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.filter { it.upper >= 15 }.orEmpty()
+                val range = rates.filter { it.upper <= CALL_VIDEO_FPS }.maxWithOrNull(compareBy({ it.upper }, { it.lower }))
+                    ?: rates.minWithOrNull(compareBy({ it.upper }, { it.lower }))
+                val fps = range?.upper ?: CALL_VIDEO_FPS
                 val rotation = info.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
                 android.util.Log.i("SigilTiming", "video out ${size.width}x${size.height}@$fps ${callVideoBitrate(size.width, size.height, fps) / 1000}kbps")
                 val video = CallEncoder(size.width, size.height, rotation, fps, send) { failed() }
                 encoder = video
                 // The preview draws the camera itself; decoding our own stream would show it late.
-                // The camera writes the preview surface with its own transform already applied, so the
-                // view has to undo the sensor orientation rather than apply it as a decoded frame needs.
-                geometry(size.width, size.height, (360 - rotation) % 360)
+                // The camera applies its own transform to a preview surface, so the picture arrives
+                // upright: rotating it by the sensor orientation, either way round, lays it on its
+                // side. Only the shape it is shown in has to be the upright one.
+                val shape = if (rotation == 90 || rotation == 270) Size(size.height, size.width) else size
+                geometry(shape.width, shape.height, 0)
                 // The preview buffer has to match a size the camera can actually deliver.
                 val shown = preview?.let { it.setDefaultBufferSize(size.width, size.height); Surface(it) }
                 surface = shown
