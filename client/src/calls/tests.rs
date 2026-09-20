@@ -566,3 +566,57 @@ fn enabling_the_camera_mid_call_keeps_audio_flowing_both_ways() {
         }
     }
 }
+
+#[test]
+fn replaced_participant_does_not_keep_direct_call_sync_failing() {
+    for owner in [true, false] {
+        let (dir, _fixture, mut alice, mut bob, now) = pair();
+        configure(dir.path());
+        let (ap, b) = trust(&mut alice, &mut bob);
+        let id = [121; 32];
+        alice.start_call(id, now, true, &[b]).unwrap();
+        pump(&mut alice, &mut bob, now);
+        bob.answer_call(id, true, now).unwrap();
+        pump(&mut alice, &mut bob, now);
+        let tracks = Tracks {
+            audio: true,
+            camera: false,
+            screen: false,
+        };
+        let mut a = alice.start_call_media(id, tracks, now).unwrap();
+        let mut m = bob.start_call_media(id, tracks, now).unwrap();
+        pump(&mut alice, &mut bob, now);
+        alice.refresh_call_media(&mut a, now).unwrap();
+        bob.refresh_call_media(&mut m, now).unwrap();
+        pump(&mut alice, &mut bob, now);
+        let (mut alice, mut bob, b) = if owner {
+            (alice, bob, b)
+        } else {
+            (bob, alice, ap)
+        };
+        alice.block_peer(b, true).unwrap();
+        let _ = alice.resume_calls_online(now).unwrap();
+        assert!(alice.call(id, now).unwrap().phase == Phase::Active);
+        alice.block_peer(b, false).unwrap();
+        let old = alice.peer(b).unwrap();
+        let key = IdentityKey::generate().unwrap();
+        let mut replacement = crate::peers::parse(&bob.own_device_binding().unwrap()).unwrap();
+        replacement.binding.device = [122; 32];
+        replacement.binding.identity = key.public_key();
+        replacement.signature = key
+            .sign(&replacement.binding.signing_bytes().unwrap())
+            .unwrap();
+        let new = alice
+            .observe_peer_binding(&replacement.to_bytes().unwrap())
+            .unwrap();
+        alice
+            .approve_peer_replacement(b, new.id, old.fingerprint, new.fingerprint)
+            .unwrap();
+        for _ in 0..2 {
+            for attempt in alice.resume_calls_online(now).unwrap() {
+                attempt.result.unwrap();
+            }
+        }
+        assert!(alice.call(id, now).unwrap().phase == Phase::Ended);
+    }
+}

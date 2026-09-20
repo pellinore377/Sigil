@@ -528,6 +528,40 @@ impl ClientStore {
             if record.expire(now) {
                 super::save(&self.db, &self.key, &record)?;
             }
+            if record.direct
+                && matches!(
+                    record.phase,
+                    Phase::Ringing | Phase::Joining | Phase::Active
+                )
+            {
+                let mut obsolete = false;
+                for proof in &record.state.participants {
+                    if record
+                        .own
+                        .as_ref()
+                        .is_some_and(|own| own.member == proof.member)
+                    {
+                        continue;
+                    }
+                    match crate::peers::known(&self.db, &self.key, &peer(proof)?) {
+                        Ok(known) => {
+                            obsolete |= known.revoked
+                                || known.replaced_by.is_some()
+                                || known.fingerprint != proof.fingerprint().map_err(failure)?
+                        }
+                        Err(Error::NotFound) => (),
+                        Err(error) => return Err(error),
+                    }
+                }
+                if obsolete {
+                    if record.owner_peer.is_none() {
+                        end(&self.key, &mut record)?;
+                    } else {
+                        record.finish(Phase::Ended);
+                    }
+                    super::save(&self.db, &self.key, &record)?;
+                }
+            }
             // A finished call with nothing left to publish or announce needs no more reads.
             if matches!(record.phase, Phase::Declined | Phase::Left | Phase::Ended)
                 && record.commits.is_empty()
