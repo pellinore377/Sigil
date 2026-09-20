@@ -20,7 +20,24 @@ pub struct Media {
     challenges: Vec<(Id, Id)>,
     receivers: BTreeMap<Id, (u64, sigil_calls::Receiver, sigil_calls::Context)>,
     assembly: sigil_calls::Assembly,
+    checked: Option<Checked>,
 }
+/// What sealing and opening need from the record. Media runs at tens of frames a second in each
+/// direction and the record only moves when the mailbox brings a new state, so reading it per
+/// frame put a write transaction, and a full state digest, in front of every frame. On a device
+/// whose sync pass holds the same database for hundreds of milliseconds that is where the
+/// picture fell behind.
+struct Checked {
+    at: Instant,
+    /// The store's authority revision when this was read; a peer blocked or re-identified since
+    /// moves it, and the check is taken again before the next frame rather than on a timer.
+    authority: u64,
+    expires: u64,
+    own: Id,
+    tracks: Vec<(Id, Tracks)>,
+}
+/// How long an authority check stands. The refresh loop already re-reads once a second.
+const RECHECK: std::time::Duration = std::time::Duration::from_millis(200);
 impl Media {
     pub fn call(&self) -> Id {
         self.call
@@ -57,6 +74,7 @@ impl ClientStore {
                 challenges: challenges(&record.state),
                 receivers: BTreeMap::new(),
                 assembly: sigil_calls::Assembly::default(),
+                checked: None,
             };
             save(&tx, &self.key, &record)?;
             tx.commit()?;
@@ -79,6 +97,7 @@ impl ClientStore {
             challenges: challenges(&record.state),
             receivers: BTreeMap::new(),
             assembly: sigil_calls::Assembly::default(),
+            checked: None,
         };
         save(&tx, &self.key, &record)?;
         tx.commit()?;
@@ -104,6 +123,7 @@ impl ClientStore {
         let declared = ready(&tx, &self.key, &mut record, tracks, reuse, now)?;
         save(&tx, &self.key, &record)?;
         tx.commit()?;
+        media.checked = None;
         match declared {
             Some((digest, sender, key)) => {
                 media.state = Some(digest);
@@ -125,8 +145,47 @@ impl ClientStore {
         Ok(())
     }
     pub fn refresh_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
+        media.checked = None;
         self.refresh_media_record(media, now)?;
         Ok(media.receivers.len())
+    }
+    /// The authority behind one frame: the stored record when the check has lapsed, the last
+    /// check while it stands. Returns our own member id, which sealing needs.
+    fn media_gate(
+        &mut self,
+        media: &mut Media,
+        sender: Option<Id>,
+        kind: sigil_calls::MediaKind,
+        now: u64,
+    ) -> Result<Id, Error> {
+        if let Some(checked) = &media.checked {
+            if checked.at.elapsed() < RECHECK
+                && checked.authority == self.authority
+                && now < checked.expires
+            {
+                let own = checked.own;
+                let member = sender.unwrap_or(own);
+                return match checked.tracks.iter().find(|(id, _)| *id == member) {
+                    Some((_, tracks)) if track(*tracks, kind) => Ok(own),
+                    _ => Err(Error::Unprepared),
+                };
+            }
+        }
+        media.checked = None;
+        let record = self.refresh_media_record(media, now)?;
+        authority(&record, media, now)?;
+        let own = record.own_id()?;
+        media.checked = Some(Checked {
+            at: Instant::now(),
+            authority: self.authority,
+            expires: record.state.roster.roster.expires,
+            own,
+            tracks: record.state.ready.iter().map(|r| (r.member, r.tracks)).collect(),
+        });
+        if !enabled(&record, sender.unwrap_or(own), kind) {
+            return Err(Error::Unprepared);
+        }
+        Ok(own)
     }
     fn refresh_media_record(&mut self, media: &mut Media, now: u64) -> Result<Record, Error> {
         let tx = self
@@ -254,11 +313,7 @@ impl ClientStore {
         encoded: &[u8],
         now: u64,
     ) -> Result<Vec<u8>, Error> {
-        let record = self.refresh_media_record(media, now)?;
-        authority(&record, media, now)?;
-        if !enabled(&record, record.own_id()?, kind) {
-            return Err(Error::Unprepared);
-        }
+        self.media_gate(media, None, kind, now)?;
         let result = media
             .sender
             .as_mut()
@@ -267,6 +322,7 @@ impl ClientStore {
         match result {
             Err(sigil_calls::Error::Expired) => {
                 media.sender = None;
+                media.checked = None;
                 self.refresh_call_media(media, now)?;
                 media
                     .sender
@@ -286,11 +342,7 @@ impl ClientStore {
         encrypted: &[u8],
         now: u64,
     ) -> Result<sigil_calls::Frame, Error> {
-        let record = self.refresh_media_record(media, now)?;
-        authority(&record, media, now)?;
-        if !enabled(&record, sender, kind) {
-            return Err(Error::Unprepared);
-        }
+        self.media_gate(media, Some(sender), kind, now)?;
         let frame = media
             .receivers
             .get_mut(&sender)
@@ -323,11 +375,7 @@ impl ClientStore {
         packet: &[u8],
         now: u64,
     ) -> Result<Option<sigil_calls::Frame>, Error> {
-        let record = self.refresh_media_record(media, now)?;
-        authority(&record, media, now)?;
-        if !enabled(&record, sender, kind) {
-            return Err(Error::Unprepared);
-        }
+        self.media_gate(media, Some(sender), kind, now)?;
         self.assemble_call_packet(media, sender, kind, packet, now)
     }
     pub(super) fn assemble_call_packet(
@@ -352,17 +400,20 @@ fn authority(record: &Record, media: &Media, now: u64) -> Result<(), Error> {
     }
     Ok(())
 }
+fn track(tracks: Tracks, kind: sigil_calls::MediaKind) -> bool {
+    match kind {
+        sigil_calls::MediaKind::Audio => tracks.audio,
+        sigil_calls::MediaKind::Camera => tracks.camera,
+        sigil_calls::MediaKind::Screen => tracks.screen,
+    }
+}
 fn enabled(record: &Record, sender: Id, kind: sigil_calls::MediaKind) -> bool {
     record
         .state
         .ready
         .iter()
         .find(|r| r.member == sender)
-        .is_some_and(|r| match kind {
-            sigil_calls::MediaKind::Audio => r.tracks.audio,
-            sigil_calls::MediaKind::Camera => r.tracks.camera,
-            sigil_calls::MediaKind::Screen => r.tracks.screen,
-        })
+        .is_some_and(|r| track(r.tracks, kind))
 }
 /// Every member's receiver challenge in a state, in member order.
 fn challenges(state: &State) -> Vec<(Id, Id)> {
