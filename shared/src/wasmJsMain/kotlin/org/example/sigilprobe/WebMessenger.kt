@@ -267,7 +267,11 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         finally {if(!claimed)promise.then<JsAny?>({browserRevokeFileUrl(it.toString());null},{null})}
     }
     suspend fun refresh() {
-state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)storage(execute("storage"));if((BrowserDate.now()/1000).toLong()>=accessNext){account(execute("account_access"));accessNext=(BrowserDate.now()/1000).toLong()+300}}}
+state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connected"){timeline();transfers();calls.refresh(execute("calls"),::clock,{calendar(it).substringBeforeLast(", ")});if(state.storage!=null)runCatching{storage(execute("storage"))};if((BrowserDate.now()/1000).toLong()>=accessNext){
+        // Account standing is a status read, not a way in. It failing used to abort startup and
+        // leave the whole client behind "could not open this browser device".
+        runCatching{account(execute("account_access"))}.onFailure{browserTimingLog("SigilTiming account_access failed=${it.message?.take(120)}")}
+        accessNext=(BrowserDate.now()/1000).toLong()+300}}}
     LaunchedEffect(Unit) {
         try {val t0=BrowserDate.now();initializeBrowser().awaitBrowser<JsAny?>();videoReady=runCatching{browserVideoSupported()}.getOrDefault(false);calls.initialize();val t1=BrowserDate.now();startBrowser().awaitBrowser<JsAny?>();val t2=BrowserDate.now();refresh();val t3=BrowserDate.now();linking=execute("device_link",mapOf("action" to "status")).takeUnless{it.string("stage")=="none"};ready=true
             // Durations only: where a slow start sat, and whether the tab was visible while it did.

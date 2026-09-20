@@ -334,7 +334,12 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             let at = js_sys::Date::now();
             if at - capture.since >= 5000.0 {
                 let fps = f64::from(capture.counted) * 1000.0 / (at - capture.since);
-                web_sys::console::log_1(&JsValue::from_str(&format!("SigilTiming video out fps={fps:.0} queue={}", number(&capture.encoder, "encodeQueueSize").unwrap_or(0.0))));
+                let (frames, fragments) = crate::rtc::written();
+                let elapsed = (at - capture.since) / 1000.0;
+                web_sys::console::log_1(&JsValue::from_str(&format!(
+                    "SigilTiming video out fps={fps:.0} sent={:.0}/s fragments={:.0}/s queue={}",
+                    f64::from(frames) / elapsed, f64::from(fragments) / elapsed,
+                    number(&capture.encoder, "encodeQueueSize").unwrap_or(0.0))));
                 capture.counted = 0;
                 capture.since = at;
             }

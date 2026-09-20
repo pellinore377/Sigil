@@ -537,7 +537,17 @@ impl HttpsClient {
         limit: usize,
     ) -> Result<T, Error> {
         let bytes = self.response_bytes(response, status, limit, "application/json")?;
-        serde_json::from_slice(&bytes).map_err(|_| Error::InvalidResponse)
+        serde_json::from_slice(&bytes).map_err(|error| {
+            // A response the client cannot read wedges every later pass, so say which shape
+            // failed and where rather than leaving one unreadable reply to stop a device dead.
+            crate::perf::note(format!(
+                "response not parsed as {} len={} at {}",
+                std::any::type_name::<T>().rsplit("::").next().unwrap_or("value"),
+                bytes.len(),
+                error
+            ));
+            Error::InvalidResponse
+        })
     }
     fn response_bytes(
         &self,
