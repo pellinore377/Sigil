@@ -485,7 +485,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
     result
 }
 /// Throttled so a per-frame fault reports itself without flooding the console.
-fn note(message: &str) {
+pub(crate) fn note(message: &str) {
     thread_local! { static SEEN: RefCell<std::collections::HashMap<String, u32>> = RefCell::new(std::collections::HashMap::new()); }
     let head = message.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
     let show = SEEN.with(|seen| {

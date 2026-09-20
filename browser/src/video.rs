@@ -294,10 +294,13 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             let Some(capture) = slot.as_mut() else {
                 return Ok(());
             };
-            if get(&capture.encoder, "state")?.as_string().as_deref() != Some("configured")
-                || number(&capture.encoder, "encodeQueueSize").unwrap_or(0.0) > 2.0
-                || capture.video.ready_state() < 2
-            {
+            let state = get(&capture.encoder, "state")?.as_string().unwrap_or_default();
+            let queue = number(&capture.encoder, "encodeQueueSize").unwrap_or(0.0);
+            let ready = capture.video.ready_state();
+            if state != "configured" || queue > 2.0 || ready < 2 {
+                crate::rtc::note(&format!(
+                    "capture: idle state={state} queue={queue} ready={ready}"
+                ));
                 return Ok(());
             }
             capture
@@ -340,15 +343,13 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         });
     });
     // Encode each camera frame as it lands rather than on a timer, when the browser can say so.
-    let paced = js_sys::Reflect::has(&video, &"requestVideoFrameCallback".into()).unwrap_or(false);
-    let timer = if paced {
-        0
-    } else {
-        window.set_interval_with_callback_and_timeout_and_arguments_0(
-            tick.as_ref().unchecked_ref(),
-            (1000 / rate) as i32,
-        )?
-    };
+    // The frame callback only fires for an element the page is compositing, and the camera
+    // element is not always on screen, so the timer drives capture and the callback does not.
+    let paced = false;
+    let timer = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        tick.as_ref().unchecked_ref(),
+        (1000 / rate) as i32,
+    )?;
     let step = if paced {
         let generation = GENERATION.with(Cell::get);
         let step: Closure<dyn FnMut(JsValue, JsValue)> = Closure::new(move |_now: JsValue, _meta: JsValue| {
