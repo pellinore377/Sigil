@@ -12,7 +12,6 @@ struct Outgoing {
     timestamp: f64,
     keyframe: bool,
     bytes: zeroize::Zeroizing<Vec<u8>>,
-    queued: web_time::Instant,
     reply: futures_channel::oneshot::Sender<Result<bool, JsValue>>,
 }
 struct Session {
@@ -530,7 +529,6 @@ pub async fn browser_call_send(
             timestamp,
             keyframe,
             bytes: zeroize::Zeroizing::new(bytes.to_vec()),
-            queued: web_time::Instant::now(),
             reply,
         });
         let start = !session.sending[media as usize];
@@ -546,6 +544,15 @@ pub async fn browser_call_send(
         });
     }
     receive.await.map_err(|_| fail("Call changed"))?
+}
+/// True only when a newer frame is already waiting, so the pipeline always makes progress.
+fn stale(generation: u64, media: usize) -> bool {
+    SESSION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|s| s.generation == generation)
+            .is_some_and(|s| !s.outgoing[media].is_empty())
+    })
 }
 async fn send_queued(generation: u64, kind: MediaKind) {
     let media = kind as usize;
@@ -564,11 +571,13 @@ async fn send_queued(generation: u64, kind: MediaKind) {
             return;
         };
         let result=async{
-   if frame.queued.elapsed()>std::time::Duration::from_millis(80){return Ok(false);}
+   // Shed load by queue depth, not by a fixed deadline: sealing is a round trip to the worker,
+   // which also carries the audio transform, so a deadline short enough to matter drops every frame.
+   if stale(generation,media){return Ok(false);}
    let data=Uint8Array::from(frame.bytes.as_slice());
    let result=command(serde_json::json!({"operation":"call_seal","call":id,"kind":kind,"timestamp":frame.timestamp as u64,"keyframe":frame.keyframe}),data.clone()).await;
    data.fill(0,0,data.length());let encrypted=result?;
-   if frame.queued.elapsed()>std::time::Duration::from_millis(80){return Ok(false);}
+   if stale(generation,media){return Ok(false);}
    let fragments=sigil_calls::packetize(kind,&encrypted.to_vec()).map_err(|_|fail("Invalid encrypted frame"))?;
    SESSION.with(|slot|{
     let mut slot=slot.borrow_mut();let session=slot.as_mut().filter(|s|s.generation==generation).ok_or_else(||fail("Call changed"))?;
