@@ -437,6 +437,13 @@ pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsV
                 ],
             );
             viewer.context.restore();
+            if let Err(error) = &result {
+                // A failed paint is invisible otherwise: the tile just stays black.
+                web_sys::console::log_1(&JsValue::from_str(&format!(
+                    "SigilTiming video draw failed {:?}",
+                    error.as_string().unwrap_or_else(|| "unknown".into())
+                )));
+            }
             let _ = invoke(&frame, "close", &[]);
             drop(viewers);
             VIEWERS.with(|viewers| {
