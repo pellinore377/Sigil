@@ -150,6 +150,7 @@ async fn fetch_response(packet: &JsValue) -> Result<(u16, Vec<u8>, Vec<u8>), JsV
         return Err(fail("Request too large"));
     }
     let options = web_sys::RequestInit::new();
+    options.set_cache(web_sys::RequestCache::NoStore);
     options.set_method(&method);
     options.set_redirect(web_sys::RequestRedirect::Error);
     options.set_credentials(web_sys::RequestCredentials::Omit);

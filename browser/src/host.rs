@@ -228,6 +228,7 @@ pub async fn mailbox_watch() -> Result<bool, JsValue> {
     };
     let url = format!("{origin}/client/v0/mailbox/wait?after={after}&timeout=25");
     let options = web_sys::RequestInit::new();
+    options.set_cache(web_sys::RequestCache::NoStore);
     options.set_method("GET");
     options.set_redirect(web_sys::RequestRedirect::Error);
     options.set_credentials(web_sys::RequestCredentials::Omit);
