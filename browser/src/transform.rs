@@ -43,11 +43,18 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         }
         let frame = get(&read, "value")?;
         let converted = convert(&frame, sealing, &sender);
-        if converted.is_err() || matches!(converted, Ok(None)) {
+        let reason = match &converted {
+            Err(error) => Some(error.as_string().unwrap_or_else(|| "unknown".into())),
+            Ok(None) => Some("incomplete".into()),
+            Ok(Some(_)) => None,
+        };
+        if let Some(reason) = reason {
             dropped += 1;
-            if dropped % 50 == 1 {
+            // The reason separates a muted track, whose frames are meant to stop here, from a
+            // key or state failure, which is not.
+            if dropped % 250 == 1 {
                 web_sys::console::log_1(&JsValue::from_str(&format!(
-                    "SigilTiming call transform dropped={dropped} sealing={sealing}"
+                    "SigilTiming call transform dropped={dropped} sealing={sealing} reason={reason}"
                 )));
             }
             continue;

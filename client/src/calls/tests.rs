@@ -514,3 +514,55 @@ fn finished_calls_are_read_once_per_pass_while_pending_commits_still_publish() {
     }
     assert_eq!(LOADS.with(|loads| loads.get()), 4);
 }
+#[test]
+fn enabling_the_camera_mid_call_keeps_audio_flowing_both_ways() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    configure(dir.path());
+    let (_a, b) = trust(&mut alice, &mut bob);
+    let id = [88; 32];
+    alice.create_direct_call(id, now, 3600).unwrap();
+    alice.invite_to_call(id, b, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    pump(&mut bob, &mut alice, now);
+    let voice = Tracks { audio: true, camera: false, screen: false };
+    let both = Tracks { audio: true, camera: true, screen: false };
+    let mut a = alice.start_call_media(id, voice, now).unwrap();
+    let mut m = bob.start_call_media(id, voice, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    alice.refresh_call_media(&mut a, now).unwrap();
+    bob.refresh_call_media(&mut m, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    let speak = |who: &str,
+                     store: &mut ClientStore,
+                     media: &mut Media,
+                     stamp: u64| {
+        store
+            .seal_call_frame(media, sigil_calls::MediaKind::Audio, stamp, false, b"voice", now)
+            .unwrap_or_else(|e| panic!("{who} audio at {stamp}: {e:?}"));
+    };
+    speak("caller", &mut alice, &mut a, 1);
+    speak("callee", &mut bob, &mut m, 1);
+    // The callee turns its camera on; neither side may lose its audio track.
+    bob.set_call_tracks(&mut m, both, now).unwrap();
+    pump(&mut bob, &mut alice, now);
+    alice.refresh_call_media(&mut a, now).unwrap();
+    bob.refresh_call_media(&mut m, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    speak("caller after callee camera", &mut alice, &mut a, 2);
+    speak("callee after callee camera", &mut bob, &mut m, 2);
+    // Then the caller, which owns the call and commits its own readiness.
+    alice.set_call_tracks(&mut a, both, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    alice.refresh_call_media(&mut a, now).unwrap();
+    bob.refresh_call_media(&mut m, now).unwrap();
+    pump(&mut alice, &mut bob, now);
+    speak("caller after caller camera", &mut alice, &mut a, 3);
+    speak("callee after caller camera", &mut bob, &mut m, 3);
+    for (who, store) in [("caller", &mut alice), ("callee", &mut bob)] {
+        for person in store.call(id, now).unwrap().participants {
+            let tracks = person.tracks.unwrap_or_default();
+            assert!(tracks.audio && tracks.camera, "{who} sees {:?}", (tracks.audio, tracks.camera));
+        }
+    }
+}

@@ -25,17 +25,14 @@ fn codec_name(id: u8) -> Option<&'static str> {
     }
 }
 /// Frames per second to ask the camera for; the encoder follows what it actually delivers.
-const RATE: u32 = 60;
-/// Bits per second for a capture: 1080p at 60 gets 6 Mbit/s, 720p 3, smaller 1.2.
-fn bitrate(width: u32, height: u32, rate: u32) -> u32 {
-    let pixels = width * height;
-    if pixels >= 1920 * 1080 {
-        if rate >= 50 { 6_000_000 } else { 4_000_000 }
-    } else if pixels >= 1280 * 720 {
-        if rate >= 50 { 3_500_000 } else { 2_500_000 }
-    } else {
-        1_200_000
-    }
+const RATE: u32 = 24;
+/// The largest picture a call sends. Frames cross an unordered channel in 1 KB fragments and a
+/// frame missing one fragment is discarded whole, so a big frame is a frame that rarely arrives.
+const WIDTH: u32 = 640;
+const HEIGHT: u32 = 480;
+/// Bits per second for a capture, sized so a delta frame is a few fragments and a keyframe tens.
+fn bitrate(width: u32, height: u32, _rate: u32) -> u32 {
+    if width * height > WIDTH * HEIGHT { 900_000 } else { 600_000 }
 }
 struct Capture {
     stream: MediaStream,
@@ -141,7 +138,8 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
     constraints.set_audio(&false.into());
     constraints.set_video(&object(serde_json::json!({
         "facingMode": if front { "user" } else { "environment" },
-        "width": {"ideal": 1920}, "height": {"ideal": 1080}, "frameRate": {"ideal": RATE}
+        "width": {"ideal": WIDTH, "max": 1280}, "height": {"ideal": HEIGHT, "max": 1280},
+        "frameRate": {"ideal": RATE, "max": 30}
     }))?);
     let stream = JsFuture::from(
         window
@@ -174,7 +172,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
         width = 640;
         height = 480;
     }
-    let rate = (number(&settings, "frameRate").unwrap_or(30.0).round() as u32).clamp(15, 60);
+    let rate = (number(&settings, "frameRate").unwrap_or(30.0).round() as u32).clamp(15, 30);
     video.set_muted(true);
     video.set_attribute("playsinline", "")?;
     video.set_src_object(Some(&stream));
@@ -252,19 +250,17 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
             .and_then(|f| object(config.clone()).ok().and_then(|c| f.call1(&JsValue::UNDEFINED, &c).ok()))
             .map(|p| p.unchecked_into::<js_sys::Promise>())
     };
-    let ladder: [(u32, u32, u32, &str); 6] = [
-        (1920, 1080, 60, "prefer-hardware"),
-        (1920, 1080, 60, "no-preference"),
-        (1920, 1080, 30, "no-preference"),
-        (1280, 720, 60, "no-preference"),
-        (1280, 720, 30, "no-preference"),
-        (640, 480, 30, "no-preference"),
+    let ladder: [(u32, u32, u32, &str); 4] = [
+        (WIDTH, HEIGHT, RATE, "prefer-hardware"),
+        (WIDTH, HEIGHT, RATE, "no-preference"),
+        (480, 360, RATE, "no-preference"),
+        (320, 240, 15, "no-preference"),
     ];
     let portrait = height > width;
     let mut chosen = None;
     for (w, h, r, acceleration) in ladder {
         let (w, h) = if portrait { (h, w) } else { (w, h) };
-        if w > width.max(640) || h > height.max(640) || r > rate.max(30) {
+        if w > width.max(WIDTH) || h > height.max(WIDTH) || r > rate.max(RATE) {
             continue;
         }
         let config = serde_json::json!({
