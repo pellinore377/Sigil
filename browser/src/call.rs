@@ -238,13 +238,12 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
         }
     })
 }
-/// Seal one encoded audio frame and return the single RTP payload that carries it. Audio frames
-/// are well under a fragment, so the packetizer always yields exactly one.
 thread_local! {
     /// Frames the worker has sealed and opened, so the page can tell whether the
     /// encoded transforms are in the media path at all.
     pub(crate) static TRANSFORMED: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
+/// Seal one encoded audio frame into the single RTP payload that carries it.
 pub(crate) fn seal_audio(bytes: &[u8], timestamp: u64) -> Result<Vec<u8>, JsValue> {
     TRANSFORMED.with(|v| {
         let (sealed, opened) = v.get();
