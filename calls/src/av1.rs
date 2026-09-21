@@ -3,12 +3,17 @@
 use crate::Error;
 const MAX: usize = 1024 * 1024 + 128;
 
+pub fn camera_size(width: u16, height: u16) -> bool {
+    (16..=3840).contains(&width) && (16..=3840).contains(&height)
+        && u32::from(width) * u32::from(height) <= 3840 * 2160
+}
+
 /// Authenticated renderer envelope: media marker, key flag, timestamp, then camera header.
 pub fn camera_payload(bytes: &[u8]) -> Result<(u16, u16, u16, &[u8]), Error> {
     if bytes.len() <= 17 || bytes[0] != 1 || bytes[1] > 1 || bytes[10] != 2 { return Err(Error::Invalid); }
     let field = |at| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
     let (rotation, width, height) = (field(11), field(13), field(15));
-    if !matches!(rotation, 0 | 90 | 180 | 270) || width < 16 || height < 16 || width > 1920 || height > 1920 || u32::from(width) * u32::from(height) > 1920 * 1080 {
+    if !matches!(rotation, 0 | 90 | 180 | 270) || !camera_size(width, height) {
         return Err(Error::Invalid);
     }
     Ok((rotation, width, height, &bytes[17..]))
@@ -91,7 +96,14 @@ mod tests {
         for end in 0..=17 { assert!(camera_payload(&bytes[..end]).is_err()); }
         bytes[12] = 91; assert!(camera_payload(&bytes).is_err()); bytes[12] = 90;
         bytes[10] = 1; assert!(camera_payload(&bytes).is_err()); bytes[10] = 2;
-        bytes[15..17].copy_from_slice(&1920u16.to_be_bytes()); assert!(camera_payload(&bytes).is_err());
+        for (width, height) in [(3840u16, 2160u16), (2160, 3840)] {
+            bytes[13..15].copy_from_slice(&width.to_be_bytes()); bytes[15..17].copy_from_slice(&height.to_be_bytes());
+            assert_eq!(camera_payload(&bytes).unwrap(), (90, width, height, &[0x12, 0, 0x32, 7][..]));
+        }
+        for (width, height) in [(3840u16, 2161u16), (3841, 2160), (4096, 2048), (16, 65535), (15, 16)] {
+            bytes[13..15].copy_from_slice(&width.to_be_bytes()); bytes[15..17].copy_from_slice(&height.to_be_bytes());
+            assert!(camera_payload(&bytes).is_err());
+        }
     }
     #[test] fn encrypted_obu_round_trip_and_sequence_wrap() {
         for size in [1, 1100, 1101, 100_000, MAX] {

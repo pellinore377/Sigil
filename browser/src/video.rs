@@ -101,7 +101,7 @@ pub(crate) fn camera_track() -> Option<MediaStreamTrack> {
 pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<(), JsValue> {
     video_camera_stop(); let generation = GENERATION.with(Cell::get);
     let constraints = MediaStreamConstraints::new(); constraints.set_audio(&false.into());
-    constraints.set_video(&object(serde_json::json!({"facingMode":if front {"user"} else {"environment"},"width":{"ideal":1920,"max":1920},"height":{"ideal":1080,"max":1080},"frameRate":{"ideal":30,"max":30}}))?);
+    constraints.set_video(&object(serde_json::json!({"facingMode":if front {"user"} else {"environment"},"width":{"ideal":1920,"max":1920},"height":{"ideal":1080,"max":1080},"frameRate":{"ideal":60,"max":60}}))?);
     let window = web_sys::window().ok_or_else(|| fail("Missing window"))?;
     let stream = JsFuture::from(window.navigator().media_devices()?.get_user_media_with_constraints(&constraints)?).await?.dyn_into::<MediaStream>()?;
     let capture = Capture { stream, video };

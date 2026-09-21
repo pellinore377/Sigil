@@ -745,12 +745,14 @@ async fn drain(generation: u64) {
 pub(crate) async fn camera_track(track: Option<&web_sys::MediaStreamTrack>) -> Result<(), JsValue> {
     let sender = SESSION.with(|s| s.borrow().as_ref().map(|s| s.camera.clone())).ok_or_else(|| fail("Call is not connected"))?;
     promise(invoke(&sender, "replaceTrack", &[track.map(|t| t.clone().into()).unwrap_or(JsValue::NULL)])?).await?;
-    if track.is_some() {
+    if let Some(track) = track {
+        let settings = invoke(track, "getSettings", &[])?;
+        let fps = get(&settings, "frameRate")?.as_f64().unwrap_or(30.0).clamp(1.0, 60.0);
         let params = invoke(&sender, "getParameters", &[])?;
         let encodings = Array::from(&get(&params, "encodings")?);
         for encoding in encodings.iter() {
-            set(&encoding, "maxBitrate", &3_500_000.into())?;
-            set(&encoding, "maxFramerate", &30.into())?;
+            set(&encoding, "maxBitrate", &(3_500_000.0 * fps / 30.0).into())?;
+            set(&encoding, "maxFramerate", &fps.into())?;
         }
         set(&params, "degradationPreference", &"maintain-framerate".into())?;
         promise(invoke(&sender, "setParameters", &[params])?).await?;
