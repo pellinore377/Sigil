@@ -231,8 +231,7 @@ pub fn video_receive(sender: String, frame: Uint8Array) -> Result<bool, JsValue>
                 "configure",
                 &[object(serde_json::json!({
                     "codec": codec_name(codec).unwrap_or_default(), "codedWidth": width, "codedHeight": height,
-                    // Preserve the software fallback until the reported hardware black frames are re-tested.
-                    "hardwareAcceleration": "prefer-software", "optimizeForLatency": true
+                    "hardwareAcceleration": "no-preference", "optimizeForLatency": true
                 }))?],
             )?;
             viewer.decoder = Some(decoder);

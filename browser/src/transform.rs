@@ -89,7 +89,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         let Ok(Some(payload)) = converted else { continue };
         let buffer = js_sys::Uint8Array::from(payload.as_slice()).buffer();
         if video && !sealing {
-            // Keep the software AV1 renderer: the native hardware decoder is broken on some drivers.
+            // Deliver authenticated AV1 to the renderer, preserving its rotation metadata.
             let id = NEXT.with(|n| { let id = n.get().wrapping_add(1); n.set(id); id });
             let (reply, received) = futures_channel::oneshot::channel();
             ACKS.with(|a| a.borrow_mut().insert(id, reply));
