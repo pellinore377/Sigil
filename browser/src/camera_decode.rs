@@ -7,11 +7,13 @@ use crate::{
 use js_sys::{Array, Uint8Array};
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     rc::{Rc, Weak},
 };
 use wasm_bindgen::{JsCast, prelude::*};
 
+#[path = "camera_pacing.rs"]
+mod pacing;
 thread_local! {
     static NEXT: Cell<u32> = const {Cell::new(0)};
     static LIVE: RefCell<HashMap<u32, Weak<RefCell<State>>>> = RefCell::new(HashMap::new());
@@ -22,6 +24,10 @@ struct State {
     failed: bool,
     waiting: bool,
     pending: Option<Frame>,
+    ready: VecDeque<(f64, Frame)>,
+    clock: pacing::Clock,
+    timer: Option<i32>,
+    tick: Option<js_sys::Function>,
     submitted: BTreeMap<u64, (i32, u16)>,
     last_stamp: Option<u64>,
     call: String,
@@ -33,6 +39,7 @@ pub(crate) struct Decoder {
     state: Rc<RefCell<State>>,
     output: Closure<dyn FnMut(JsValue)>,
     error: Closure<dyn FnMut(JsValue)>,
+    _tick: Closure<dyn FnMut()>,
 }
 struct Frame {
     value: JsValue,
@@ -42,10 +49,45 @@ struct Frame {
 fn close(frame: &JsValue) {
     let _ = invoke(frame, "close", &[]);
 }
+fn worker() -> web_sys::WorkerGlobalScope {
+    js_sys::global().unchecked_into()
+}
+fn now() -> f64 {
+    worker()
+        .performance()
+        .map(|p| p.now())
+        .unwrap_or_else(js_sys::Date::now)
+}
+fn unqueue(s: &mut State) {
+    if let Some(timer) = s.timer.take() {
+        worker().clear_timeout_with_handle(timer);
+    }
+    for (_, frame) in s.ready.drain(..) {
+        close(&frame.value);
+    }
+    s.clock = pacing::Clock::default();
+}
+fn arm(s: &mut State) {
+    if s.timer.is_some() || s.native {
+        return;
+    }
+    if let (Some((due, _)), Some(tick)) = (s.ready.front(), s.tick.as_ref()) {
+        s.timer = worker()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                tick,
+                (due - now()).ceil().max(0.0) as i32,
+            )
+            .ok();
+        if s.timer.is_none() {
+            unqueue(s);
+        }
+    }
+}
 impl Drop for Decoder {
     fn drop(&mut self) {
         LIVE.with(|v| v.borrow_mut().remove(&self.id));
         let mut s = self.state.borrow_mut();
+        unqueue(&mut s);
         if let Some(d) = s.decoder.take() {
             close(&d);
         }
@@ -92,6 +134,10 @@ impl Decoder {
             failed: false,
             waiting: false,
             pending: None,
+            ready: VecDeque::new(),
+            clock: pacing::Clock::default(),
+            timer: None,
+            tick: None,
             submitted: BTreeMap::new(),
             last_stamp: None,
             call,
@@ -108,15 +154,21 @@ impl Decoder {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(-1.0) as u64;
                 if let Some((revision, rotation)) = s.submitted.remove(&timestamp) {
-                    post(
-                        &mut s,
-                        id,
+                    let due = s.clock.due(timestamp, now());
+                    while s.ready.len() >= 6 {
+                        if let Some((_, old)) = s.ready.pop_front() {
+                            close(&old.value);
+                        }
+                    }
+                    s.ready.push_back((
+                        due,
                         Frame {
                             value: frame,
                             revision,
                             rotation,
                         },
-                    );
+                    ));
+                    arm(&mut s);
                 } else {
                     close(&frame);
                 }
@@ -130,15 +182,37 @@ impl Decoder {
                 s.borrow_mut().failed = true;
             }
         });
+        let weak = Rc::downgrade(&state);
+        let tick = Closure::<dyn FnMut()>::new(move || {
+            if let Some(state) = weak.upgrade() {
+                let mut s = state.borrow_mut();
+                s.timer = None;
+                let at = now();
+                let mut latest: Option<Frame> = None;
+                while s.ready.front().is_some_and(|(due, _)| *due <= at) {
+                    if let Some(old) = latest.take() {
+                        close(&old.value);
+                    }
+                    latest = s.ready.pop_front().map(|(_, frame)| frame);
+                }
+                if let Some(frame) = latest {
+                    post(&mut s, id, frame);
+                }
+                arm(&mut s);
+            }
+        });
+        state.borrow_mut().tick = Some(tick.as_ref().unchecked_ref::<js_sys::Function>().clone());
         Self {
             id,
             state,
             output,
             error,
+            _tick: tick,
         }
     }
     pub(crate) fn discontinuity(&self) {
         let mut s = self.state.borrow_mut();
+        unqueue(&mut s);
         if let Some(d) = s.decoder.take() {
             close(&d);
         }
@@ -249,6 +323,7 @@ impl Decoder {
                 s.waiting = false;
                 if get(data, "native").ok().and_then(|v| v.as_bool()) == Some(true) {
                     s.native = true;
+                    unqueue(&mut s);
                     if let Some(d) = s.decoder.take() {
                         close(&d);
                     }

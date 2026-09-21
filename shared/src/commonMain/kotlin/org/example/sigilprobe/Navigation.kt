@@ -114,6 +114,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
     var goingBack by remember { mutableStateOf(false) }
     var callPanel by remember(state.call?.call?.id) { mutableStateOf("") }
     var callMinimized by remember(state.call?.call?.id) { mutableStateOf(false) }
+    val callExpanded = state.call != null && !callMinimized
+    LaunchedEffect(callExpanded) { command("call_display", mapOf("expanded" to callExpanded)) }
     var pendingChatTheme by remember { mutableStateOf<Pair<String, String>?>(null) }
     var newTitle by remember { mutableStateOf("New conversation") }
     var conversationPage by rememberSaveable { mutableStateOf("") }

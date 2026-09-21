@@ -152,6 +152,7 @@ pub struct ClientStore {
     /// Bumped whenever a stored call record or a peer's standing changes, so a live call can
     /// tell that its authority needs reading again without touching the database per frame.
     authority: u64,
+    media_store: std::sync::Arc<()>,
     #[cfg(feature = "rtc-client")]
     rtc_authority: Option<calls::RtcAuthority>,
 }
@@ -539,6 +540,7 @@ impl ClientStore {
             key,
             connection: Default::default(),
             authority: 0,
+            media_store: std::sync::Arc::new(()),
             #[cfg(feature = "rtc-client")]
             rtc_authority: None,
         })

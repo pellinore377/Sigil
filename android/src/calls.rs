@@ -6,11 +6,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod call_lanes;
 use call_lanes::SendLanes;
 struct NativeCall {
+    state: Mutex<NativeMedia>,
+    send_lanes: SendLanes,
+}
+struct NativeMedia {
     store: sigil_client::ClientStore,
     call: RtcCall,
-    send_lanes: Arc<SendLanes>,
 }
-type Handle = Arc<Mutex<NativeCall>>;
+type Handle = Arc<NativeCall>;
 static ACTIVE: Mutex<Option<(i64, Option<Handle>)>> = Mutex::new(None);
 /// The media handle of the last closed transport, kept for the rebuild that follows a roster change.
 static PARKED: Mutex<Option<sigil_client::calls::Media>> = Mutex::new(None);
@@ -57,8 +60,8 @@ fn remove(id: i64) {
         _ => None,
     };
     if let Some((_, Some(handle))) = taken {
-        if let Ok(mutex) = Arc::try_unwrap(handle) {
-            if let Ok(native) = mutex.into_inner() {
+        if let Ok(handle) = Arc::try_unwrap(handle) {
+            if let Ok(native) = handle.state.into_inner() {
                 if let Ok(mut parked) = PARKED.lock() {
                     *parked = Some(native.call.into_media());
                 }
@@ -138,11 +141,10 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_openCall(
         {
             let mut active = ACTIVE.lock().ok()?;
             let slot = active.as_mut().filter(|(id, _)| *id == token)?;
-            slot.1 = Some(Arc::new(Mutex::new(NativeCall {
-                store: store.into_inner(),
-                call: value,
-                send_lanes: Arc::new(SendLanes::default()),
-            })));
+            slot.1 = Some(Arc::new(NativeCall {
+                state: Mutex::new(NativeMedia { store: store.into_inner(), call: value }),
+                send_lanes: SendLanes::default(),
+            }));
         }
         std::mem::forget(reservation);
         Some(token)
@@ -168,8 +170,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callState(
     let _timing = Timing("state", std::time::Instant::now());
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<jint> {
         let handle = handle(token)?;
-        let mut active = handle.lock().ok()?;
-        let NativeCall { store, call, .. } = &mut *active;
+        let mut active = handle.state.lock().ok()?;
+        let NativeMedia { store, call } = &mut *active;
         Some(match store.rtc_media_state(call, now()).ok()? {
             "connected" => 1,
             "disconnected" => 2,
@@ -192,8 +194,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callTracks(
 ) -> jboolean {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<()> {
         let handle = handle(token)?;
-        let mut active = handle.lock().ok()?;
-        let NativeCall { store, call, .. } = &mut *active;
+        let mut active = handle.state.lock().ok()?;
+        let NativeMedia { store, call } = &mut *active;
         store.rtc_set_tracks(call, tracks(enabled)?, now()).ok()
     }));
     if result.ok().flatten().is_some() {
@@ -219,16 +221,15 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
         let bytes = Zeroizing::new(env.convert_byte_array(&data).ok()?);
         let media = kind(media)?;
         let current = handle(token)?;
-        let lanes = current.lock().ok()?.send_lanes.clone();
-        lanes.run(media as usize, || {
+        current.send_lanes.run(media as usize, || {
             let handle = handle(token)?;
             if !Arc::ptr_eq(&current, &handle) {
                 return None;
             }
             let transmission = {
                 let _timing = Timing("prepare", std::time::Instant::now());
-                let mut active = handle.lock().ok()?;
-                let NativeCall { store, call, .. } = &mut *active;
+                let mut active = handle.state.lock().ok()?;
+                let NativeMedia { store, call } = &mut *active;
                 store
                     .rtc_prepare_send(call, media, timestamp as u64, keyframe != 0, &bytes, now())
                     .ok()?
@@ -253,8 +254,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Option<Zeroizing<Vec<u8>>> {
             let handle = handle(token)?;
-            let mut active = handle.lock().ok()?;
-            let NativeCall { store, call, .. } = &mut *active;
+            let mut active = handle.state.lock().ok()?;
+            let NativeMedia { store, call } = &mut *active;
             let frames = store.rtc_receive(call, now()).ok()?;
             let mut bytes = Zeroizing::new(Vec::with_capacity(
                 frames.iter().map(|v| 46 + v.frame.data.len()).sum(),

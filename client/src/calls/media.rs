@@ -35,6 +35,10 @@ struct Checked {
     /// The store's authority revision when this was read; a peer blocked or re-identified since
     /// moves it, and the check is taken again before the next frame rather than on a timer.
     authority: u64,
+    store: std::sync::Arc<()>,
+    version: i64,
+    changes: u64,
+    clock: u64,
     expires: u64,
     own: Id,
     tracks: Vec<(Id, Tracks)>,
@@ -117,9 +121,13 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stage = Instant::now();
         let now = crate::conversations::time_floor(&tx, &self.key, now)?;
+        if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.clock", stage); }
+        let stage = Instant::now();
         let mut record = load(&tx, &self.key, &media.call)?;
         record.authorize(&tx, &self.key, now)?;
+        if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.authority", stage); }
         if record.lease != media.lease {
             return Err(Error::Obsolete);
         }
@@ -157,11 +165,18 @@ impl ClientStore {
     }
     pub fn refresh_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
         media.checked = None;
+        let version = self.db.query_row("PRAGMA data_version", [], |row| row.get(0))?;
+        let started = Instant::now();
         let record = self.refresh_media_record(media, now)?;
+        if started.elapsed().as_millis() >= 10 { crate::perf::mark("call.media_refresh", started); }
         authority(&record, media, now)?;
         media.checked = Some(Checked {
             at: Instant::now(),
             authority: self.authority,
+            store: self.media_store.clone(),
+            version,
+            changes: self.db.total_changes(),
+            clock: now,
             expires: record.state.roster.roster.expires,
             own: record.own_id()?,
             tracks: record.state.ready.iter().map(|r| (r.member, r.tracks)).collect(),
@@ -169,10 +184,21 @@ impl ClientStore {
         Ok(media.receivers.len())
     }
     pub(super) fn checked_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
-        if media.checked.as_ref().is_some_and(|checked|
-            checked.at.elapsed() < RECHECK && checked.authority == self.authority && now < checked.expires
-        ) {
-            return Ok(media.receivers.len());
+        if let Some(checked) = media.checked.as_mut() {
+            if std::sync::Arc::ptr_eq(&checked.store, &self.media_store)
+                && checked.authority == self.authority && now < checked.expires
+            {
+                if checked.at.elapsed() < RECHECK { return Ok(media.receivers.len()); }
+                // Revalidate the committed storage revision without repeating signatures or
+                // reserving a writer. A new clock second still persists the rollback floor.
+                if now == checked.clock && self.db.is_autocommit()
+                    && checked.changes == self.db.total_changes()
+                    && checked.version == self.db.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))?
+                {
+                    checked.at = Instant::now();
+                    return Ok(media.receivers.len());
+                }
+            }
         }
         self.refresh_call_media(media, now)
     }
@@ -206,9 +232,13 @@ impl ClientStore {
         let tx = self
             .db
             .transaction_with_behavior(behavior)?;
+        let stage = Instant::now();
         let now = crate::conversations::time_floor(&tx, &self.key, now)?;
+        if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.clock", stage); }
+        let stage = Instant::now();
         let mut record = load(&tx, &self.key, &media.call)?;
         record.authorize(&tx, &self.key, now)?;
+        if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.authority", stage); }
         if record.lease != media.lease {
             return Err(Error::Obsolete);
         }
@@ -295,7 +325,9 @@ impl ClientStore {
                 )),
             }
         }
+        let stage = Instant::now();
         tx.commit()?;
+        if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.commit", stage); }
         if let Some((sender, key)) = replacement {
             if let Some(sender) = sender {
                 media.sender = Some(sender);

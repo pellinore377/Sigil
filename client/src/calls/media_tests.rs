@@ -25,7 +25,12 @@ fn refreshed_media_does_not_repeat_storage_work_before_the_authority_deadline() 
     assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 0, false, b"synthetic", now).is_ok());
     // Expiry rechecks storage, but unchanged authority needs no writer reservation.
     media.checked.as_mut().unwrap().at = Instant::now() - RECHECK;
+    let loads = super::super::LOADS.with(|value| value.get());
     assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 20_000, false, b"synthetic", now).is_ok());
+    assert_eq!(loads, super::super::LOADS.with(|value| value.get()));
+    // A different store cannot inherit the cached proof, even inside its deadline.
+    assert!(bob.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 25_000, false, b"forbidden", now).is_err());
+    alice.refresh_call_media(&mut media, now).unwrap();
     // Advancing the persisted clock floor still requires a write, and must fail closed.
     media.checked.as_mut().unwrap().at = Instant::now() - RECHECK;
     assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 30_000, false, b"synthetic", now + 1).is_err());
