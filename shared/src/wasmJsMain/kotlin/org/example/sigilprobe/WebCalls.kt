@@ -28,7 +28,7 @@ internal class WebCalls(private val scope:CoroutineScope,private val command:sus
     var front=true;private set
     private var cameraJob:Job?=null
     /** Local camera preview; the encoder samples this element. */
-    val selfVideo:HTMLVideoElement by lazy {(document.createElement("video") as HTMLVideoElement).apply {setAttribute("style","display:block;width:100%;height:100%;object-fit:cover;background:#000;transform:scaleX(-1)");setAttribute("aria-label","Your camera");muted=true;setAttribute("playsinline","")}}
+    val selfVideo:HTMLVideoElement by lazy {(document.createElement("video") as HTMLVideoElement).apply {setAttribute("style","display:block;width:100%;height:100%;object-fit:contain;background:#000;transform:scaleX(-1)");setAttribute("aria-label","Your camera");muted=true;setAttribute("playsinline","")}}
     private var start=0.0
     private var retry=0.0
     private var failures=0
