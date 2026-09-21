@@ -75,6 +75,8 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
         ?.let { android.util.Log.i("SigilTiming", "codec encode ${it.name} hardware=${it.isHardwareAccelerated}"); MediaCodec.createByCodecName(it.name) }
         ?: MediaCodec.createEncoderByType(mime)
     private val running = AtomicBoolean(true)
+    private val keyframeRequested = AtomicBoolean(false)
+    fun requestKeyframe() { keyframeRequested.set(true) }
     val surface: Surface
     private val worker: Thread
     init {
@@ -95,6 +97,7 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
             var counted = 0L; var since = android.os.SystemClock.elapsedRealtime()
             try {
                 while (running.get()) {
+                    if (keyframeRequested.getAndSet(false)) codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
                     val index = codec.dequeueOutputBuffer(info, 10000)
                     if (index < 0) continue
                     try {
@@ -118,13 +121,53 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
     }
     override fun close() { running.set(false); worker.interrupt() }
 }
-internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Unit, private val failed: () -> Unit) : AutoCloseable {
+// Queue only a short interval; after a gap, resume with an independent frame.
+internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> Unit, private val requestKeyframe: () -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
+    private data class Pending(val stamp: Long, val key: Boolean, val bytes: ByteArray, val added: Long)
+    private val queue = ArrayBlockingQueue<Pending>(3)
+    private val running = AtomicBoolean(true)
+    private var waitingKey = true
+    private fun clear() { while (true) (queue.poll() ?: break).bytes.fill(0) }
+    @Synchronized fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
+        if (!running.get()) return
+        if (waitingKey && !keyframe) return
+        if (queue.remainingCapacity() == 0) {
+            clear(); waitingKey = true; requestKeyframe()
+        }
+        if (waitingKey && !keyframe) return
+        waitingKey = false
+        queue.add(Pending(timestamp, keyframe, bytes.copyOf(), System.nanoTime()))
+    }
+    private val worker = Thread({
+        try {
+            while (running.get()) {
+                val packet = queue.poll(20, TimeUnit.MILLISECONDS) ?: continue
+                try {
+                    if (!running.get()) continue
+                    if (System.nanoTime() - packet.added > 100_000_000L) {
+                        synchronized(this) { clear(); waitingKey = true; requestKeyframe() }
+                        continue
+                    }
+                    send(packet.stamp, packet.key, packet.bytes)
+                } finally { packet.bytes.fill(0) }
+            }
+        } catch (error: Exception) { if (running.get()) failed(error) }
+        finally { synchronized(this) { clear() } }
+    }, "Sigil video sender").apply { start() }
+    @Synchronized override fun close() { running.set(false); clear(); worker.interrupt() }
+}
+internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Unit, private val failed: () -> Unit, preview: (Long, Boolean, ByteArray) -> Unit = { _, _, _ -> }) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val thread = HandlerThread("Sigil camera").apply { start() }
     private val handler = Handler(thread.looper)
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
-    private var encoder: CallEncoder? = null
+    @Volatile private var encoder: CallEncoder? = null
+    private val outgoing = CallVideoSender(send, { encoder?.requestKeyframe() }, { error ->
+        android.util.Log.e("SigilTiming", "camera send failed", error)
+        if (running.get()) failed()
+        close()
+    })
     init {
         handler.post {
             try {
@@ -153,7 +196,14 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                 val fps = range.upper
                 val rotation = info.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
                 android.util.Log.i("SigilTiming", "video out ${size.width}x${size.height}@$fps ${callVideoBitrate(size.width, size.height, fps) / 1000}kbps")
-                val video = CallEncoder(size.width, size.height, rotation, fps, send) { failed() }
+                val video = CallEncoder(size.width, size.height, rotation, fps, { timestamp, keyframe, bytes ->
+                    preview(timestamp, keyframe, bytes)
+                    outgoing.offer(timestamp, keyframe, bytes)
+                }) { error ->
+                    android.util.Log.e("SigilTiming", "camera encoder failed", error)
+                    if (running.get()) failed()
+                    close()
+                }
                 encoder = video
                 // The preview is this stream decoded back, as a screen share already is. A second
                 // camera target must be a size the camera can deliver, and the camera crops the
@@ -179,14 +229,15 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                             override fun onConfigureFailed(value: CameraCaptureSession) { value.close(); failed(); close() }
                         }, handler)
                     }
-                    override fun onDisconnected(camera: CameraDevice) { camera.close(); if (running.get()) failed(); close() }
-                    override fun onError(camera: CameraDevice, error: Int) { camera.close(); if (running.get()) failed(); close() }
+                    override fun onDisconnected(camera: CameraDevice) { android.util.Log.e("SigilTiming", "camera disconnected"); camera.close(); if (running.get()) failed(); close() }
+                    override fun onError(camera: CameraDevice, error: Int) { android.util.Log.e("SigilTiming", "camera device error=$error"); camera.close(); if (running.get()) failed(); close() }
                 }, handler)
             } catch (_: Exception) { if (running.get()) failed(); close() }
         }
     }
     override fun close() {
         if (!running.getAndSet(false)) return
+        outgoing.close()
         handler.post { try { session?.stopRepeating() } catch (_: Exception) {}; session?.close(); device?.close(); encoder?.close(); thread.quitSafely() }
     }
 }
