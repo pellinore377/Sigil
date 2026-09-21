@@ -17,6 +17,31 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class CallVideoTest {
     @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
+    @Test fun blockedVideoSendDropsDependenciesAndRecoversAtKeyframe() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val delivered = CountDownLatch(1)
+        val requested = AtomicInteger()
+        val stamps = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val failures = AtomicInteger()
+        val sender = CallVideoSender({ stamp, _, bytes ->
+            if (stamp == 0L) { entered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS)) }
+            assertEquals(7, bytes[0].toInt())
+            stamps.add(stamp)
+            if (stamp == 6L) delivered.countDown()
+        }, { requested.incrementAndGet() }, { failures.incrementAndGet() })
+        try {
+            val bytes = byteArrayOf(7)
+            sender.offer(0, true, bytes)
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            for (stamp in 1L..5L) sender.offer(stamp, false, bytes)
+            assertEquals(1, requested.get())
+            release.countDown()
+            sender.offer(6, true, bytes)
+            bytes.fill(0)
+            assertTrue(delivered.await(2, TimeUnit.SECONDS))
+            assertEquals(listOf(0L, 6L), stamps.toList())
+            assertEquals(0, failures.get())
+        } finally { release.countDown(); sender.close() }
+    }
     @Test fun rotationPreservesAspectAndFitsInsideTheView() {
         for ((width, height) in listOf(640 to 480, 1280 to 720)) {
             for ((viewWidth, viewHeight) in listOf(400 to 800, 800 to 400, 120 to 120)) {

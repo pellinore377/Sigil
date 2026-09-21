@@ -231,7 +231,7 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                             retry = 1000
                             if (started == 0L && history.find { it.id == id }?.participants?.size?.let { it > 1 } == true) started = SystemClock.elapsedRealtime()
                             if (microphone == null) microphone = CallMicrophone({ timestamp, bytes -> send(0, timestamp, false, bytes) }, { amplitude -> scope.launch { levels = levels + ("self" to amplitude) } }, { scope.launch { issue("Microphone capture stopped."); end() } }).apply { muted = this@NativeCalls.muted }
-                            if (video && cameraReady && camera == null) camera = CallCamera(app, front, { timestamp, keyframe, bytes -> videoOutputs["self:1"]?.offer(timestamp, keyframe, bytes); send(1, timestamp, keyframe, bytes) }, { scope.launch { video = false; camera?.close(); camera = null; applyTracks(); issue("Camera capture stopped.") } })
+                            if (video && cameraReady && camera == null) camera = CallCamera(app, front, { timestamp, keyframe, bytes -> send(1, timestamp, keyframe, bytes) }, { scope.launch { video = false; camera?.close(); camera = null; applyTracks(); issue("Camera capture stopped.") } }, { timestamp, keyframe, bytes -> videoOutputs["self:1"]?.offer(timestamp, keyframe, bytes) })
                             received = withContext(Dispatchers.IO) { NativeStorage.receiveCallFrames(handle)?.let { bytes -> try { receive(handle, bytes); bytes.isNotEmpty() } finally { bytes.fill(0) } } == true }
                         }
                         delay(if (received) 5 else 20)
