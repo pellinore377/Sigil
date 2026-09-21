@@ -3,6 +3,17 @@
 use crate::Error;
 const MAX: usize = 1024 * 1024 + 128;
 
+/// Authenticated renderer envelope: media marker, key flag, timestamp, then camera header.
+pub fn camera_payload(bytes: &[u8]) -> Result<(u16, u16, u16, &[u8]), Error> {
+    if bytes.len() <= 17 || bytes[0] != 1 || bytes[1] > 1 || bytes[10] != 2 { return Err(Error::Invalid); }
+    let field = |at| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
+    let (rotation, width, height) = (field(11), field(13), field(15));
+    if !matches!(rotation, 0 | 90 | 180 | 270) || width < 16 || height < 16 || width > 1920 || height > 1920 || u32::from(width) * u32::from(height) > 1920 * 1080 {
+        return Err(Error::Invalid);
+    }
+    Ok((rotation, width, height, &bytes[17..]))
+}
+
 fn length(mut n: usize, out: &mut Vec<u8>) {
     loop { let byte = (n & 127) as u8; n >>= 7; out.push(byte | if n == 0 { 0 } else { 128 }); if n == 0 { break; } }
 }
@@ -72,6 +83,16 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test] fn native_camera_payload_preserves_encoded_bytes_and_rejects_bad_geometry() {
+        let mut bytes = vec![1, 1]; bytes.extend_from_slice(&123u64.to_be_bytes()); bytes.push(2);
+        bytes.extend_from_slice(&90u16.to_be_bytes()); bytes.extend_from_slice(&1920u16.to_be_bytes()); bytes.extend_from_slice(&1080u16.to_be_bytes());
+        bytes.extend_from_slice(&[0x12, 0, 0x32, 7]);
+        assert_eq!(camera_payload(&bytes).unwrap(), (90, 1920, 1080, &[0x12, 0, 0x32, 7][..]));
+        for end in 0..=17 { assert!(camera_payload(&bytes[..end]).is_err()); }
+        bytes[12] = 91; assert!(camera_payload(&bytes).is_err()); bytes[12] = 90;
+        bytes[10] = 1; assert!(camera_payload(&bytes).is_err()); bytes[10] = 2;
+        bytes[15..17].copy_from_slice(&1920u16.to_be_bytes()); assert!(camera_payload(&bytes).is_err());
+    }
     #[test] fn encrypted_obu_round_trip_and_sequence_wrap() {
         for size in [1, 1100, 1101, 100_000, MAX] {
             let bytes = vec![91; size]; assert_eq!(unwrap(&wrap(&bytes).unwrap()).unwrap(), bytes);

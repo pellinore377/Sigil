@@ -32,6 +32,8 @@ import kotlin.js.*
 @JsName("video_camera_failed") external fun browserVideoFailed():Boolean
 @JsName("video_attach") external fun browserVideoAttach(sender:String,canvas:org.w3c.dom.HTMLCanvasElement)
 @JsName("video_detach") external fun browserVideoDetach(sender:String)
+@JsName("video_native_attach") external fun browserVideoNativeAttach(sender:String,video:org.w3c.dom.HTMLVideoElement)
+@JsName("video_native_detach") external fun browserVideoNativeDetach(sender:String)
 @JsName("video_receive") external fun browserVideoReceive(sender:String,frame:JsAny):Boolean
 @JsName("camera_photo_url") external fun browserCameraPhotoUrl(file:JsAny):String
 @JsName("render_math") external fun browserRenderMath(target:org.w3c.dom.HTMLElement,mathml:String)
