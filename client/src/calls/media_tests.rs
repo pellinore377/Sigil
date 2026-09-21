@@ -23,9 +23,12 @@ fn refreshed_media_does_not_repeat_storage_work_before_the_authority_deadline() 
     alice.refresh_call_media(&mut media, now).unwrap();
     writer.execute_batch("BEGIN IMMEDIATE").unwrap();
     assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 0, false, b"synthetic", now).is_ok());
-    // A fresh check avoids a second transaction; expiry must still require storage.
+    // Expiry rechecks storage, but unchanged authority needs no writer reservation.
     media.checked.as_mut().unwrap().at = Instant::now() - RECHECK;
-    assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 20_000, false, b"synthetic", now).is_err());
+    assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 20_000, false, b"synthetic", now).is_ok());
+    // Advancing the persisted clock floor still requires a write, and must fail closed.
+    media.checked.as_mut().unwrap().at = Instant::now() - RECHECK;
+    assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 30_000, false, b"synthetic", now + 1).is_err());
     writer.execute_batch("ROLLBACK").unwrap();
     alice.refresh_call_media(&mut media, now).unwrap();
     alice.block_peer(peer, true).unwrap();

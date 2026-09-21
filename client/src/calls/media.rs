@@ -168,6 +168,14 @@ impl ClientStore {
         });
         Ok(media.receivers.len())
     }
+    pub(super) fn checked_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
+        if media.checked.as_ref().is_some_and(|checked|
+            checked.at.elapsed() < RECHECK && checked.authority == self.authority && now < checked.expires
+        ) {
+            return Ok(media.receivers.len());
+        }
+        self.refresh_call_media(media, now)
+    }
     /// The authority behind one frame: the stored record when the check has lapsed, the last
     /// check while it stands. Returns our own member id, which sealing needs.
     fn media_gate(
@@ -177,20 +185,7 @@ impl ClientStore {
         kind: sigil_calls::MediaKind,
         now: u64,
     ) -> Result<Id, Error> {
-        if let Some(checked) = &media.checked {
-            if checked.at.elapsed() < RECHECK
-                && checked.authority == self.authority
-                && now < checked.expires
-            {
-                let own = checked.own;
-                let member = sender.unwrap_or(own);
-                return match checked.tracks.iter().find(|(id, _)| *id == member) {
-                    Some((_, tracks)) if track(*tracks, kind) => Ok(own),
-                    _ => Err(Error::Unprepared),
-                };
-            }
-        }
-        self.refresh_call_media(media, now)?;
+        self.checked_call_media(media, now)?;
         let checked = media.checked.as_ref().ok_or(Error::Unprepared)?;
         match checked.tracks.iter().find(|(id, _)| *id == sender.unwrap_or(checked.own)) {
             Some((_, tracks)) if track(*tracks, kind) => Ok(checked.own),
@@ -198,9 +193,19 @@ impl ClientStore {
         }
     }
     fn refresh_media_record(&mut self, media: &mut Media, now: u64) -> Result<Record, Error> {
+        // An unchanged call and clock floor only need reads. Reserve the single writer
+        // only if the refresh actually needs to persist a change.
+        match self.refresh_media_record_with(media, now, TransactionBehavior::Deferred) {
+            Err(Error::Storage(rusqlite::Error::SqliteFailure(error, _)))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy =>
+                self.refresh_media_record_with(media, now, TransactionBehavior::Immediate),
+            result => result,
+        }
+    }
+    fn refresh_media_record_with(&mut self, media: &mut Media, now: u64, behavior: TransactionBehavior) -> Result<Record, Error> {
         let tx = self
             .db
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            .transaction_with_behavior(behavior)?;
         let now = crate::conversations::time_floor(&tx, &self.key, now)?;
         let mut record = load(&tx, &self.key, &media.call)?;
         record.authorize(&tx, &self.key, now)?;

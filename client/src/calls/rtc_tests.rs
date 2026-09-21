@@ -415,6 +415,15 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(received, [[true; 3]; 2]);
+        // Background sync owns a writer while media continues on its last checked authority.
+        alice.refresh_call_media(&mut a.media, now).unwrap();
+        alice.db.busy_timeout(Duration::ZERO).unwrap();
+        let writer = rusqlite::Connection::open(alice.db.path().unwrap()).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert_eq!(alice.rtc_media_state(&mut a, now).unwrap(), "connected");
+        alice.rtc_receive(&mut a, now).unwrap();
+        alice.rtc_prepare_send(&mut a, MediaKind::Camera, 9_000_000, true, &[7; 8192], now).unwrap();
+        writer.execute_batch("ROLLBACK").unwrap();
         let delayed = alice
             .rtc_prepare_send(&mut a, MediaKind::Camera, 10_000_000, true, &[7; 8192], now)
             .unwrap();
