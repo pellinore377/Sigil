@@ -17,6 +17,11 @@ mod media_cache;
 mod host;
 mod recording;
 mod transform;
+mod media_worker;
+mod camera_decode;
+#[cfg(feature = "video-acceptance")]
+#[path = "../tests/video/mod.rs"]
+mod video_acceptance;
 mod transport;
 mod vault;
 fn fail(message: &str) -> JsValue {
@@ -79,12 +84,13 @@ pub async fn worker_start() -> Result<(), JsValue> {
     .map_err(|_| fail("Cannot initialize encryption"))?;
     let store = ClientStore::open(std::path::Path::new("/sigil/messages.db"), key)
         .map_err(|_| fail("Cannot open encrypted browser storage"))?;
-    transform::install()?;
+    sigil_client::calls::install_media_invalidator(media_worker::invalidate);
     sigil_client::browser_transport::install(transport::send);
     sigil_client::browser_transport::install_many(transport::send_many);
     STORE.with(|slot| *slot.borrow_mut() = Some(store));
     let handler = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
         move |event: web_sys::MessageEvent| {
+            if media_worker::control_receive(&event) { return; }
             if call::receive(&event) || files::receive(&event) {
                 return;
             }
@@ -145,6 +151,7 @@ pub async fn worker_start() -> Result<(), JsValue> {
                         .map(|store| store.mobile_command(request))
                 })
                 .unwrap_or_else(|| "{\"ok\":false,\"error\":\"Browser is locked\"}".into());
+            call::publish_media();
             let reply = serde_json::json!({"id":id,"result":result}).to_string();
             let global = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>();
             let _ = global.post_message(&reply.into());

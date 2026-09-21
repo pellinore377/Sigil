@@ -70,6 +70,7 @@ pub struct Frame {
 }
 pub struct Sender {
     context: Context,
+    seed: Zeroizing<Id>,
     key: EncryptionKey,
     identity: sigil_crypto::IdentityKey,
     counter: MonotonicCounter,
@@ -83,7 +84,37 @@ pub struct Receiver {
     highest: Option<u64>,
     seen: u128,
 }
+/// One-use handoff of an unused sender to a dedicated media worker. The source sender is
+/// consumed; an active sender can never be checkpointed or restarted at counter zero.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SenderHandoff {
+    context: Context,
+    seed: Zeroizing<Id>,
+    identity: Zeroizing<Vec<u8>>,
+}
+impl SenderHandoff {
+    pub fn restore(self) -> Result<Sender, Error> {
+        let storage = sigil_crypto::storage::StorageKey::new(sigil_crypto::Secret32::from_bytes(*self.seed))
+            .map_err(|_| Error::Authentication)?;
+        let identity = sigil_crypto::IdentityKey::open_checkpoint(&storage, &self.identity, &self.context.bytes()?)
+            .map_err(|_| Error::Authentication)?;
+        let key = EncryptionKey::derive_from(SUITE, self.context.kid()?, self.seed.as_slice())
+            .map_err(|_| Error::Authentication)?;
+        Ok(Sender { context: self.context, seed: self.seed, key, identity,
+            counter: MonotonicCounter::new(MAX_COUNTER), bytes: 0, started: Instant::now() })
+    }
+}
 impl Sender {
+    pub fn into_handoff(self) -> Result<SenderHandoff, Error> {
+        if self.bytes != 0 { return Err(Error::Conflict); }
+        let storage = sigil_crypto::storage::StorageKey::new(sigil_crypto::Secret32::from_bytes(*self.seed))
+            .map_err(|_| Error::Authentication)?;
+        let identity = self.identity.seal_checkpoint(&storage, &self.context.bytes()?)
+            .map_err(|_| Error::Authentication)?;
+        Ok(SenderHandoff { context: self.context, seed: self.seed, identity: Zeroizing::new(identity) })
+    }
+
     /// A fresh key for every handle; callers cannot restart a sender from an old key.
     pub fn generate(context: Context) -> Result<(Self, KeyShare), Error> {
         context.bytes()?;
@@ -95,6 +126,7 @@ impl Sender {
         Ok((
             Self {
                 context,
+                seed: seed.clone(),
                 key,
                 identity,
                 counter: MonotonicCounter::new(MAX_COUNTER),
@@ -230,6 +262,15 @@ impl Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_an_unused_sender_can_move_to_a_worker() {
+        let context = Context { call: [1;32], roster: [2;32], sender: [3;32], incarnation: [4;32] };
+        let (sender, share) = Sender::generate(context).unwrap();
+        let mut moved = sender.into_handoff().unwrap().restore().unwrap();
+        let frame = moved.seal(MediaKind::Camera, 0, true, b"synthetic frame").unwrap();
+        assert_eq!(&*Receiver::new(&share).unwrap().open(&frame).unwrap().data, b"synthetic frame");
+        assert!(matches!(moved.into_handoff(), Err(Error::Conflict)));
+    }
     #[test]
     fn a_recipient_with_the_shared_encryption_key_cannot_forge_the_senders_frames() {
         let context = Context {

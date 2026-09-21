@@ -30,7 +30,12 @@ pub(crate) use control::{
     install, receipt_call, receipt_message, retained, scoped_wire, validate_receipt, is_invite};
 pub(crate) use jobs::check_retained;
 pub use jobs::Attempt;
-pub use media::Media;
+pub use media::{Media, MediaUpdate, MediaProcessor};
+thread_local! { static MEDIA_INVALIDATOR: std::cell::Cell<Option<fn()>> = const { std::cell::Cell::new(None) }; }
+/// Exclusive-store hosts use this to synchronously revoke detached media before a state write.
+/// Other hosts must keep using the storage-checked Media API.
+pub fn install_media_invalidator(callback: fn()) { MEDIA_INVALIDATOR.with(|slot| slot.set(Some(callback))); }
+pub(crate) fn invalidate_media() { MEDIA_INVALIDATOR.with(|slot| { if let Some(callback) = slot.get() { callback(); } }); }
 pub(crate) const MIGRATION:&str="CREATE TABLE calls(id BLOB PRIMARY KEY,content BLOB NOT NULL); CREATE TABLE call_jobs(id BLOB PRIMARY KEY,content BLOB NOT NULL); CREATE TABLE call_cursor(id INTEGER PRIMARY KEY CHECK(id=1),content BLOB NOT NULL); PRAGMA user_version=67;";
 fn failure(error: sigil_calls::Error) -> Error {
     match error {
@@ -175,6 +180,7 @@ fn save(db: &Connection, key: &StorageKey, record: &Record) -> Result<(), Error>
         tx.commit()?;
         return Ok(());
     }
+    invalidate_media();
     let id = record.state.roster.roster.call;
     let raw = Zeroizing::new(serde_json::to_vec(record).map_err(|_| Error::InvalidStore)?);
     if raw.len() > 262144 {

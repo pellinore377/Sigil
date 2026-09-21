@@ -58,7 +58,7 @@ fi
 printf 'Copying sources to the build host\n'
 rsync -a --delete --delete-excluded \
   --include 'prebuilt-web/***' \
-  --exclude '.git/' --exclude 'target/' --exclude 'build/' --exclude '.gradle/' \
+  --exclude '.git' --exclude 'target' --exclude 'build/' --exclude '.gradle/' \
   --exclude '*/target/' --exclude 'app/build/' \
   "$source/" "$host:$remote/"
 

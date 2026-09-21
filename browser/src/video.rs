@@ -13,11 +13,22 @@ fn codec_name(id: u8) -> Option<&'static str> { (id == CODEC_AV1).then_some("av0
 fn number(value: &JsValue, key: &str) -> Option<f64> { get(value, key).ok()?.as_f64() }
 struct Capture { stream: MediaStream, video: HtmlVideoElement }
 #[derive(Default)]
-struct NativeViewer { track: Option<MediaStreamTrack>, video: Option<HtmlVideoElement>, shape: Option<(u16, u16, u16)> }
+struct NativeViewer {
+    track: Option<MediaStreamTrack>, video: Option<HtmlVideoElement>, shape: Option<(u16,u16,u16)>,
+    canvas: Option<HtmlCanvasElement>, probe: Option<HtmlCanvasElement>, good: u8, token: u32, failures:u8, probe_at:f64,
+}
 thread_local! { static NATIVE: RefCell<HashMap<String, NativeViewer>> = RefCell::new(HashMap::new()); }
 impl NativeViewer {
-    fn attach(&self) -> Result<(), JsValue> {
+    fn attach(&mut self) -> Result<(), JsValue> {
         let Some(video) = &self.video else { return Ok(()) };
+        if self.canvas.is_none() {
+            let document=web_sys::window().ok_or_else(||fail("Missing window"))?.document().ok_or_else(||fail("Missing document"))?;
+            let canvas=document.create_element("canvas")?.dyn_into::<HtmlCanvasElement>()?;
+            canvas.set_attribute("hidden","")?;
+            canvas.set_attribute("style","position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000")?;
+            if let Some(parent)=video.parent_node(){parent.append_child(&canvas)?;self.canvas=Some(canvas);}
+            let probe=document.create_element("canvas")?.dyn_into::<HtmlCanvasElement>()?;probe.set_width(16);probe.set_height(16);self.probe=Some(probe);
+        }
         if let Some(track) = self.track.as_ref().filter(|_| video.src_object().is_none()) {
             let stream = MediaStream::new()?;
             stream.add_track(track);
@@ -33,13 +44,13 @@ impl NativeViewer {
     }
 }
 pub(crate) fn native_track(sender: String, track: MediaStreamTrack) -> Result<(), JsValue> {
-    NATIVE.with(|n| { let mut n = n.borrow_mut(); let v = n.entry(sender).or_default(); if let Some(video) = &v.video { video.set_src_object(None); } v.track = Some(track); v.attach() })
+    NATIVE.with(|n| { let mut n = n.borrow_mut(); let v = n.entry(sender).or_default(); if let Some(video) = &v.video { video.set_src_object(None); } v.track = Some(track); v.good=0; v.token=0; if let Some(c)=v.canvas.take(){c.remove();} v.attach() })
 }
 pub(crate) fn native_shape(sender: String, rotation: u16, width: u16, height: u16) -> Result<(), JsValue> {
     NATIVE.with(|n| { let mut n = n.borrow_mut(); let v = n.entry(sender).or_default(); v.shape = Some((rotation, width, height)); v.attach() })
 }
 pub(crate) fn native_clear() {
-    NATIVE.with(|n| { for v in n.borrow_mut().values_mut() { v.track = None; v.shape = None; if let Some(video) = &v.video { video.set_src_object(None); } } });
+    NATIVE.with(|n| { for v in n.borrow_mut().values_mut() { v.track = None; v.shape = None; v.good=0; v.token=0; if let Some(c)=v.canvas.take(){c.remove();} if let Some(video) = &v.video { video.set_src_object(None); } } });
 }
 #[wasm_bindgen]
 pub fn video_native_attach(sender: String, video: HtmlVideoElement) -> Result<(), JsValue> {
@@ -48,7 +59,37 @@ pub fn video_native_attach(sender: String, video: HtmlVideoElement) -> Result<()
 }
 #[wasm_bindgen]
 pub fn video_native_detach(sender: String) {
-    NATIVE.with(|n| { if let Some(v) = n.borrow_mut().get_mut(&sender) { if let Some(video) = v.video.take() { video.set_src_object(None); } } });
+    NATIVE.with(|n| { if let Some(v) = n.borrow_mut().get_mut(&sender) { if let Some(video) = v.video.take() { video.set_src_object(None); } if let Some(c)=v.canvas.take(){c.remove();} v.probe=None; v.token=0; v.good=0; } });
+}
+/// The first decoded images verify native presentation. Blank native output keeps software active.
+pub(crate) fn native_frame(sender:&str, frame:&JsValue, rotation:u16, token:u32) -> Result<bool,JsValue> {
+    NATIVE.with(|n| {
+        let mut n=n.borrow_mut();let Some(v)=n.get_mut(sender) else{return Ok(false)};
+        v.attach()?;
+        let (Some(canvas),Some(video),Some(probe))=(&v.canvas,&v.video,&v.probe) else{return Ok(false)};
+        if v.token!=token {v.token=token;v.good=0;v.failures=0;v.probe_at=0.0;canvas.remove_attribute("hidden")?;}
+        let width=number(frame,"displayWidth").unwrap_or(0.0);let height=number(frame,"displayHeight").unwrap_or(0.0);
+        let turned=rotation==90||rotation==270;let (cw,ch)=if turned{(height,width)}else{(width,height)};
+        if canvas.width()!=cw as u32{canvas.set_width(cw as u32);}if canvas.height()!=ch as u32{canvas.set_height(ch as u32);}
+        let ctx=canvas.get_context("2d")?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
+        ctx.save();ctx.translate(cw/2.0,ch/2.0)?;ctx.rotate(f64::from(rotation)*std::f64::consts::PI/180.0)?;
+        let painted=invoke(&ctx,"drawImage",&[frame.clone(),(-width/2.0).into(),(-height/2.0).into(),width.into(),height.into()]);ctx.restore();painted?;
+        let ctx=probe.get_context("2d")?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
+        let sample=|image:&JsValue|->Result<([f64;3],u8),JsValue>{
+            invoke(&ctx,"drawImage",&[image.clone(),0.into(),0.into(),16.into(),16.into()])?;
+            let data=ctx.get_image_data(0.0,0.0,16.0,16.0)?.data();let mut rgb=[0.0;3];let(mut low,mut high)=(255,0);
+            for p in data.chunks_exact(4){for i in 0..3{rgb[i]+=f64::from(p[i])/256.0;low=low.min(p[i]);high=high.max(p[i]);}}
+            Ok((rgb,high-low))
+        };
+        if video.ready_state()>=2 && js_sys::Date::now()>=v.probe_at {
+            v.probe_at=js_sys::Date::now()+50.0;
+            let (soft,contrast)=sample(frame)?;let(native,_)=sample(video.as_ref())?;
+            let difference=(0..3).map(|i|(soft[i]-native[i]).abs()).fold(0.0,f64::max);
+            if contrast>16&&difference<12.0 {v.good=v.good.saturating_add(1);}else{v.good=0;v.failures=v.failures.saturating_add(1);if v.failures>=12 {v.probe_at=js_sys::Date::now()+5000.0;}}
+            if v.good>=12 {canvas.set_attribute("hidden","")?;return Ok(true);}
+        }
+        Ok(false)
+    })
 }
 impl Drop for Capture {
     fn drop(&mut self) {
