@@ -291,9 +291,6 @@ pub(crate) fn open_audio(sender: &str, bytes: &[u8]) -> Result<Option<Zeroizing<
 }
 pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
     let data = event.data();
-    if let Some(id) = get(&data, "video_ack").ok().and_then(|v| v.as_string()).and_then(|v| v.parse::<u64>().ok()) {
-        crate::transform::acknowledge(id); return true;
-    }
     if get(&data, "binary").ok().and_then(|v| v.as_bool()) != Some(true) {
         return false;
     }

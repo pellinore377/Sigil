@@ -12,6 +12,44 @@ const CODEC_AV1: u8 = 2;
 fn codec_name(id: u8) -> Option<&'static str> { (id == CODEC_AV1).then_some("av01.0.08M.08") }
 fn number(value: &JsValue, key: &str) -> Option<f64> { get(value, key).ok()?.as_f64() }
 struct Capture { stream: MediaStream, video: HtmlVideoElement }
+#[derive(Default)]
+struct NativeViewer { track: Option<MediaStreamTrack>, video: Option<HtmlVideoElement>, shape: Option<(u16, u16, u16)> }
+thread_local! { static NATIVE: RefCell<HashMap<String, NativeViewer>> = RefCell::new(HashMap::new()); }
+impl NativeViewer {
+    fn attach(&self) -> Result<(), JsValue> {
+        let Some(video) = &self.video else { return Ok(()) };
+        if let Some(track) = self.track.as_ref().filter(|_| video.src_object().is_none()) {
+            let stream = MediaStream::new()?;
+            stream.add_track(track);
+            video.set_src_object(Some(&stream));
+            let _ = video.play();
+        }
+        if let Some((rotation, width, height)) = self.shape {
+            video.set_attribute("data-rotation", &rotation.to_string())?;
+            video.set_attribute("data-width", &width.to_string())?;
+            video.set_attribute("data-height", &height.to_string())?;
+        }
+        Ok(())
+    }
+}
+pub(crate) fn native_track(sender: String, track: MediaStreamTrack) -> Result<(), JsValue> {
+    NATIVE.with(|n| { let mut n = n.borrow_mut(); let v = n.entry(sender).or_default(); if let Some(video) = &v.video { video.set_src_object(None); } v.track = Some(track); v.attach() })
+}
+pub(crate) fn native_shape(sender: String, rotation: u16, width: u16, height: u16) -> Result<(), JsValue> {
+    NATIVE.with(|n| { let mut n = n.borrow_mut(); let v = n.entry(sender).or_default(); v.shape = Some((rotation, width, height)); v.attach() })
+}
+pub(crate) fn native_clear() {
+    NATIVE.with(|n| { for v in n.borrow_mut().values_mut() { v.track = None; v.shape = None; if let Some(video) = &v.video { video.set_src_object(None); } } });
+}
+#[wasm_bindgen]
+pub fn video_native_attach(sender: String, video: HtmlVideoElement) -> Result<(), JsValue> {
+    video.set_muted(true); video.set_autoplay(true); video.set_attribute("playsinline", "")?;
+    NATIVE.with(|n| { let mut n = n.borrow_mut(); let v = n.entry(sender).or_default(); v.video = Some(video); v.attach() })
+}
+#[wasm_bindgen]
+pub fn video_native_detach(sender: String) {
+    NATIVE.with(|n| { if let Some(v) = n.borrow_mut().get_mut(&sender) { if let Some(video) = v.video.take() { video.set_src_object(None); } } });
+}
 impl Drop for Capture {
     fn drop(&mut self) {
         for track in self.stream.get_tracks() { if let Ok(t) = track.dyn_into::<MediaStreamTrack>() { t.stop(); } }
@@ -45,7 +83,7 @@ thread_local! {
     static VIEWERS: RefCell<HashMap<String, Viewer>> = RefCell::new(HashMap::new());
 }
 #[wasm_bindgen]
-pub fn video_supported() -> bool { crate::rtc::browser_call_supported() && get(&js_sys::global(), "VideoDecoder").is_ok() }
+pub fn video_supported() -> bool { crate::rtc::browser_call_supported() }
 #[wasm_bindgen]
 pub fn video_camera_stop() {
     GENERATION.with(|g| g.set(g.get().wrapping_add(1)));
@@ -142,7 +180,9 @@ pub fn video_attach(sender: String, canvas: HtmlCanvasElement) -> Result<(), JsV
         });
     });
     let key = sender.clone();
-    let error = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+    let error = Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
+        let name = get(&error, "name").ok().and_then(|v| v.as_string()).unwrap_or_default();
+        web_sys::console::log_1(&format!("SigilTiming video decode failed {name}").into());
         VIEWERS.with(|viewers| {
             if let Some(viewer) = viewers.borrow_mut().get_mut(&key) {
                 if let Some(decoder) = viewer.decoder.take() {

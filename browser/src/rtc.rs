@@ -204,7 +204,9 @@ pub async fn browser_call_audio_stats() -> String {
                 let direction = get(&entry,"type").ok().and_then(|v|v.as_string()).unwrap_or_default();
                 if direction == "outbound-rtp" || direction == "inbound-rtp" {
                     let encoder = get(&entry,"encoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
-                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} received={} lost={} encode_ms={:.0} jitter_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
+                    let decoder = get(&entry,"decoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
+                    let hardware = get(&entry,"powerEfficientDecoder").ok().and_then(|v|v.as_bool());
+                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} decoder={decoder} efficient={hardware:?} decoded={} dropped={} freezes={} received={} lost={} encode_ms={:.0} jitter_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesDecoded"),n("framesDropped"),n("freezeCount"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
                 }
             }
             if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() != Some("audio") {
@@ -286,6 +288,7 @@ fn play_remote(pc: &JsValue) -> Result<Closure<dyn FnMut(JsValue)>, JsValue> {
 }
 /// Stops and removes every playback element the call created.
 fn stop_playback() {
+    crate::video::native_clear();
     PLAYBACK.with(|slot| {
         for element in slot.borrow_mut().drain(..) {
             let _ = invoke(&element, "pause", &[]);
@@ -404,6 +407,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 }
                 if kind == MediaKind::Camera {
                     attach_transform(&get(&transceiver, "receiver")?, serde_json::json!({"operation":"open","kind":"camera","call":id,"sender":call::hex(*member)}))?;
+                    crate::video::native_track(call::hex(*member), get(&get(&transceiver, "receiver")?, "track")?.dyn_into()?)?;
                 }
                 downloads.push((*member, kind, transceiver));
             }
@@ -752,6 +756,9 @@ pub(crate) fn receive_video(message: &JsValue) -> Result<(), JsValue> {
     let call = get(message, "call")?.as_string().ok_or_else(|| fail("Missing call"))?;
     let sender = get(message, "sender")?.as_string().ok_or_else(|| fail("Missing sender"))?;
     let callback = SESSION.with(|s| s.borrow().as_ref().filter(|s| s.call == call && s.members.iter().any(|m| call::hex(*m) == sender)).map(|s| s.frames.clone()));
-    if let Some(callback) = callback { callback.call2(&JsValue::NULL, &sender.into(), &Uint8Array::new(&get(message, "data")?))?; }
+    if callback.is_some() {
+        let field = |name| get(message, name).ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u16;
+        crate::video::native_shape(sender, field("rotation"), field("width"), field("height"))?;
+    }
     Ok(())
 }
