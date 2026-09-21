@@ -321,8 +321,11 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
 @Composable
 internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, modifier: Modifier) {
     var decoder by remember(member, screen) { mutableStateOf<CallVideoDecoder?>(null) }
+    var aspect by remember(member, screen) { mutableStateOf(16f / 9f) }
     DisposableEffect(member, screen) { onDispose { calls.videoOutput(member, screen, null); decoder?.close(); decoder = null } }
+    org.sigil.CallVideoFrame(aspect, member == "self", modifier) { fitted ->
     AndroidView(factory = { context -> TextureView(context).apply {
+        isOpaque = false
         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             private var geometry: Triple<Int, Int, Int>? = null
             private fun resize() {
@@ -334,7 +337,10 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
             override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, width: Int, height: Int) {
                 val target = this@apply
                 val measured = { w: Int, h: Int, rotation: Int -> target.post {
-                    if (target.surfaceTexture === texture) { geometry = Triple(w, h, rotation); resize() }
+                    if (target.surfaceTexture === texture) {
+                        aspect = if (rotation % 180 == 0) w.toFloat() / h else h.toFloat() / w
+                        geometry = Triple(w, h, rotation); resize()
+                    }
                 }; Unit }
                 decoder = CallVideoDecoder(Surface(texture), member != "self", measured)
                 calls.videoOutput(member, screen, decoder)
@@ -346,5 +352,6 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
             }
             override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) {}
         }
-    } }, modifier = modifier)
+    } }, modifier = fitted)
+    }
 }

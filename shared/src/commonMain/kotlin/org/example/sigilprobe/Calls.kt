@@ -21,6 +21,14 @@ import kotlin.math.*
 
 val LocalCallVideo = staticCompositionLocalOf<@Composable (String, Boolean, Modifier) -> Unit> { { _, _, modifier -> Box(modifier, contentAlignment = Alignment.Center) { Text("Waiting for video…") } } }
 @Composable
+fun CallVideoFrame(aspect: Float, self: Boolean, modifier: Modifier, content: @Composable (Modifier) -> Unit) {
+    BoxWithConstraints(modifier, contentAlignment = if (self) Alignment.BottomEnd else Alignment.Center) {
+        val ratio = aspect.takeIf { it.isFinite() && it > 0f } ?: (16f / 9f)
+        val width = minOf(maxWidth, maxHeight * ratio)
+        content(Modifier.width(width).height(width / ratio).clip(RoundedCornerShape(20.dp)))
+    }
+}
+@Composable
 internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: Command, ownPhoto: String = "", panel: String, setPanel: (String) -> Unit) {
     val call = active.call
     val incoming = call.phase == "ringing"
@@ -90,7 +98,7 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
                 val remote = others.firstOrNull()
                 if (remote != null && (remote.camera || remote.screen)) LocalCallVideo.current(remote.id, remote.screen, Modifier.fillMaxSize().clip(RoundedCornerShape(24.dp)))
                 else Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Avatar(active.name, 120, directPhoto) }
-                if (active.camera || active.screen) Box(Modifier.align(Alignment.BottomEnd).width(112.dp).height(168.dp).clip(RoundedCornerShape(20.dp))) { LocalCallVideo.current("self", active.screen, Modifier.fillMaxSize()) }
+                if (active.camera || active.screen) Box(Modifier.align(Alignment.BottomEnd).width(240.dp).height(216.dp)) { LocalCallVideo.current("self", active.screen, Modifier.fillMaxSize()) }
             } else LazyVerticalGrid(GridCells.Fixed(if (call.participants.size <= 2) 1 else 2), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(call.participants, key = { it.id }) { person ->
                     val level = active.levels[if (person.own) "self" else person.id] ?: 0f
