@@ -449,7 +449,7 @@ impl ClientStore {
         if state != "connected" {
             return Ok(state);
         }
-        match self.refresh_call_media(&mut call.media, now) {
+        match self.checked_call_media(&mut call.media, now) {
             Ok(count) if count > 0 => Ok("connected"),
             Ok(_) | Err(Error::Unprepared) => Ok("securing"),
             Err(error) => Err(error),
@@ -524,7 +524,7 @@ impl ClientStore {
         if self.rtc_connection_state(call, now)? != "connected" {
             return Err(Error::Unprepared);
         }
-        if let Err(error) = self.refresh_call_media(&mut call.media, now) {
+        if let Err(error) = self.checked_call_media(&mut call.media, now) {
             call.tally.stalled += 1;
             if call.tally.stalled % 50 == 1 {
                 crate::perf::note(format!("call rx stalled={} {error:?}", call.tally.stalled));
