@@ -37,6 +37,8 @@ async fn str_sink(offer: &str) -> (String, mpsc::Receiver<Packet>, tokio::task::
                             let _ = tx.try_send(Packet {
                                 pt: *p.header.payload_type,
                                 seq: *p.seq_no as u16,
+                                timestamp: p.header.timestamp,
+                                marker: p.header.marker,
                                 ssrc: *p.header.ssrc,
                                 received: Instant::now(),
                                 payload: p.payload.to_vec(),

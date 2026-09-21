@@ -30,7 +30,7 @@ class CallVideoTest {
             }
         }
     }
-    @Test fun cameraProducesLiveVp8AndStopsAfterClose() {
+    @Test fun cameraProducesLiveAv1AndStopsAfterClose() {
         val instrument = InstrumentationRegistry.getInstrumentation()
         instrument.uiAutomation.grantRuntimePermission(instrument.targetContext.packageName, android.Manifest.permission.CAMERA)
         val frames = AtomicInteger(); val failures = AtomicInteger(); val ready = CountDownLatch(12)
@@ -39,7 +39,7 @@ class CallVideoTest {
         finally { camera.close() }
         Thread.sleep(400); val stopped = frames.get(); Thread.sleep(400); assertEquals(stopped, frames.get())
     }
-    @Test fun surfaceVp8RoundTripRendersSyntheticFrames() {
+    @Test fun surfaceAv1RoundTripRendersSyntheticFrames() {
         videoRoundTrip(false)
     }
     @Test fun aSingleFrameRendersWithoutWaitingForAnotherInput() {
@@ -47,9 +47,9 @@ class CallVideoTest {
         val ready = CountDownLatch(1)
         val reader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 3)
         reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { ready.countDown() } }, Handler(thread.looper))
-        val decoder = CallVideoDecoder(reader.surface) { _, _, _ -> }
+        val decoder = CallVideoDecoder(reader.surface, false) { _, _, _ -> }
         try {
-            Vp8Encoder(640, 480, 0, { time, keyframe, bytes -> decoder.offer(time, keyframe, bytes) }, { throw it }).use { encoder ->
+            CallEncoder(640, 480, 0, 30, { time, keyframe, bytes -> decoder.offer(time, keyframe, bytes) }, { throw it }).use { encoder ->
                 DrawSurface(encoder.surface).use { draw ->
                     draw.frame(0)
                     assertTrue("Final video frame remained stuck in the decoder", ready.await(5, TimeUnit.SECONDS))
@@ -65,10 +65,10 @@ class CallVideoTest {
         val decoded = CountDownLatch(10); val failures = AtomicInteger(); val encoded = AtomicInteger()
         val reader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 3)
         reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { decoded.countDown() } }, Handler(thread.looper))
-        val decoder = CallVideoDecoder(reader.surface) { width, height, rotation -> assertEquals(640, width); assertEquals(480, height); assertEquals(90, rotation) }
+        val decoder = CallVideoDecoder(reader.surface, false) { width, height, rotation -> assertEquals(640, width); assertEquals(480, height); assertEquals(90, rotation) }
         try {
             if (damaged) { decoder.offer(0, true, byteArrayOf(0)); Thread.sleep(100) }
-            Vp8Encoder(640, 480, 90, { timestamp, keyframe, bytes -> encoded.incrementAndGet(); decoder.offer(timestamp, keyframe, bytes) }, { failures.incrementAndGet() }).use { encoder ->
+            CallEncoder(640, 480, 90, 30, { timestamp, keyframe, bytes -> encoded.incrementAndGet(); decoder.offer(timestamp, keyframe, bytes) }, { failures.incrementAndGet() }).use { encoder ->
                 DrawSurface(encoder.surface).use { draw -> repeat(48) { draw.frame(it); Thread.sleep(45) } }
                 assertTrue("Only ${encoded.get()} encoded frames; ${failures.get()} failures", encoded.get() >= 20)
                 assertTrue("Decoder did not render frames", decoded.await(5, TimeUnit.SECONDS))

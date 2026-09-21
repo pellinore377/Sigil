@@ -36,25 +36,9 @@ Map decoding rejects compressed/decompressed inputs over 2 MiB and preflights la
 
 Browser audio calling is present but has no successful live-call acceptance in this pass; it requires supported Opus WebCodecs and cross-origin isolation.
 
-Call video now runs both ways at 640x480 and 24fps, verified on the phone and the browser against
-this build: each side encodes 24 frames a second and the other decodes 24, with frames of one to six
-fragments. It had been sized for a network it does not have. The phone captured 1920x1080 at 60fps
-and 6 Mbit/s and the browser 1080p30 at 4 Mbit/s, while every frame crosses an unordered channel in
-1 KB fragments and a frame missing one fragment is discarded whole: a keyframe was fifty fragments,
-the receivers decoded one to ten frames a second, and the picture ran twenty to thirty seconds
-behind with persistent smearing. Three faults were behind the rest. Sealing or opening a frame
-re-read the call record in an immediate transaction and recomputed the whole state digest, so every
-frame queued behind a sync pass holding the same connection for hundreds of milliseconds; that
-authority is now taken five times a second and carries the store's authority revision, so blocking a
-peer still stops media on the next frame. The browser stamped frames from a wall clock driven by an
-unpunctual timer, and both receivers treated any step over one and a half frames as a lost frame and
-held everything until the next keyframe, so the picture froze and jumped continuously; stamps are
-now counted, the threshold is one and three quarters, and a frame the transport sheds asks for a
-keyframe at most twice a second. The phone's own preview is the encoded stream decoded back, as a
-screen share already was: a second camera target has to be a size the camera can deliver, and the
-camera cropped the upright picture into that landscape buffer, losing its top and bottom. Remaining:
-1080p needs the native video track, not this fragmented channel. Browser screen sharing remains
-unconnected.
+Camera video now uses encrypted AV1 over native RTP in both directions. The browser captures and encodes through its native WebRTC sender at a requested 1920x1080/30 fps and 3.5 Mbit/s; it no longer sends camera frames through the fragmented data channel or a main-thread capture timer. Worker transforms place authenticated ciphertext inside an opaque AV1 OBU. The native client packetizes and reassembles that bounded envelope; the server forwards it without opening it. Browser reception uses RTP reassembly and a worker transform, then the existing software AV1 renderer, with one transferable frame awaiting the page per receiver. This fallback remains pending a fresh hardware-decoder check; the earlier black-frame report does not establish its cause. The data channel remains for the legacy screen path; browser screen sharing remains unconnected.
+
+Receiver timestamp jitter no longer masquerades as encoded-frame loss. Native RTP sequencing handles missing packets, decoder overflow still waits for a keyframe, and authenticated keyframes can restart the presentation clock. Android's deliberate playback lead is reduced from 90 to 30 ms. Two envelope boundary/loss tests, two cryptographic tests, native authenticated transport/revoked-handle coverage and sustained bidirectional camera RTP coverage pass. Five Android video tests pass when isolated from unrelated stale instrumentation-test sources. Signed alpha.57 is installed; the deployed server is healthy and its browser bundle matches the build. Actual end-to-end 1080p30, latency and stuttering remain unverified pending a live browser/phone call. Hardware acceleration is a separate browser configuration concern and should be checked using actual per-codec capabilities and call statistics.
 
 Abandoned calls no longer hold a slot until their roster expires. A call closed only when its owner
 said so, so one lost to a crash or a closed tab held a slot for hours; the live server reached its

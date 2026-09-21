@@ -52,8 +52,7 @@ internal fun callVideoEncoder(mime: String): MediaCodecInfo? {
         .filter { it.isEncoder && it.supportedTypes.any { type -> type.equals(mime, true) } }
     return all.firstOrNull { it.isHardwareAccelerated } ?: all.firstOrNull()
 }
-/// The largest picture a call sends. Frames cross an unordered channel in 1 KB fragments and a
-/// frame missing one fragment is discarded whole, so a big frame is a frame that rarely arrives.
+/// AV1 camera target; encrypted frames travel on the native RTP video track.
 internal const val CALL_VIDEO_WIDTH = 1920
 internal const val CALL_VIDEO_HEIGHT = 1080
 internal const val CALL_VIDEO_FPS = 30
@@ -184,8 +183,8 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
 private data class VideoPacket(val timestamp: Long, val keyframe: Boolean, val bytes: ByteArray)
 /// How long a decoded frame waits before it is painted, and how far the sender's clock may run
 /// from ours before the schedule is taken again from the frame in hand.
-private const val LEAD = 90_000_000L
-private const val SLIP = 400_000_000L
+private const val LEAD = 30_000_000L
+private const val SLIP = 100_000_000L
 internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidth: Int, viewHeight: Int): Matrix {
     val sideways = rotation == 90 || rotation == 270
     val aspect = if (sideways) height.toFloat() / width else width.toFloat() / height
@@ -209,6 +208,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         var resynced = 0L; var anchor = 0L; var anchorStamp = Long.MIN_VALUE
         fun reset() {
             anchorStamp = Long.MIN_VALUE
+            lastTimestamp = Long.MIN_VALUE
             val previous = codec; codec = null; dimensions = null
             try { previous?.stop() } catch (_: Exception) {}
             try { previous?.release() } catch (_: Exception) {}
@@ -296,23 +296,15 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         finally { synchronized(queue) { running.set(false); drain() }; reset(); surface.release() }
     }, "Sigil video decoder").apply { start() }
     private var offered = 0L
-    private var interval = 0L
     private var awaitingKey = false
     fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) = synchronized(queue) {
         if (!running.get()) return
-        // A lost fragment costs a whole frame; decoding the next delta against a reference
-        // that never arrived smears the picture, so hold until the sender's next keyframe.
-        if (keyframe) awaitingKey = false
-        else if (offered > 0L) {
-            val delta = timestamp - offered
-            if (delta <= 0L) return
-            if (interval == 0L) interval = delta
-            // A gap is a missing frame, not a late one: three halves of a frame is inside the
-            // jitter a capture timer produces, and treating that as loss froze the picture
-            // until the next keyframe, over and over.
-            else if (delta * 4 > interval * 7) awaitingKey = true
-            else interval = (interval * 7 + delta) / 8
+        // RTP sequencing detects loss; sensor timestamp jitter is not a missing encoded frame.
+        if (timestamp <= offered && offered > 0L) {
+            if (!keyframe) return
+            drain(); lostFrame.set(true)
         }
+        if (keyframe) awaitingKey = false
         offered = timestamp
         if (awaitingKey) return
         val packet = VideoPacket(timestamp, keyframe, bytes.copyOf())
