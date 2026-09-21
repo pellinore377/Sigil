@@ -1,6 +1,38 @@
 use super::*;
 use crate::{claims::tests::pair, incoming::tests::trust};
 #[test]
+fn refreshed_media_does_not_repeat_storage_work_before_the_authority_deadline() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    crate::calls::tests::configure(dir.path());
+    let (_, peer) = trust(&mut alice, &mut bob);
+    let id = [85; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    let tracks = Tracks { audio: true, camera: true, screen: false };
+    let mut media = alice.start_call_media(id, tracks, now).unwrap();
+    let mut remote = bob.start_call_media(id, tracks, now).unwrap();
+    for _ in 0..6 {
+        let _ = alice.refresh_call_media(&mut media, now);
+        let _ = bob.refresh_call_media(&mut remote, now);
+        crate::calls::tests::round_trip(&mut alice, &mut bob, now);
+    }
+    alice.db.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let writer = rusqlite::Connection::open(alice.db.path().unwrap()).unwrap();
+    alice.refresh_call_media(&mut media, now).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 0, false, b"synthetic", now).is_ok());
+    // A fresh check avoids a second transaction; expiry must still require storage.
+    media.checked.as_mut().unwrap().at = Instant::now() - RECHECK;
+    assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 20_000, false, b"synthetic", now).is_err());
+    writer.execute_batch("ROLLBACK").unwrap();
+    alice.refresh_call_media(&mut media, now).unwrap();
+    alice.block_peer(peer, true).unwrap();
+    assert!(alice.seal_call_frame(&mut media, sigil_calls::MediaKind::Audio, 40_000, false, b"forbidden", now).is_err());
+}
+
+#[test]
 fn fragmented_video_keeps_audio_and_authentication_live() {
     let (dir, _fixture, mut alice, mut bob, now) = pair();
     crate::calls::tests::configure(dir.path());

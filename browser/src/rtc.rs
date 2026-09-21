@@ -194,7 +194,7 @@ pub async fn browser_call_audio_stats() -> String {
             .with(|slot| slot.borrow().as_ref().map(|s| s.pc.clone()))
             .ok_or_else(|| fail("No call is active"))?;
         let report = promise(invoke(&pc, "getStats", &[])?).await?;
-        let counts = std::rc::Rc::new(Cell::new([0.0f64; 3]));
+        let counts = std::rc::Rc::new(Cell::new([0.0f64; 8]));
         let sink = counts.clone();
         let video = std::rc::Rc::new(RefCell::new(Vec::<String>::new()));
         let video_sink = video.clone();
@@ -219,6 +219,11 @@ pub async fn browser_call_audio_stats() -> String {
                 Some("inbound-rtp") => {
                     totals[1] += number("packetsReceived");
                     totals[2] += number("packetsLost");
+                    totals[3] += number("concealedSamples");
+                    totals[4] += number("totalSamplesReceived");
+                    totals[5] += number("concealmentEvents");
+                    totals[6] += number("jitterBufferDelay");
+                    totals[7] += number("jitterBufferEmittedCount");
                 }
                 _ => return,
             }
@@ -228,8 +233,8 @@ pub async fn browser_call_audio_stats() -> String {
         drop(visit);
         let totals = counts.get();
         Ok(format!(
-            "sent={:.0} received={:.0} lost={:.0} video=[{}]",
-            totals[0], totals[1], totals[2], video.borrow().join("; ")
+            "sent={:.0} received={:.0} lost={:.0} concealed_samples={:.0} samples={:.0} concealment_events={:.0} audio_jitter_ms={:.1} video=[{}]",
+            totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6] * 1000.0 / totals[7].max(1.0), video.borrow().join("; ")
         ))
     }
     read().await.unwrap_or_else(|_| "unavailable".into())

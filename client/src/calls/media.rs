@@ -146,7 +146,15 @@ impl ClientStore {
     }
     pub fn refresh_call_media(&mut self, media: &mut Media, now: u64) -> Result<usize, Error> {
         media.checked = None;
-        self.refresh_media_record(media, now)?;
+        let record = self.refresh_media_record(media, now)?;
+        authority(&record, media, now)?;
+        media.checked = Some(Checked {
+            at: Instant::now(),
+            authority: self.authority,
+            expires: record.state.roster.roster.expires,
+            own: record.own_id()?,
+            tracks: record.state.ready.iter().map(|r| (r.member, r.tracks)).collect(),
+        });
         Ok(media.receivers.len())
     }
     /// The authority behind one frame: the stored record when the check has lapsed, the last
@@ -171,21 +179,12 @@ impl ClientStore {
                 };
             }
         }
-        media.checked = None;
-        let record = self.refresh_media_record(media, now)?;
-        authority(&record, media, now)?;
-        let own = record.own_id()?;
-        media.checked = Some(Checked {
-            at: Instant::now(),
-            authority: self.authority,
-            expires: record.state.roster.roster.expires,
-            own,
-            tracks: record.state.ready.iter().map(|r| (r.member, r.tracks)).collect(),
-        });
-        if !enabled(&record, sender.unwrap_or(own), kind) {
-            return Err(Error::Unprepared);
+        self.refresh_call_media(media, now)?;
+        let checked = media.checked.as_ref().ok_or(Error::Unprepared)?;
+        match checked.tracks.iter().find(|(id, _)| *id == sender.unwrap_or(checked.own)) {
+            Some((_, tracks)) if track(*tracks, kind) => Ok(checked.own),
+            _ => Err(Error::Unprepared),
         }
-        Ok(own)
     }
     fn refresh_media_record(&mut self, media: &mut Media, now: u64) -> Result<Record, Error> {
         let tx = self
@@ -406,14 +405,6 @@ fn track(tracks: Tracks, kind: sigil_calls::MediaKind) -> bool {
         sigil_calls::MediaKind::Camera => tracks.camera,
         sigil_calls::MediaKind::Screen => tracks.screen,
     }
-}
-fn enabled(record: &Record, sender: Id, kind: sigil_calls::MediaKind) -> bool {
-    record
-        .state
-        .ready
-        .iter()
-        .find(|r| r.member == sender)
-        .is_some_and(|r| track(r.tracks, kind))
 }
 /// Every member's receiver challenge in a state, in member order.
 fn challenges(state: &State) -> Vec<(Id, Id)> {

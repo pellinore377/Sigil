@@ -6,6 +6,14 @@ use crate::{fail, get, set};
 use wasm_bindgen::{prelude::*, JsCast};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 
+pub(crate) fn timing(message: String) {
+    let packet = js_sys::Object::new();
+    let worker: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
+    if set(&packet, "media_timing", &message.into()).is_ok() {
+        let _ = worker.post_message(&packet);
+    }
+}
+
 /// The worker's transform entry point; the page attaches a sender or receiver to it by name.
 pub(crate) fn install() -> Result<(), JsValue> {
     let handler = Closure::<dyn FnMut(JsValue)>::new(move |event: JsValue| {
@@ -99,7 +107,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
             let at = js_sys::Date::now();
             video_ack = video_ack.max(at - converted_at);
             if at - video_since >= 5000.0 {
-                web_sys::console::log_1(&format!("SigilTiming video receive frames={video_count} gap_ms={video_gap:.0} open_ms={video_open:.0} write_ms={video_ack:.0} dropped={dropped}").into());
+                timing(format!("SigilTiming video receive frames={video_count} gap_ms={video_gap:.0} open_ms={video_open:.0} write_ms={video_ack:.0} dropped={dropped}"));
                 video_since = at;
                 (video_count, video_gap, video_open, video_ack) = (0, 0.0, 0.0, 0.0);
             }
