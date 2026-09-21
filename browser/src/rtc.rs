@@ -203,7 +203,8 @@ pub async fn browser_call_audio_stats() -> String {
                 let n = |key| get(&entry,key).ok().and_then(|v|v.as_f64()).unwrap_or(0.0);
                 let direction = get(&entry,"type").ok().and_then(|v|v.as_string()).unwrap_or_default();
                 if direction == "outbound-rtp" || direction == "inbound-rtp" {
-                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} received={} lost={} encode_ms={:.0} jitter_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
+                    let encoder = get(&entry,"encoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
+                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} received={} lost={} encode_ms={:.0} jitter_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
                 }
             }
             if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() != Some("audio") {

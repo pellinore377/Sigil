@@ -44,7 +44,6 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
     let call = get(&options, "call").ok().and_then(|v| v.as_string()).unwrap_or_default();
     let mut last_stamp = None::<u32>;
     let mut elapsed = 0u64;
-    let mut key_requested = 0u64;
     let reader = invoke(&get(&transformer, "readable")?, "getReader", &[])?;
     let writer = invoke(&get(&transformer, "writable")?, "getWriter", &[])?;
     let mut dropped = 0u64;
@@ -63,9 +62,6 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                 let stamp = get(&frame, "timestamp")?.as_f64().unwrap_or(0.0) as u32;
                 if let Some(last) = last_stamp { elapsed += u64::from(stamp.wrapping_sub(last)); }
                 last_stamp = Some(stamp);
-                if elapsed.saturating_sub(key_requested) >= 90_000 {
-                    let _ = invoke(&transformer, "generateKeyFrame", &[]); key_requested = elapsed;
-                }
                 let key = get(&frame, "type")?.as_string().as_deref() == Some("key");
                 crate::call::seal_video(&call, &bytes, elapsed * 1000 / 90, key, dimension("width"), dimension("height")).map(Some)
             } else { crate::call::open_video(&call, &sender, &bytes).map(Some) }
