@@ -50,7 +50,8 @@ internal class NativeCalls(private val app: Application, private val update: (Li
     private var sharing = false
     var projectionRequest by mutableStateOf<String?>(null)
         private set
-    private var front = true
+    var front by mutableStateOf(true)
+        private set
     private val videoOutputs = java.util.concurrent.ConcurrentHashMap<String, CallVideoDecoder>()
     private val speakers = mutableMapOf<String, CallSpeaker>()
     private var levels = emptyMap<String, Float>()

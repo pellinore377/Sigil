@@ -352,6 +352,6 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
             }
             override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) {}
         }
-    } }, modifier = fitted)
+    } }, update = { it.scaleX = if (member == "self" && !screen && calls.front) -1f else 1f }, modifier = fitted)
     }
 }

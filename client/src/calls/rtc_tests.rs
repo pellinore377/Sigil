@@ -492,6 +492,38 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         assert!(!pending.is_finished());
         release.notify_one();
         pending.await.unwrap().unwrap();
+        // Deliver a complete burst before polling, as happens after a scheduling stall.
+        // These are real sealed RTP payloads; only network arrival timing is synthetic.
+        let (arrival, packets) = mpsc::channel(512);
+        b.transport.packets = packets;
+        b.incoming.clear();
+        b.ready = Default::default();
+        b.camera_assembly.clear();
+        b.video_gaps.clear();
+        let own = alice.call_transport_roster(id, now).unwrap().1;
+        for index in 0..12 {
+            for kind in [MediaKind::Audio, MediaKind::Camera] {
+                if kind == MediaKind::Camera && index >= 8 { continue; }
+                let wire = alice.rtc_prepare_send(&mut a, kind, 20_000_000 + index * 33_333,
+                    kind == MediaKind::Camera && index == 0, &[42; 8192], now).unwrap();
+                let ssrc = b.streams.iter().find(|s| s.track.sender == own && s.track.kind == kind).unwrap().ssrc;
+                for packet in wire.packets {
+                    arrival.try_send(Packet { ssrc, sequence: packet.header.sequence_number,
+                        timestamp: packet.header.timestamp, marker: packet.header.marker,
+                        payload: packet.payload.to_vec() }).ok().unwrap();
+                }
+            }
+        }
+        let mut burst = [Vec::new(), Vec::new()];
+        for _ in 0..30 {
+            for value in bob.rtc_receive(&mut b, now).unwrap() {
+                burst[value.frame.kind as usize].push(value.frame.timestamp);
+                assert_eq!(&*value.frame.data, &[42; 8192]);
+            }
+            if burst[0].len() == 12 && burst[1].len() == 8 { break; }
+        }
+        assert_eq!(burst[0], (0..12).map(|n| 20_000_000 + n * 33_333).collect::<Vec<_>>());
+        assert_eq!(burst[1], (0..8).map(|n| 20_000_000 + n * 33_333).collect::<Vec<_>>());
         assert!(bob.rtc_receive(&mut a, now).is_err());
         alice.leave_call(id, now).unwrap();
         assert!(alice

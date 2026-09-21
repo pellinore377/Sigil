@@ -153,6 +153,8 @@ struct Tally {
     rejected: u64,
     opened: u64,
     refused: u64,
+    delivered: [u64; 3],
+    waiting_key: u64,
     stalled: u64,
     reported: Option<crate::clock::Instant>,
 }
@@ -549,8 +551,14 @@ impl ClientStore {
         for _ in 0..128 {
             let mut candidate = None;
             for _ in 0..call.streams.len() {
-                let ssrc = call.streams[call.incoming_cursor].ssrc;
+                let stream = &call.streams[call.incoming_cursor];
                 call.incoming_cursor = (call.incoming_cursor + 1) % call.streams.len();
+                // Drain complete frames before assembling more from a burst. Overflow here
+                // used to discard reference frames before the decoder ever had a chance.
+                if call.ready.full(stream.ssrc, stream.track.kind == MediaKind::Audio) {
+                    continue;
+                }
+                let ssrc = stream.ssrc;
                 if let Some(packet) = call.incoming.get_mut(&ssrc).and_then(|q| q.pop(clock)) {
                     candidate = Some(packet);
                     break;
@@ -639,6 +647,9 @@ impl ClientStore {
                             sender: stream.track.sender,
                             frame,
                         });
+                        call.tally.delivered[stream.track.kind as usize] += 1;
+                    } else {
+                        call.tally.waiting_key += 1;
                     }
                 }
                 Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => {
@@ -660,13 +671,15 @@ impl ClientStore {
         if due && call.tally.packets > 0 {
             call.tally.reported = Some(crate::clock::Instant::now());
             crate::perf::note(format!(
-                "call rx packets={} unknown={} assembled={} rejected={} opened={} refused={}",
+                "call rx packets={} unknown={} assembled={} rejected={} opened={} refused={} delivered={:?} waiting_key={}",
                 call.tally.packets,
                 call.tally.unknown,
                 call.tally.assembled,
                 call.tally.rejected,
                 call.tally.opened,
-                call.tally.refused
+                call.tally.refused,
+                call.tally.delivered,
+                call.tally.waiting_key
             ));
         }
         Ok(frames)

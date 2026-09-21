@@ -10,16 +10,16 @@ pub(super) struct ReadyFrames {
     bytes: usize,
 }
 impl ReadyFrames {
+    pub fn full(&self, stream: u32, audio: bool) -> bool {
+        self.streams.get(&stream).is_some_and(|v| v.len() >= if audio { 8 } else { 3 })
+    }
     pub fn clear(&mut self, stream: u32) {
         if let Some(frames) = self.streams.remove(&stream) {
             self.bytes -= frames.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
         }
     }
     pub fn push(&mut self, stream: u32, audio: bool, bytes: Vec<u8>, now: Instant) -> bool {
-        let dropped = self
-            .streams
-            .get(&stream)
-            .is_some_and(|v| v.len() >= if audio { 8 } else { 3 });
+        let dropped = self.full(stream, audio);
         if dropped {
             self.clear(stream);
         }
