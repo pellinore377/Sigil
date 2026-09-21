@@ -402,13 +402,13 @@ async fn with_store<T: Send + 'static, F: FnOnce(&mut Store) -> Result<T, StoreE
     state: AppState,
     operation: F,
 ) -> Result<T, StoreError> {
+    let queued = std::time::Instant::now();
     let permit = state
         .database_slot
         .clone()
         .acquire_owned()
         .await
         .map_err(|_| StoreError::Busy)?;
-    let queued = std::time::Instant::now();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut store = state.store.lock().map_err(|_| StoreError::InvalidData)?;

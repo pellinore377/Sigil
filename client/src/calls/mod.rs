@@ -24,6 +24,8 @@ mod rtc_transport;
 mod signaling;
 #[cfg(feature = "rtc-client")]
 pub use rtc_transport::{ReceivedFrame, RtcCall, RtcTransmission};
+#[cfg(feature = "rtc-client")]
+pub(crate) use rtc_transport::RtcAuthority;
 #[cfg(test)]
 mod tests;
 pub(crate) use control::{

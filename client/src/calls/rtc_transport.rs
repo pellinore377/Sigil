@@ -129,6 +129,16 @@ pub struct ReceivedFrame {
     pub sender: Id,
     pub frame: sigil_calls::Frame,
 }
+pub(crate) struct RtcAuthority {
+    call: Id,
+    lease: Id,
+    roster: Id,
+    created: u64,
+    expires: u64,
+    version: i64,
+    changes: u64,
+    checked: std::time::Instant,
+}
 pub struct RtcCall {
     transport: Transport,
     media: Media,
@@ -429,12 +439,35 @@ impl ClientStore {
         call: &RtcCall,
         now: u64,
     ) -> Result<&'static str, Error> {
-        let record = load(&self.db, &self.key, &call.media.call)?;
-        record.authorize(&self.db, &self.key, now)?;
-        if record.lease != call.media.lease {
-            return Err(Error::Obsolete);
-        }
-        if record.state.roster.roster.digest().map_err(failure)? != call.roster {
+        // data_version observes commits from other connections; total_changes observes this
+        // connection. A cached proof never masks a peer block, new lease or roster update.
+        let version = self.db.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))?;
+        let changes = self.db.total_changes();
+        let current = self.db.is_autocommit() && self.rtc_authority.as_ref().is_some_and(|checked|
+            checked.call == call.media.call && checked.lease == call.media.lease
+                && checked.version == version && checked.changes == changes
+                && checked.checked.elapsed() < Duration::from_millis(200)
+                && now.saturating_add(sigil_calls::CLOCK_SKEW) >= checked.created && now < checked.expires
+        );
+        let roster = if current {
+            self.rtc_authority.as_ref().ok_or(Error::Unprepared)?.roster
+        } else {
+            self.rtc_authority = None;
+            let record = load(&self.db, &self.key, &call.media.call)?;
+            record.authorize(&self.db, &self.key, now)?;
+            if record.lease != call.media.lease { return Err(Error::Obsolete); }
+            let roster = record.state.roster.roster.digest().map_err(failure)?;
+            if self.db.is_autocommit() {
+                self.rtc_authority = Some(RtcAuthority {
+                    call: call.media.call, lease: call.media.lease, roster,
+                    created: record.state.roster.roster.created,
+                    expires: record.state.roster.roster.expires,
+                    version, changes, checked: std::time::Instant::now(),
+                });
+            }
+            roster
+        };
+        if roster != call.roster {
             return Ok("reconnect");
         }
         Ok(match call.transport.connection.load(Ordering::Relaxed) {

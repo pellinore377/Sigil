@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Synthetic camera tracks only. No capture devices, accounts, or audio.
-# Open the printed URL; ?recovery drops ten receive frames every 600, ?plain bypasses transforms.
+# Open the printed URL; ?recovery drops ten receive frames every 600, ?plain bypasses transforms, ?revoke checks revocation and worker expiry.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 lab=$(mktemp -d)
@@ -15,7 +15,7 @@ cat > "$lab/web/sigil-media-worker.mjs" <<'JS'
 import init,{media_worker_start} from './sigil_browser.js';self.onmessage=async({data})=>{self.onmessage=null;await init({module_or_path:data.module});media_worker_start(data.port,data.gate);};
 JS
 cat > "$lab/web/sigil-video-control.mjs" <<'JS'
-import init,{video_test_control_start} from './sigil_browser.js';self.onmessage=async({data})=>{self.onmessage=null;await init({module_or_path:data.module});video_test_control_start(data.port,data.gate,data.fixture);};
+import init,{video_test_control_start} from './sigil_browser.js';self.onmessage=async({data})=>{self.onmessage=null;await init({module_or_path:data.module});video_test_control_start(data.port,data.gate,data.fixture,data.revoke);};
 JS
 rustc --edition=2024 browser/tests/video/serve.rs -o "$lab/serve"
 "$lab/serve" "$lab"

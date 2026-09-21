@@ -5,7 +5,7 @@ use crate::{
     rtc::{construct, invoke, object},
     set,
 };
-use js_sys::{Array, Function, Uint8Array};
+use js_sys::{Array, Function};
 #[derive(Default)]
 struct Presented {
     frames: u64,
@@ -77,8 +77,8 @@ fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::
                     let _ = reply.post_message(&data);
                 }
             }
-            if let Ok(v) = get(&e.data(), "media_timing") {
-                web_sys::console::log_1(&v);
+            if let Some(v) = get(&e.data(), "media_timing").ok().and_then(|v| v.as_string()) {
+                web_sys::console::log_1(&v.into());
             }
         });
     media.set_onmessage(Some(events.as_ref().unchecked_ref()));
@@ -88,6 +88,17 @@ fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::
     let options = web_sys::WorkerOptions::new();
     options.set_type(web_sys::WorkerType::Module);
     let control = web_sys::Worker::new_with_options("/web/sigil-video-control.mjs", &options)?;
+    let diagnostics = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(|event: web_sys::MessageEvent| {
+        if let Some(message) = get(&event.data(), "media_timing").ok().and_then(|v| v.as_string()) {
+            if let Some(checks) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("checks")) {
+                let previous = checks.text_content().unwrap_or_default();
+                checks.set_text_content(Some(&format!("{previous}\n{message}")));
+            }
+            web_sys::console::log_1(&message.into());
+        }
+    });
+    control.set_onmessage(Some(diagnostics.as_ref().unchecked_ref()));
+    diagnostics.forget();
     let init = js_sys::Object::new();
     set(&init, "module", &wasm_bindgen::module())?;
     set(&init, "gate", &gate)?;
@@ -95,6 +106,7 @@ fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::
     media.post_message_with_transfer(&init, &Array::of1(&channel.port2()))?;
     set(&init, "port", &channel.port1())?;
     set(&init, "fixture", &update.to_string().into())?;
+    set(&init, "revoke", &web_sys::window().unwrap().location().search()?.contains("revoke").into())?;
     control.post_message_with_transfer(&init, &Array::of1(&channel.port1()))?;
     Ok((media, control))
 }
@@ -103,22 +115,16 @@ pub fn video_test_control_start(
     port: web_sys::MessagePort,
     buffer: JsValue,
     fixture: String,
+    revoke: bool,
 ) -> Result<(), JsValue> {
     let update = Rc::new(RefCell::new(
         serde_json::from_str::<serde_json::Value>(&fixture).map_err(|_| fail("Fixture"))?,
     ));
     let gate = js_sys::Int32Array::new(&buffer);
-    let publish = move |update: &serde_json::Value| -> Result<(), JsValue> {
-        let message = js_sys::Object::new();
-        let bytes = Uint8Array::from(update.to_string().as_bytes());
-        set(&message, "data", &bytes)?;
-        set(
-            &message,
-            "revision",
-            &js_sys::Atomics::load(&gate, 0)?.into(),
-        )?;
-        set(&message, "until", &(js_sys::Date::now() + 2000.0).into())?;
-        port.post_message_with_transferable(&message, &Array::of1(&bytes.buffer()))
+    crate::media_worker::test_control_link(port, gate.clone());
+    let publish = |update: &serde_json::Value| -> Result<(), JsValue> {
+        let update = serde_json::from_value(update.clone()).map_err(|_| fail("Fixture update"))?;
+        crate::media_worker::publish(update)
     };
     publish(&update.borrow())?;
     update.borrow_mut()["sender"] = serde_json::Value::Null;
@@ -143,7 +149,24 @@ pub fn video_test_control_start(
         // Same synchronous wait used by the store's HTTP bridge, deliberately worse than normal.
         if tick.get() % 20 == 0 {
             let wait = js_sys::Int32Array::new(&js_sys::SharedArrayBuffer::new(4));
-            let _ = js_sys::Atomics::wait_with_timeout(&wait, 0, 0, 700.0);
+            if revoke && tick.get() == 20 {
+                crate::media_worker::invalidate();
+                let _ = crate::transport::wait_for_response(&wait, 100.0);
+                let before = (js_sys::Atomics::load(&gate, 1).unwrap(), js_sys::Atomics::load(&gate, 2).unwrap());
+                let _ = crate::transport::wait_for_response(&wait, 2900.0);
+                let after = (js_sys::Atomics::load(&gate, 1).unwrap(), js_sys::Atomics::load(&gate, 2).unwrap());
+                assert_eq!(before, after, "network heartbeat revived revoked media");
+                crate::transform::timing("SigilTiming acceptance revoked media stayed stopped during network wait".into());
+            } else if revoke && tick.get() == 40 {
+                let _ = js_sys::Atomics::wait_with_timeout(&wait, 0, 0, 2200.0);
+                let before = (js_sys::Atomics::load(&gate, 1).unwrap(), js_sys::Atomics::load(&gate, 2).unwrap());
+                let _ = js_sys::Atomics::wait_with_timeout(&wait, 0, 0, 300.0);
+                let after = (js_sys::Atomics::load(&gate, 1).unwrap(), js_sys::Atomics::load(&gate, 2).unwrap());
+                assert_eq!(before, after, "stopped control worker retained media authority");
+                crate::transform::timing("SigilTiming acceptance stopped worker expired media authority".into());
+            } else {
+                let _ = crate::transport::wait_for_response(&wait, 3000.0);
+            }
         }
     });
     js_sys::global()
@@ -193,7 +216,7 @@ pub async fn video_test_start(width: u32, height: u32, fps: u32) -> Result<(), J
     PRESENTED.with(|p| p.borrow_mut().clear());
     let document = web_sys::window().unwrap().document().unwrap();
     let body = document.body().unwrap();
-    body.set_inner_html("<h1>Silent encrypted AV1 test</h1><p>Two synthetic video tracks; no microphone or speakers. Control workers stall 700 ms every two seconds.</p><pre id='stats' style='max-height:220px;overflow:auto'>Starting</pre>");
+    body.set_inner_html("<h1>Silent encrypted AV1 test</h1><p>Two synthetic video tracks; no microphone or speakers. Control workers wait three seconds for network replies every two seconds.</p><pre id='checks'></pre><pre id='stats' style='max-height:220px;overflow:auto'>Starting</pre>");
     let call = [1u8; 32];
     let members = [[3u8; 32], [4u8; 32]];
     let mut workers = Vec::new();
