@@ -58,6 +58,12 @@ pub async fn start_browser() -> Result<(), JsValue> {
     let (ready, receive) = oneshot::channel();
     let messages = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
         let data = event.data();
+        if let Some(timing) = get(&data, "media_timing").ok().and_then(|v| v.as_string()) {
+            if timing.len() <= 512 && timing.starts_with("SigilTiming ") {
+                web_sys::console::log_1(&timing.into());
+            }
+            return;
+        }
         if get(&data, "video_shape").ok().and_then(|v| v.as_bool()) == Some(true) {
             let _ = crate::rtc::receive_video(&data);
             return;

@@ -63,7 +63,12 @@ fn collect_response(
     state: &Int32Array,
     timeout: f64,
 ) -> Result<Response<Body>, JsValue> {
+    let started = js_sys::Date::now();
     js_sys::Atomics::wait_with_timeout(state, 0, 0, timeout)?;
+    let waited = js_sys::Date::now() - started;
+    if waited >= 30.0 {
+        crate::transform::timing(format!("SigilTiming worker network_wait_ms={waited:.0}"));
+    }
     if js_sys::Atomics::load(state, 0)? != 1 {
         let _ = js_sys::Atomics::compare_exchange(state, 0, 0, 2);
         return Err(fail("Network request failed or timed out"));
