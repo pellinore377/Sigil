@@ -8,6 +8,8 @@ use web_sys::{ErrorEvent, MessageEvent, Worker, WorkerOptions, WorkerType};
 type Reply = oneshot::Sender<Result<JsValue, JsValue>>;
 struct Host {
     worker: Worker,
+    media: Worker,
+    gate: js_sys::Int32Array,
     next: u64,
     pending: BTreeMap<u64, Reply>,
     ready: Option<Reply>,
@@ -34,6 +36,9 @@ fn shutdown() {
             host.worker.set_onmessage(None);
             host.worker.set_onerror(None);
             host.worker.terminate();
+            host.media.set_onmessage(None);
+            host.media.set_onerror(None);
+            host.media.terminate();
             if let Some(reply) = host.ready.take() {
                 let _ = reply.send(Err(fail("Browser client could not start")));
             }
@@ -45,7 +50,7 @@ fn shutdown() {
 }
 /// The worker that holds the call keys; encoded transforms run inside it.
 pub(crate) fn worker() -> Option<Worker> {
-    HOST.with(|slot| slot.borrow().as_ref().map(|host| host.worker.clone()))
+    HOST.with(|slot| slot.borrow().as_ref().map(|host| host.media.clone()))
 }
 #[wasm_bindgen]
 pub async fn start_browser() -> Result<(), JsValue> {
@@ -54,7 +59,13 @@ pub async fn start_browser() -> Result<(), JsValue> {
     }
     let options = WorkerOptions::new();
     options.set_type(WorkerType::Module);
+    let channel = web_sys::MessageChannel::new()?;
     let worker = Worker::new_with_options("/web/sigil-worker.mjs", &options)?;
+    let media = match Worker::new_with_options("/web/sigil-media-worker.mjs", &options) {
+        Ok(media) => media,
+        Err(error) => { worker.terminate(); return Err(error); }
+    };
+    let gate = js_sys::Int32Array::new(&js_sys::SharedArrayBuffer::new(12));
     let (ready, receive) = oneshot::channel();
     let messages = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
         let data = event.data();
@@ -62,6 +73,16 @@ pub async fn start_browser() -> Result<(), JsValue> {
             if timing.len() <= 512 && timing.starts_with("SigilTiming ") {
                 web_sys::console::log_1(&timing.into());
             }
+            return;
+        }
+        if get(&data,"video_frame").ok().and_then(|v|v.as_bool())==Some(true) {
+            let frame=get(&data,"frame").unwrap_or(JsValue::UNDEFINED);
+            let valid=HOST.with(|h|h.borrow().as_ref().is_some_and(|h|js_sys::Atomics::load(&h.gate,0).ok().map(f64::from)==get(&data,"revision").ok().and_then(|v|v.as_f64())));
+            let valid=valid && get(&data,"until").ok().and_then(|v|v.as_f64()).is_some_and(|until|js_sys::Date::now()<until);
+            let native=valid && crate::rtc::receive_decoded_video(&data).unwrap_or(false);
+            let _=crate::rtc::invoke(&frame,"close",&[]);
+            let _=crate::set(&data,"frame",&JsValue::UNDEFINED);let _=crate::set(&data,"video_ack",&true.into());let _=crate::set(&data,"native",&native.into());
+            if let Some(worker)=crate::host::worker(){let _=worker.post_message(&data);}
             return;
         }
         if get(&data, "video_shape").ok().and_then(|v| v.as_bool()) == Some(true) {
@@ -129,26 +150,24 @@ pub async fn start_browser() -> Result<(), JsValue> {
             shutdown();
         });
     });
-    let timeout_id = web_sys::window()
-        .ok_or_else(|| fail("Missing window"))?
-        .set_timeout_with_callback_and_timeout_and_arguments_0(
+    let timeout_id = match web_sys::window()
+        .ok_or_else(|| fail("Missing window"))
+        .and_then(|window| window.set_timeout_with_callback_and_timeout_and_arguments_0(
             timeout.as_ref().unchecked_ref(),
             30_000,
-        )?;
+        )) {
+            Ok(id) => id,
+            Err(error) => { worker.terminate(); media.terminate(); return Err(error); }
+        };
+    media.set_onmessage(Some(messages.as_ref().unchecked_ref()));
+    media.set_onerror(Some(errors.as_ref().unchecked_ref()));
     worker.set_onmessage(Some(messages.as_ref().unchecked_ref()));
     worker.set_onerror(Some(errors.as_ref().unchecked_ref()));
-    if let Err(error) = worker.post_message(&wasm_bindgen::module()) {
-        worker.terminate();
-        worker.set_onmessage(None);
-        worker.set_onerror(None);
-        if let Some(window) = web_sys::window() {
-            window.clear_timeout_with_handle(timeout_id);
-        }
-        return Err(error);
-    }
     HOST.with(|slot| {
         *slot.borrow_mut() = Some(Host {
-            worker,
+            worker: worker.clone(),
+            media: media.clone(),
+            gate: gate.clone(),
             next: 1,
             pending: BTreeMap::new(),
             ready: Some(ready),
@@ -158,11 +177,28 @@ pub async fn start_browser() -> Result<(), JsValue> {
             timeout_id,
         })
     });
+    let initialized=(||->Result<(),JsValue>{
+        let init=js_sys::Object::new();
+        crate::set(&init,"module",&wasm_bindgen::module())?;
+        crate::set(&init,"port",&channel.port2())?;
+        crate::set(&init,"gate",&gate.buffer())?;
+        media.post_message_with_transfer(&init,&js_sys::Array::of1(&channel.port2()))?;
+        worker.post_message(&wasm_bindgen::module())
+    })();
+    if let Err(error)=initialized {shutdown();return Err(error);}
     receive
         .await
         .map_err(|_| fail("Browser initialization interrupted"))??;
-    crate::auth::listen()?;
-    lifecycle()?;
+    let linked=(||->Result<(),JsValue>{
+        let link=js_sys::Object::new();
+        crate::set(&link,"media_link",&true.into())?;
+        crate::set(&link,"port",&channel.port1())?;
+        crate::set(&link,"gate",&gate.buffer())?;
+        worker.post_message_with_transfer(&link,&js_sys::Array::of1(&channel.port1()))?;
+        crate::auth::listen()?;
+        lifecycle()
+    })();
+    if let Err(error)=linked {shutdown();return Err(error);}
     Ok(())
 }
 #[wasm_bindgen]
@@ -189,6 +225,10 @@ pub(crate) async fn rpc(
         if host.ready.is_some() || host.pending.len() >= 32 {
             return Err(fail("Browser is busy"));
         }
+        if serde_json::from_str::<serde_json::Value>(&request).ok().is_some_and(|v|
+            v["operation"] == "call_stop" || matches!(v["command"].as_str(), Some("browser_sign_out" | "browser_erase"))) {
+            let _ = js_sys::Atomics::add(&host.gate, 0, 1);
+        }
         let id = host.next;
         host.next = host
             .next
@@ -198,9 +238,11 @@ pub(crate) async fn rpc(
             let data = js_sys::Object::new();
             crate::set(&data, "binary", &true.into())?;
             crate::set(&data, "id", &id.to_string().into())?;
-            crate::set(&data, "request", &request.into())?;
+            crate::set(&data, "request", &JsValue::from_str(&request))?;
             crate::set(&data, "data", &bytes)?;
-            host.worker.post_message(&data)?;
+            let operation=serde_json::from_str::<serde_json::Value>(&request).ok();
+            let media=operation.as_ref().and_then(|v|v["operation"].as_str()).is_some_and(|v| matches!(v,"call_seal"|"call_open"));
+            if media { host.media.post_message(&data)?; } else { host.worker.post_message(&data)?; }
         } else {
             host.worker.post_message(
                 &serde_json::json!({"id":id,"request":request})

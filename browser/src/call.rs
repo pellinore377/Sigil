@@ -13,6 +13,7 @@ struct Active {
 }
 thread_local! { static ACTIVE:RefCell<Option<Active>>=const {RefCell::new(None)}; }
 pub(crate) fn clear() {
+    crate::media_worker::invalidate();
     ACTIVE.with(|active| active.borrow_mut().take());
 }
 #[derive(Deserialize)]
@@ -84,6 +85,13 @@ fn json(value: serde_json::Value) -> Zeroizing<Vec<u8>> {
     Zeroizing::new(value.to_string().into_bytes())
 }
 fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<Vec<u8>>, JsValue> {
+    if crate::media_worker::processing() {
+        return match operation {
+            Operation::CallSeal { call, kind, timestamp, keyframe } if !bytes.is_empty() && bytes.len() <= 1024*1024 && timestamp <= i64::MAX as u64 => crate::media_worker::seal_frame(id(&call)?, kind, timestamp, keyframe, &bytes).map(Zeroizing::new),
+            Operation::CallOpen { call, sender, kind } if !bytes.is_empty() => crate::media_worker::open_frame(id(&call)?, id(&sender)?, kind, &bytes).map(Zeroizing::new),
+            _ => Err(fail("Invalid media worker command")),
+        };
+    }
     let now = (js_sys::Date::now() / 1000.0) as u64;
     STORE.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -154,6 +162,7 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
                     let mut slot = slot.borrow_mut();
                     if call.is_none() || slot.as_ref().is_some_and(|active| Some(active.id) == call)
                     {
+                        crate::media_worker::invalidate();
                         slot.take();
                     }
                 });
@@ -193,100 +202,17 @@ fn execute(operation: Operation, bytes: Zeroizing<Vec<u8>>) -> Result<Zeroizing<
                         let receivers = store
                             .refresh_call_media(&mut active.media, now)
                             .map_err(error)?;
-                        let (sealed, opened) = TRANSFORMED.with(std::cell::Cell::get);
+                        let (sealed, opened) = crate::media_worker::counts();
                         Ok(json(serde_json::json!({
                             "receivers": receivers,
                             "sealed": sealed,
                             "opened": opened
                         })))
                     }
-                    Operation::CallSeal {
-                        kind,
-                        timestamp,
-                        keyframe,
-                        ..
-                    } if !bytes.is_empty()
-                        && bytes.len() <= 1024 * 1024
-                        && timestamp <= i64::MAX as u64 =>
-                    {
-                        store
-                            .seal_call_frame(
-                                &mut active.media,
-                                kind,
-                                timestamp,
-                                keyframe,
-                                &bytes,
-                                now,
-                            )
-                            .map(Zeroizing::new)
-                            .map_err(error)
-                    }
-                    Operation::CallOpen { sender, kind, .. } if !bytes.is_empty() => {
-                        let frame = store
-                            .open_call_frame(&mut active.media, id(&sender)?, kind, &bytes, now)
-                            .map_err(error)?;
-                        let mut value = Zeroizing::new(Vec::with_capacity(10 + frame.data.len()));
-                        value.push(frame.kind as u8);
-                        value.push(u8::from(frame.keyframe));
-                        value.extend_from_slice(&frame.timestamp.to_be_bytes());
-                        value.extend_from_slice(&frame.data);
-                        Ok(value)
-                    }
                     _ => Err(fail("Invalid call payload")),
                 }
             }),
         }
-    })
-}
-thread_local! {
-    /// Frames the worker has sealed and opened, so the page can tell whether the
-    /// encoded transforms are in the media path at all.
-    pub(crate) static TRANSFORMED: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
-}
-/// Seal one encoded audio frame into the single RTP payload that carries it.
-pub(crate) fn seal_audio(bytes: &[u8], timestamp: u64) -> Result<Vec<u8>, JsValue> {
-    TRANSFORMED.with(|v| {
-        let (sealed, opened) = v.get();
-        v.set((sealed + 1, opened));
-    });
-    let now = (js_sys::Date::now() / 1000.0) as u64;
-    STORE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
-        ACTIVE.with(|active| -> Result<Vec<u8>, JsValue> {
-            let mut active = active.borrow_mut();
-            let active = active.as_mut().ok_or_else(|| fail("No call is active"))?;
-            let sealed = store
-                .seal_call_frame(&mut active.media, MediaKind::Audio, timestamp, false, bytes, now)
-                .map_err(|error| fail(&format!("audio not sealed: {error:?}")))?;
-            let mut packets = sigil_calls::packetize(MediaKind::Audio, &sealed)
-                .map_err(|_| fail("Invalid audio frame"))?;
-            if packets.len() != 1 {
-                return Err(fail("Audio frame does not fit one packet"));
-            }
-            Ok(packets.remove(0))
-        })
-    })
-}
-/// Open one received audio payload; None means the frame is not yet complete or was rejected.
-pub(crate) fn open_audio(sender: &str, bytes: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, JsValue> {
-    TRANSFORMED.with(|v| {
-        let (sealed, opened) = v.get();
-        v.set((sealed, opened + 1));
-    });
-    let now = (js_sys::Date::now() / 1000.0) as u64;
-    let sender = id(sender)?;
-    STORE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
-        ACTIVE.with(|active| -> Result<Option<Zeroizing<Vec<u8>>>, JsValue> {
-            let mut active = active.borrow_mut();
-            let active = active.as_mut().ok_or_else(|| fail("No call is active"))?;
-            Ok(store
-                .open_call_packet(&mut active.media, sender, MediaKind::Audio, bytes, now)
-                .map_err(|_| fail("Call state is unavailable or changed"))?
-                .map(|frame| frame.data))
-        })
     })
 }
 pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
@@ -322,6 +248,7 @@ pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
         bytes.fill(0, 0, bytes.length());
         execute(operation, plain)
     })();
+    publish_media();
     let reply = js_sys::Object::new();
     let _ = set(&reply, "binary", &true.into());
     let _ = set(&reply, "id", &reply_id);
@@ -352,29 +279,31 @@ pub async fn call_command(request: String, bytes: Uint8Array) -> Result<Uint8Arr
     host::rpc(request, Some(bytes)).await?.dyn_into()
 }
 
-pub(crate) fn seal_video(call: &str, bytes: &[u8], timestamp: u64, keyframe: bool, width: u16, height: u16) -> Result<Vec<u8>, JsValue> {
-    if !sigil_calls::av1::camera_size(width, height) { return Err(fail("Invalid video dimensions")); }
-    let call = id(call)?;
-    let mut body = Zeroizing::new(vec![2, 0, 0]); // AV1, zero rotation.
-    body.extend_from_slice(&width.to_be_bytes()); body.extend_from_slice(&height.to_be_bytes()); body.extend_from_slice(bytes);
-    STORE.with(|slot| {
-        let mut slot = slot.borrow_mut(); let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
+pub(crate) fn publish_media() {
+    if !crate::media_worker::linked() || crate::media_worker::processing() { return; }
+    let result = STORE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let store = slot.as_mut()?;
         ACTIVE.with(|slot| {
-            let mut slot = slot.borrow_mut(); let active = slot.as_mut().filter(|a| a.id == call).ok_or_else(|| fail("Call changed"))?;
-            let sealed = store.seal_call_frame(&mut active.media, MediaKind::Camera, timestamp, keyframe, &body, (js_sys::Date::now()/1000.0) as u64).map_err(|_| fail("Video not sealed"))?;
-            sigil_calls::av1::wrap(&sealed).map_err(|_| fail("Invalid video envelope"))
+            let mut slot = slot.borrow_mut();
+            let active = slot.as_mut()?;
+            Some(store.detach_call_media(&mut active.media, (js_sys::Date::now()/1000.0) as u64))
         })
-    })
+    });
+    match result {
+        Some(Ok(update)) => { if crate::media_worker::publish(update).is_err() { crate::media_worker::invalidate(); } }
+        _ => crate::media_worker::invalidate(),
+    }
 }
-pub(crate) fn open_video(call: &str, sender: &str, bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
-    let call = id(call)?; let sender = id(sender)?;
-    let encrypted = sigil_calls::av1::unwrap(bytes).map_err(|_| fail("Invalid video envelope"))?;
+pub(crate) fn renew_media(context: sigil_calls::Context) {
     STORE.with(|slot| {
-        let mut slot = slot.borrow_mut(); let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
-        ACTIVE.with(|slot| {
-            let mut slot = slot.borrow_mut(); let active = slot.as_mut().filter(|a| a.id == call).ok_or_else(|| fail("Call changed"))?;
-            let frame = store.open_call_frame(&mut active.media, sender, MediaKind::Camera, encrypted, (js_sys::Date::now()/1000.0) as u64).map_err(|_| fail("Video not opened"))?;
-            let mut bytes = vec![1, u8::from(frame.keyframe)]; bytes.extend_from_slice(&frame.timestamp.to_be_bytes()); bytes.extend_from_slice(&frame.data); Ok(bytes)
-        })
-    })
+        if let Some(store) = slot.borrow_mut().as_mut() {
+            ACTIVE.with(|slot| {
+                if let Some(active) = slot.borrow_mut().as_mut().filter(|a| a.id == context.call) {
+                    let _ = store.renew_detached_media(&mut active.media, context, (js_sys::Date::now()/1000.0) as u64);
+                }
+            });
+        }
+    });
+    publish_media();
 }

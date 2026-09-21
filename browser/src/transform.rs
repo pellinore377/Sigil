@@ -1,6 +1,4 @@
-//! Encoded transforms. The browser captures, encodes, decodes and plays audio natively on its own
-//! threads and hands each encoded frame here, where it is sealed or opened inside the worker that
-//! already holds the call's keys. Nothing media related runs on the page's main thread.
+//! Encoded transforms run in the dedicated media worker, isolated from storage and network waits.
 use crate::rtc::invoke;
 use crate::{fail, get, set};
 use wasm_bindgen::{prelude::*, JsCast};
@@ -42,12 +40,16 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         .unwrap_or_default();
     let video = get(&options, "kind").ok().and_then(|v| v.as_string()).as_deref() == Some("camera");
     let call = get(&options, "call").ok().and_then(|v| v.as_string()).unwrap_or_default();
+    let software = (video && !sealing).then(|| crate::camera_decode::Decoder::new(call.clone(),sender.clone(),get(&options,"generation").ok().and_then(|v|v.as_f64()).unwrap_or(0.0) as u64));
     let mut last_stamp = None::<u32>;
     let mut elapsed = 0u64;
     let reader = invoke(&get(&transformer, "readable")?, "getReader", &[])?;
     let writer = invoke(&get(&transformer, "writable")?, "getWriter", &[])?;
     let mut dropped = 0u64;
+    let mut recovery_at = 0.0;
     let mut shape = None;
+    #[cfg(feature = "video-acceptance")]
+    let mut fixture_frame = 0u32;
     let mut video_since = js_sys::Date::now();
     let mut video_last = video_since;
     let (mut video_count, mut video_gap, mut video_open, mut video_ack) = (0u32, 0f64, 0f64, 0f64);
@@ -68,17 +70,32 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                 if let Some(last) = last_stamp { elapsed += u64::from(stamp.wrapping_sub(last)); }
                 last_stamp = Some(stamp);
                 let key = get(&frame, "type")?.as_string().as_deref() == Some("key");
-                crate::call::seal_video(&call, &bytes, elapsed * 1000 / 90, key, dimension("width"), dimension("height")).map(Some)
-            } else { crate::call::open_video(&call, &sender, &bytes).map(Some) }
-        } else { convert(&frame, sealing, &sender) };
+                crate::media_worker::seal_video(&call, &bytes, elapsed * 1000 / 90, key, dimension("width"), dimension("height")).map(Some)
+            } else { crate::media_worker::open_video(&call, &sender, &bytes).map(Some) }
+        } else { convert(&frame, sealing, &call, &sender) };
+        #[cfg(feature = "video-acceptance")]
+        let converted = {
+            fixture_frame += 1;
+            if video && !sealing && get(&options, "drop_bursts").ok().and_then(|v|v.as_bool()) == Some(true) && fixture_frame % 600 < 10 {
+                Err(fail("Synthetic receive interruption"))
+            } else { converted }
+        };
         let converted_at = js_sys::Date::now();
         let reason = match &converted {
-            Err(error) => Some(error.as_string().unwrap_or_else(|| "unknown".into())),
+            Err(error) => Some(error.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).or_else(||error.as_string()).unwrap_or_else(|| "unknown".into())),
             Ok(None) => Some("incomplete".into()),
             Ok(Some(_)) => None,
         };
         if let Some(reason) = reason {
+            if let Some(decoder)=&software {decoder.discontinuity();}
             dropped += 1;
+            if video && arrived - recovery_at >= 250.0 {
+                recovery_at = arrived;
+                let method = if sealing { "generateKeyFrame" } else { "sendKeyFrameRequest" };
+                if let Ok(request) = invoke(&transformer, method, &[]) {
+                    spawn_local(async move { if let Ok(promise) = request.dyn_into::<js_sys::Promise>() { let _ = JsFuture::from(promise).await; } });
+                }
+            }
             // The reason separates a muted track, whose frames are meant to stop here, from a
             // key or state failure, which is not.
             if dropped % 250 == 1 {
@@ -91,6 +108,14 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         let Ok(Some(payload)) = converted else { continue };
         if video && !sealing {
             let (rotation, width, height, encoded) = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
+            if let Some(decoder) = &software {
+                if !decoder.push(&payload).unwrap_or(false) && arrived - recovery_at >= 250.0 {
+                    recovery_at = arrived;
+                    if let Ok(request) = invoke(&transformer,"sendKeyFrameRequest",&[]) {
+                        spawn_local(async move {if let Ok(p)=request.dyn_into::<js_sys::Promise>() {let _=JsFuture::from(p).await;}});
+                    }
+                }
+            }
             if shape != Some((rotation, width, height)) || payload[1] != 0 {
                 let message = crate::rtc::object(serde_json::json!({"video_shape":true,"call":call,"sender":sender,"rotation":rotation,"width":width,"height":height}))?;
                 let worker: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
@@ -120,7 +145,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
     }
 }
 
-fn convert(frame: &JsValue, sealing: bool, sender: &str) -> Result<Option<Vec<u8>>, JsValue> {
+fn convert(frame: &JsValue, sealing: bool, call: &str, sender: &str) -> Result<Option<Vec<u8>>, JsValue> {
     let bytes = js_sys::Uint8Array::new(&get(frame, "data")?).to_vec();
     if bytes.is_empty() || bytes.len() > 1024 * 1024 {
         return Err(fail("Invalid encoded frame"));
@@ -128,8 +153,8 @@ fn convert(frame: &JsValue, sealing: bool, sender: &str) -> Result<Option<Vec<u8
     if sealing {
         // The RTP timestamp counts 48 kHz samples; sealing binds microseconds.
         let stamp = get(frame, "timestamp")?.as_f64().unwrap_or(0.0).max(0.0) as u64;
-        Ok(Some(crate::call::seal_audio(&bytes, stamp * 1000 / 48)?))
+        Ok(Some(crate::media_worker::seal_audio(call, &bytes, stamp * 1000 / 48)?))
     } else {
-        Ok(crate::call::open_audio(sender, &bytes)?.map(|frame| frame.to_vec()))
+        Ok(crate::media_worker::open_audio(call, sender, &bytes)?.map(|frame| frame.to_vec()))
     }
 }

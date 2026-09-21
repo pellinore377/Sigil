@@ -1,4 +1,6 @@
 use super::*;
+mod detached;
+pub use detached::{MediaUpdate, MediaProcessor};
 #[cfg(test)]
 #[path = "media_tests.rs"]
 mod tests;
@@ -12,6 +14,7 @@ pub struct Media {
     pub(super) lease: Id,
     state: Option<Id>,
     sender: Option<sigil_calls::Sender>,
+    external: bool,
     /// The sender key as last shared, re-signed rather than replaced when only readiness changes.
     share: Option<sigil_calls::KeyShare>,
     /// The roster the receivers were established under; only a new roster discards them.
@@ -69,6 +72,7 @@ impl ClientStore {
                 lease: record.lease,
                 state: None,
                 sender: None,
+                external: false,
                 share: None,
                 roster: Some(record.state.roster.roster.digest().map_err(failure)?),
                 challenges: challenges(&record.state),
@@ -92,6 +96,7 @@ impl ClientStore {
             lease: record.lease,
             state,
             sender,
+            external: false,
             share,
             roster: Some(record.state.roster.roster.digest().map_err(failure)?),
             challenges: challenges(&record.state),
@@ -119,7 +124,7 @@ impl ClientStore {
             return Err(Error::Obsolete);
         }
         // Tracks changing on the same roster keep the sender key; the members already hold it.
-        let reuse = media.share.clone().filter(|_| media.sender.is_some());
+        let reuse = media.share.clone().filter(|_| media.sender.is_some() || media.external);
         let declared = ready(&tx, &self.key, &mut record, tracks, reuse, now)?;
         save(&tx, &self.key, &record)?;
         tx.commit()?;
@@ -130,13 +135,19 @@ impl ClientStore {
                 media.share = Some(key);
                 if let Some(sender) = sender {
                     media.sender = Some(sender);
+                    media.external = false;
                     media.receivers.clear();
                     media.assembly.clear();
                 }
             }
+            None if record.owner_peer.is_none() => {
+                // The owner commits readiness directly; refresh re-signs the existing key.
+                media.state = None;
+            }
             None => {
                 media.state = None;
                 media.sender = None;
+                media.external = false;
                 media.share = None;
                 media.receivers.clear();
                 media.assembly.clear();
@@ -215,11 +226,11 @@ impl ClientStore {
         let unshared = record.owner_peer.is_some()
             && !record.shares.is_empty()
             && !record.shares.iter().any(|s| s.key.context.sender == own);
-        if media.state != Some(digest) || media.sender.is_none() || unshared {
+        if media.state != Some(digest) || (media.sender.is_none() && !media.external) || unshared {
             record.generation = record.generation.checked_add(1).ok_or(Error::Limit)?;
             // A state that only changed readiness keeps the sender key: the same members already hold it,
             // and frames bind the roster, not the state. A new roster or a missing share starts fresh.
-            let reuse = media.share.clone().filter(|_| same_keys && !unshared && media.sender.is_some());
+            let reuse = media.share.clone().filter(|_| same_keys && !unshared && (media.sender.is_some() || media.external));
             let (sender, key) = match reuse {
                 Some(key) => (None, key),
                 None => {
@@ -283,6 +294,7 @@ impl ClientStore {
         if let Some((sender, key)) = replacement {
             if let Some(sender) = sender {
                 media.sender = Some(sender);
+                media.external = false;
             }
             media.share = Some(key);
             if media.state != Some(digest) && !same_keys {
@@ -321,6 +333,7 @@ impl ClientStore {
         match result {
             Err(sigil_calls::Error::Expired) => {
                 media.sender = None;
+                media.external = false;
                 media.checked = None;
                 self.refresh_call_media(media, now)?;
                 media

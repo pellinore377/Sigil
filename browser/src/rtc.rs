@@ -206,7 +206,7 @@ pub async fn browser_call_audio_stats() -> String {
                     let encoder = get(&entry,"encoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
                     let decoder = get(&entry,"decoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
                     let hardware = get(&entry,"powerEfficientDecoder").ok().and_then(|v|v.as_bool());
-                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} decoder={decoder} efficient={hardware:?} decoded={} dropped={} freezes={} received={} lost={} encode_ms={:.0} jitter_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesDecoded"),n("framesDropped"),n("freezeCount"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
+                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} decoder={decoder} efficient={hardware:?} decoded={} dropped={} freezes={} received={} lost={} encode_ms={:.0} buffer_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesDecoded"),n("framesDropped"),n("freezeCount"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
                 }
             }
             if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() != Some("audio") {
@@ -233,7 +233,7 @@ pub async fn browser_call_audio_stats() -> String {
         drop(visit);
         let totals = counts.get();
         Ok(format!(
-            "sent={:.0} received={:.0} lost={:.0} concealed_samples={:.0} samples={:.0} concealment_events={:.0} audio_jitter_ms={:.1} video=[{}]",
+            "sent={:.0} received={:.0} lost={:.0} concealed_samples={:.0} samples={:.0} concealment_events={:.0} audio_buffer_ms={:.1} video=[{}]",
             totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6] * 1000.0 / totals[7].max(1.0), video.borrow().join("; ")
         ))
     }
@@ -370,7 +370,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             // The browser captures and encodes audio itself; the worker seals each encoded frame.
             if kind == MediaKind::Audio {
                 let sender = get(&transceiver, "sender")?;
-                attach_transform(&sender, serde_json::json!({"operation":"seal"}))?;
+                attach_transform(&sender, serde_json::json!({"operation":"seal","call":id}))?;
                 if let Some(track) = microphone.as_ref() {
                     let _ = JsFuture::from(
                         invoke(&sender, "replaceTrack", &[track.clone()])?
@@ -407,11 +407,11 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 if kind == MediaKind::Audio {
                     attach_transform(
                         &get(&transceiver, "receiver")?,
-                        serde_json::json!({"operation":"open","sender":call::hex(*member)}),
+                        serde_json::json!({"operation":"open","call":id,"sender":call::hex(*member)}),
                     )?;
                 }
                 if kind == MediaKind::Camera {
-                    attach_transform(&get(&transceiver, "receiver")?, serde_json::json!({"operation":"open","kind":"camera","call":id,"sender":call::hex(*member)}))?;
+                    attach_transform(&get(&transceiver, "receiver")?, serde_json::json!({"operation":"open","kind":"camera","call":id,"sender":call::hex(*member),"generation":generation}))?;
                     crate::video::native_track(call::hex(*member), get(&get(&transceiver, "receiver")?, "track")?.dyn_into()?)?;
                 }
                 downloads.push((*member, kind, transceiver));
@@ -768,4 +768,14 @@ pub(crate) fn receive_video(message: &JsValue) -> Result<(), JsValue> {
         crate::video::native_shape(sender, field("rotation"), field("width"), field("height"))?;
     }
     Ok(())
+}
+
+pub(crate) fn receive_decoded_video(message:&JsValue)->Result<bool,JsValue>{
+    let call=get(message,"call")?.as_string().unwrap_or_default();let sender=get(message,"sender")?.as_string().unwrap_or_default();
+    let generation=get(message,"generation")?.as_f64().unwrap_or(0.0) as u64;
+    let active=SESSION.with(|s|s.borrow().as_ref().is_some_and(|s|s.generation==generation&&s.call==call&&s.members.iter().any(|m|call::hex(*m)==sender)));
+    if !active{return Ok(false);}
+    let rotation=get(message,"rotation")?.as_f64().unwrap_or(0.0) as u16;
+    let token=get(message,"id")?.as_f64().unwrap_or(0.0) as u32;
+    crate::video::native_frame(&sender,&get(message,"frame")?,rotation,token)
 }

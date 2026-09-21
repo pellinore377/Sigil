@@ -356,3 +356,70 @@ fn a_track_change_keeps_both_sides_secured_throughout() {
         assert_eq!(bob.refresh_call_media(&mut b, now).map_err(|e| format!("{e:?}")), Ok(1));
     }
 }
+
+#[test]
+fn detached_media_keeps_counters_replay_and_revocation_across_updates() {
+    let (dir, _fixture, mut alice, mut bob, now) = pair();
+    crate::calls::tests::configure(dir.path());
+    let (alice_peer, peer) = trust(&mut alice, &mut bob);
+    let id = [86; 32];
+    alice.start_call(id, now, true, &[peer]).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    let tracks = Tracks { audio: false, camera: true, screen: false };
+    let mut a = alice.start_call_media(id, tracks, now).unwrap();
+    let mut b = bob.start_call_media(id, tracks, now).unwrap();
+    for _ in 0..6 {
+        let _ = alice.refresh_call_media(&mut a, now);
+        let _ = bob.refresh_call_media(&mut b, now);
+        crate::calls::tests::round_trip(&mut alice, &mut bob, now);
+    }
+    let own = load(&alice.db, &alice.key, &id).unwrap().own_id().unwrap();
+    let mut send = MediaProcessor::default();
+    let mut receive = MediaProcessor::default();
+    send.apply(alice.detach_call_media(&mut a, now).unwrap()).unwrap();
+    receive.apply(bob.detach_call_media(&mut b, now).unwrap()).unwrap();
+    // The store no longer owns a usable sealer; the dedicated processor owns it exclusively.
+    assert!(alice.seal_call_frame(&mut a, sigil_calls::MediaKind::Camera, 0, true, b"duplicate", now).is_err());
+    let first = send.seal(id, sigil_calls::MediaKind::Camera, 0, true, b"synthetic", now).unwrap();
+    receive.open(id, own, sigil_calls::MediaKind::Camera, &first, now).unwrap();
+    let context = send.context().unwrap();
+    for timestamp in 1..10 {
+        send.apply(alice.detach_call_media(&mut a, now).unwrap()).unwrap();
+        receive.apply(bob.detach_call_media(&mut b, now).unwrap()).unwrap();
+        assert!(receive.open(id, own, sigil_calls::MediaKind::Camera, &first, now).is_err());
+        let packet = send.seal(id, sigil_calls::MediaKind::Camera, timestamp, false, b"synthetic", now).unwrap();
+        assert_eq!(&*receive.open(id, own, sigil_calls::MediaKind::Camera, &packet, now).unwrap().data, b"synthetic");
+        assert!(send.context().unwrap() == context);
+    }
+    let forbidden = send.seal(id, sigil_calls::MediaKind::Camera, 10, false, b"before mute", now).unwrap();
+    alice.set_call_tracks(&mut a, Tracks {camera:false,..tracks}, now).unwrap();
+    send.apply(alice.detach_call_media(&mut a, now).unwrap()).unwrap();
+    assert!(send.seal(id, sigil_calls::MediaKind::Camera, 11, false, b"muted", now).is_err());
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    receive.apply(bob.detach_call_media(&mut b, now).unwrap()).unwrap();
+    assert!(receive.open(id, own, sigil_calls::MediaKind::Camera, &forbidden, now).is_err());
+    alice.set_call_tracks(&mut a, tracks, now).unwrap();
+    crate::calls::tests::pump(&mut alice, &mut bob, now);
+    send.apply(alice.detach_call_media(&mut a, now).unwrap()).unwrap();
+    receive.apply(bob.detach_call_media(&mut b, now).unwrap()).unwrap();
+    assert!(send.context().unwrap()==context);
+    assert!(receive.open(id, own, sigil_calls::MediaKind::Camera, &first, now).is_err());
+    let resumed=send.seal(id,sigil_calls::MediaKind::Camera,12,true,b"resumed",now).unwrap();
+    assert_eq!(&*receive.open(id,own,sigil_calls::MediaKind::Camera,&resumed,now).unwrap().data,b"resumed");
+    alice.renew_detached_media(&mut a, context, now).unwrap();
+    send.apply(alice.detach_call_media(&mut a, now).unwrap()).unwrap();
+    assert!(send.context().unwrap() != context);
+    // A delayed renewal for an old incarnation cannot rotate the new sender again.
+    let renewed = send.context().unwrap();
+    alice.renew_detached_media(&mut a, context, now).unwrap();
+    send.apply(alice.detach_call_media(&mut a, now).unwrap()).unwrap();
+    assert!(send.context().unwrap() == renewed);
+    thread_local! { static INVALIDATED: std::cell::Cell<bool> = const {std::cell::Cell::new(false)}; }
+    super::super::install_media_invalidator(|| INVALIDATED.with(|v|v.set(true)));
+    bob.block_peer(alice_peer, true).unwrap();
+    assert!(INVALIDATED.with(|v|v.get()));
+    assert!(bob.detach_call_media(&mut b, now).is_err());
+    assert!(send.seal(id, sigil_calls::MediaKind::Camera, 99, false, b"expired", now+86400).is_err());
+}

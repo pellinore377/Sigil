@@ -11,7 +11,7 @@ pub mod forwarder;
 #[cfg(feature = "forwarder")]
 mod forwarding;
 mod frame;
-pub use frame::{Context, Frame, KeyShare, MediaKind, Receiver, Sender};
+pub use frame::{Context, Frame, KeyShare, MediaKind, Receiver, Sender, SenderHandoff};
 pub mod av1;
 mod packet;
 pub mod channel;

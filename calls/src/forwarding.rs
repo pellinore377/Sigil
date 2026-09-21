@@ -8,6 +8,7 @@ pub(crate) struct Queue {
 impl Queue {
     pub fn admit(&mut self, sample: Option<(Instant, usize, usize)>, bytes: usize) -> bool {
         let (queued_bytes, queued_packets) = if let Some((at, bytes, packets)) = sample {
+            if self.sampled.is_some_and(|previous|at<previous) {return false;}
             if self.sampled != Some(at) {
                 self.sampled = Some(at);
                 self.bytes = 0;
@@ -112,7 +113,7 @@ mod tests {
     #[test]
     fn unpolled_and_stale_queue_samples_cannot_bypass_byte_or_packet_limits() {
         let mut queue = Queue::default();
-        for _ in 0..64 {
+        for _ in 0..1024 {
             assert!(queue.admit(None, 1024));
         }
         assert!(!queue.admit(None, 1));
@@ -126,5 +127,9 @@ mod tests {
             assert!(queue.admit(Some((later, 0, 0)), 0));
         }
         assert!(!queue.admit(Some((later, 0, 0)), 0));
+        assert!(!queue.admit(Some((at, 0, 0)), 0));
+        let mut bytes=Queue::default();
+        assert!(bytes.admit(None,1024*1024));
+        assert!(!bytes.admit(None,1));
     }
 }

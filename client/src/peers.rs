@@ -414,6 +414,7 @@ impl ClientStore {
     /// Records a candidate only. Changed bindings for an existing device remain
     /// quarantined; replaying the original cannot clear the warning or transfer trust.
     pub fn observe_peer_binding(&mut self, bytes: &[u8]) -> Result<Peer, Error> {
+        crate::calls::invalidate_media();
         self.authority = self.authority.wrapping_add(1);
         let tx = self
             .db
@@ -461,6 +462,7 @@ impl ClientStore {
     /// The full fingerprint must be independently compared or scanned from the
     /// intended peer. Network acquisition alone never authorizes this call.
     pub fn confirm_peer(&mut self, id: Id, expected_fingerprint: Id) -> Result<(), Error> {
+        crate::calls::invalidate_media();
         self.authority = self.authority.wrapping_add(1);
         let tx = self
             .db
@@ -485,6 +487,7 @@ impl ClientStore {
         block(&tx, &self.key, &id, blocked)?;
         tx.commit()?;
         // A live call re-reads its authority at once rather than finishing its current check.
+        crate::calls::invalidate_media();
         self.authority = self.authority.wrapping_add(1);
         Ok(())
     }

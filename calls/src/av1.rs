@@ -31,13 +31,15 @@ fn read_length(bytes: &[u8], at: &mut usize) -> Result<usize, Error> {
     }
     Err(Error::Invalid)
 }
-pub fn wrap(encrypted: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn wrap(encrypted: &[u8], keyframe: bool) -> Result<Vec<u8>, Error> {
     if encrypted.is_empty() || encrypted.len() > MAX { return Err(Error::Limit); }
-    let mut bytes = vec![0x32]; // OBU_FRAME, with size.
+    // Chromium sets RTP's new-sequence bit only when a keyframe begins with a sequence OBU.
+    // Its payload stays opaque; the encoded transform restores real AV1 before decoding.
+    let mut bytes = vec![if keyframe { 0x0a } else { 0x32 }];
     length(encrypted.len(), &mut bytes); bytes.extend_from_slice(encrypted); Ok(bytes)
 }
 pub fn unwrap(bytes: &[u8]) -> Result<&[u8], Error> {
-    if bytes.first() != Some(&0x32) { return Err(Error::Invalid); }
+    if !matches!(bytes.first(), Some(0x0a | 0x32)) { return Err(Error::Invalid); }
     let mut at = 1;
     let size = read_length(bytes, &mut at)?;
     if size == 0 || size > MAX || bytes.len() - at != size { return Err(Error::Invalid); }
@@ -46,7 +48,7 @@ pub fn unwrap(bytes: &[u8]) -> Result<&[u8], Error> {
 pub fn packetize(encrypted: &[u8], keyframe: bool) -> Result<Vec<Vec<u8>>, Error> {
     if encrypted.is_empty() || encrypted.len() > MAX { return Err(Error::Limit); }
     let mut obu = Vec::with_capacity(encrypted.len() + 1);
-    obu.push(0x30); obu.extend_from_slice(encrypted);
+    obu.push(if keyframe { 0x08 } else { 0x30 }); obu.extend_from_slice(encrypted);
     let count = obu.len().div_ceil(1100);
     Ok(obu.chunks(1100).enumerate().map(|(i, chunk)| {
         let mut packet = Vec::with_capacity(chunk.len() + 1);
@@ -78,8 +80,8 @@ impl Assembly {
         if !marker { return Ok(None); }
         let bytes = std::mem::take(&mut self.data); self.next = None;
         let payload = match bytes.first() {
-            Some(0x30) if bytes.len() > 1 && bytes.len() <= MAX + 1 => &bytes[1..],
-            Some(0x32) => unwrap(&bytes)?,
+            Some(0x08 | 0x30) if bytes.len() > 1 && bytes.len() <= MAX + 1 => &bytes[1..],
+            Some(0x0a | 0x32) => unwrap(&bytes)?,
             _ => return Err(Error::Invalid),
         };
         Ok(Some(payload.to_vec()))
@@ -107,13 +109,29 @@ mod tests {
     }
     #[test] fn encrypted_obu_round_trip_and_sequence_wrap() {
         for size in [1, 1100, 1101, 100_000, MAX] {
-            let bytes = vec![91; size]; assert_eq!(unwrap(&wrap(&bytes).unwrap()).unwrap(), bytes);
+            let bytes = vec![91; size]; assert_eq!(unwrap(&wrap(&bytes, true).unwrap()).unwrap(), bytes);
             let packets = packetize(&bytes, true).unwrap(); let mut a = Assembly::default();
             for (i, p) in packets.iter().enumerate() {
                 let result = a.push(65535u16.wrapping_add(i as u16), 42, i + 1 == packets.len(), p).unwrap();
                 assert_eq!(result, (i + 1 == packets.len()).then(|| bytes.clone()));
             }
         }
+    }
+    #[test] fn browser_and_native_keyframes_preserve_the_new_sequence_marker() {
+        for key in [false,true] {
+            let body=vec![0xa5;4096];let browser=wrap(&body,key).unwrap();
+            assert_eq!(browser[0],if key{0x0a}else{0x32});
+            let packets=packetize(&body,key).unwrap();
+            assert_eq!(packets[0][0]&8,if key{8}else{0});
+            assert_eq!(packets[0][1],browser[0]&!2);
+            assert!(packets.iter().skip(1).all(|p|p[0]&8==0));
+            let mut assembly=Assembly::default();
+            let mut single=vec![0x10|if key{8}else{0}];single.extend_from_slice(&browser);
+            assert_eq!(assembly.push(0,90,true,&single).unwrap(),Some(body));
+        }
+        // Existing native peers used a frame OBU even when the RTP header marked a keyframe.
+        assert_eq!(Assembly::default().push(0,90,true,&[0x18,0x30,7]).unwrap(),Some(vec![7]));
+        assert_eq!(unwrap(&[0x32,1,7]).unwrap(),&[7]);
     }
     #[test] fn gaps_truncation_and_malformed_boundaries_fail_closed() {
         let p = packetize(&vec![7; 4000], false).unwrap(); let mut a = Assembly::default();
