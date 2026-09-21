@@ -441,7 +441,9 @@ impl ClientStore {
     ) -> Result<&'static str, Error> {
         // data_version observes commits from other connections; total_changes observes this
         // connection. A cached proof never masks a peer block, new lease or roster update.
+        let stage = crate::clock::Instant::now();
         let version = self.db.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0))?;
+        if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.revision", stage); }
         let changes = self.db.total_changes();
         let current = self.db.is_autocommit() && self.rtc_authority.as_ref().is_some_and(|checked|
             checked.call == call.media.call && checked.lease == call.media.lease
@@ -453,16 +455,22 @@ impl ClientStore {
             self.rtc_authority.as_ref().ok_or(Error::Unprepared)?.roster
         } else {
             self.rtc_authority = None;
+            let stage = crate::clock::Instant::now();
+            // Read the call and its peer proofs from one snapshot. Releasing the reader
+            // between queries repeatedly waits behind unrelated durable commits.
+            let snapshot = self.db.is_autocommit().then(|| self.db.unchecked_transaction()).transpose()?;
             let record = load(&self.db, &self.key, &call.media.call)?;
             record.authorize(&self.db, &self.key, now)?;
+            if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.connection_authority", stage); }
             if record.lease != call.media.lease { return Err(Error::Obsolete); }
             let roster = record.state.roster.roster.digest().map_err(failure)?;
+            if let Some(snapshot) = snapshot { snapshot.commit()?; }
             if self.db.is_autocommit() {
                 self.rtc_authority = Some(RtcAuthority {
                     call: call.media.call, lease: call.media.lease, roster,
                     created: record.state.roster.roster.created,
                     expires: record.state.roster.roster.expires,
-                    version, changes, checked: std::time::Instant::now(),
+                    version, changes, checked: stage,
                 });
             }
             roster

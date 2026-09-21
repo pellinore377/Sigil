@@ -113,6 +113,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var searchCategory by remember {mutableStateOf("")}
     var searchGeneration by remember {mutableStateOf(0)}
     var searchJob by remember {mutableStateOf<Job?>(null)}
+    var callExpanded by remember {mutableStateOf(false)}
     var viewportEnd by remember {mutableStateOf(0)}
     var timelineWant by remember {mutableStateOf(0)}
     var timelineReloadAt by remember {mutableStateOf(Int.MAX_VALUE)}
@@ -162,6 +163,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         if(state.push!=null)notificationStatus()
     }
     suspend fun timeline() {
+        if(callExpanded)return
         val peer=state.selected ?: return
         val requestFilter=filter
         var before:Long?=null
@@ -172,7 +174,7 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
         val chats=if(peer=="self" && state.chats.none {it.id==peer})state.chats+ChatSummary("self",state.address,"","",true,emptyList(),displayName="Note to Self") else state.chats
         do {
             value=execute("timeline",requestFilter+mapOf("peer" to peer,"before" to before,"visible_end" to viewportEnd))
-            if(state.selected!=peer || filter!=requestFilter)return
+            if(callExpanded || state.selected!=peer || filter!=requestFilter)return
             // Read on every page, so a viewport that deepens mid-load extends this scan instead of restarting it.
             timelineWant=value.long("want").toInt();timelineReloadAt=value.long("reload_at").toInt()
             val buffer=TimelineBufferDepth(value.long("cache_ahead")/10f,value.long("cache_behind")/10f)
@@ -396,6 +398,14 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
         }
     }
     val command:Command=command@{name,fields->
+        if(name=="call_display"){
+            val expanded=fields["expanded"]==true
+            if(expanded!=callExpanded){
+                callExpanded=expanded
+                if(expanded)timelineJob?.cancel() else scope.launch {mutex.withLock {timeline()}}
+            }
+            return@command
+        }
         if(calls.handle(name,fields))return@command
         when(name) {
             "device_link"->{

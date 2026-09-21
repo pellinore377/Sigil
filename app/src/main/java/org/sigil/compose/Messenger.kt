@@ -38,6 +38,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     var signOutIssue by mutableStateOf<String?>(null)
         private set
     private val workNotices = WorkNotices()
+    private var callExpanded = false
     internal val calls = NativeCalls(application, { history, active -> state = state.copy(calls = history, call = active) }, { state = state.copy(issue = it) }, { if (syncIssue != null && state.issue == syncIssue) { state = state.copy(issue = workNotices.update(state.issue, "sync", null)); syncIssue = null } })
     private val files = NativeFiles(application, scope, { uploads, sent ->
         state = state.copy(transfers = uploads)
@@ -256,6 +257,14 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     fun command(name: String, fields: Map<String, Any?>) {
         if (NativeSignOut.pending(getApplication())) return
+        if (name == "call_display") {
+            val expanded = fields["expanded"] == true
+            if (expanded != callExpanded) {
+                callExpanded = expanded
+                if (expanded) timelineJob?.cancel() else loadTimeline()
+            }
+            return
+        }
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
             "edit_source_used" -> { state = state.copy(editDraft = null); return }
@@ -634,6 +643,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     private val recentTimelines = HashMap<String, List<ChatMessage>>()
     private val defaultTimelineFilter = mapOf("category" to "Timeline")
     private fun loadTimeline() {
+        if (callExpanded) return
         val peer = state.selected ?: return
         val filter = timelineFilter; val initialAnchor = anchor
         viewportChase = false

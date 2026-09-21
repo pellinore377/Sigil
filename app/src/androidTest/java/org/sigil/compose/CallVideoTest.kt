@@ -26,20 +26,38 @@ class CallVideoTest {
             if (stamp == 0L) { entered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS)) }
             assertEquals(7, bytes[0].toInt())
             stamps.add(stamp)
-            if (stamp == 6L) delivered.countDown()
+            if (stamp == 9L) delivered.countDown()
         }, { requested.incrementAndGet() }, { failures.incrementAndGet() })
         try {
             val bytes = byteArrayOf(7)
             sender.offer(0, true, bytes)
             assertTrue(entered.await(2, TimeUnit.SECONDS))
-            for (stamp in 1L..5L) sender.offer(stamp, false, bytes)
+            for (stamp in 1L..8L) sender.offer(stamp, false, bytes)
             assertEquals(1, requested.get())
             release.countDown()
-            sender.offer(6, true, bytes)
+            sender.offer(9, true, bytes)
             bytes.fill(0)
             assertTrue(delivered.await(2, TimeUnit.SECONDS))
-            assertEquals(listOf(0L, 6L), stamps.toList())
+            assertEquals(listOf(0L, 9L), stamps.toList())
             assertEquals(0, failures.get())
+        } finally { release.countDown(); sender.close() }
+    }
+    @Test fun shortSendPausePreservesTheReferenceChain() {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val delivered = CountDownLatch(6)
+        val requested = AtomicInteger(); val failures = AtomicInteger()
+        val stamps = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val sender = CallVideoSender({ stamp, _, _ ->
+            if (stamp == 0L) { entered.countDown(); assertTrue(release.await(2, TimeUnit.SECONDS)) }
+            stamps.add(stamp); delivered.countDown()
+        }, { requested.incrementAndGet() }, { failures.incrementAndGet() })
+        try {
+            sender.offer(0, true, byteArrayOf(7))
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            for (stamp in 1L..5L) sender.offer(stamp, false, byteArrayOf(7))
+            release.countDown()
+            assertTrue(delivered.await(2, TimeUnit.SECONDS))
+            assertEquals((0L..5L).toList(), stamps.toList())
+            assertEquals(0, requested.get()); assertEquals(0, failures.get())
         } finally { release.countDown(); sender.close() }
     }
     @Test fun rotationPreservesAspectAndFitsInsideTheView() {
@@ -63,6 +81,37 @@ class CallVideoTest {
         try { assertTrue("Camera produced ${frames.get()} frames; ${failures.get()} failures", ready.await(15, TimeUnit.SECONDS)); assertEquals(0, failures.get()) }
         finally { camera.close() }
         Thread.sleep(400); val stopped = frames.get(); Thread.sleep(400); assertEquals(stopped, frames.get())
+    }
+    @Test fun cameraPreviewRunsAlongsideEncoding() {
+        val instrument = InstrumentationRegistry.getInstrumentation()
+        instrument.uiAutomation.grantRuntimePermission(instrument.targetContext.packageName, android.Manifest.permission.CAMERA)
+        val ready = CountDownLatch(1); val seen = CountDownLatch(60); val encoded = AtomicInteger(); val failures = AtomicInteger()
+        var preview: CallCameraPreview? = null
+        ui.setContent {
+            androidx.compose.ui.viewinterop.AndroidView(factory = { context ->
+                android.view.TextureView(context).apply {
+                    surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, w: Int, h: Int) {
+                            preview = CallCameraPreview(texture) { width, height, rotation ->
+                                assertTrue(width > 0 && height > 0)
+                                assertTrue(rotation in listOf(0, 90, 180, 270))
+                            }
+                            ready.countDown()
+                        }
+                        override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) { seen.countDown() }
+                        override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+                        override fun onSurfaceTextureDestroyed(texture: android.graphics.SurfaceTexture) = true
+                    }
+                }
+            })
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS))
+        val camera = CallCamera(instrument.targetContext, true, { _, _, _ -> encoded.incrementAndGet() }, { failures.incrementAndGet() }, preview)
+        try {
+            assertTrue("Direct camera preview did not update", seen.await(10, TimeUnit.SECONDS))
+            assertTrue("Encoding stopped while preview ran", encoded.get() >= 30)
+            assertEquals(0, failures.get())
+        } finally { camera.close(); Thread.sleep(400); preview?.close() }
     }
     @Test fun surfaceAv1RoundTripRendersSyntheticFrames() {
         videoRoundTrip(false)
