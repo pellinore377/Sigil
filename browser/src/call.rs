@@ -353,7 +353,7 @@ pub async fn call_command(request: String, bytes: Uint8Array) -> Result<Uint8Arr
 }
 
 pub(crate) fn seal_video(call: &str, bytes: &[u8], timestamp: u64, keyframe: bool, width: u16, height: u16) -> Result<Vec<u8>, JsValue> {
-    if width < 16 || height < 16 || width as u32 * height as u32 > 1920 * 1080 { return Err(fail("Invalid video dimensions")); }
+    if !sigil_calls::av1::camera_size(width, height) { return Err(fail("Invalid video dimensions")); }
     let call = id(call)?;
     let mut body = Zeroizing::new(vec![2, 0, 0]); // AV1, zero rotation.
     body.extend_from_slice(&width.to_be_bytes()); body.extend_from_slice(&height.to_be_bytes()); body.extend_from_slice(bytes);

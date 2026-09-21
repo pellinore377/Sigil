@@ -55,17 +55,18 @@ internal fun callVideoEncoder(mime: String): MediaCodecInfo? {
 /// AV1 camera target; encrypted frames travel on the native RTP video track.
 internal const val CALL_VIDEO_WIDTH = 1920
 internal const val CALL_VIDEO_HEIGHT = 1080
-internal const val CALL_VIDEO_FPS = 30
-/// Bits per second for a capture. This side sends over a native track, which loses nothing, so it
-/// is sized for the picture rather than for a channel that discards fragments.
+internal const val CALL_VIDEO_FPS = 60
+/// Preserve the per-frame bitrate budget when capture rate changes.
 internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
     val pixels = width * height
-    return when {
+    val base = when {
+        pixels >= 3840 * 2160 -> 14_000_000
         pixels >= 1920 * 1080 -> 3_500_000
         pixels >= 1280 * 720 -> 2_000_000
         pixels >= 960 * 540 -> 1_200_000
         else -> 600_000
     }
+    return (base.toLong() * fps.coerceIn(15, 60) / 30).toInt()
 }
 internal class CallEncoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
     private val wire = CODEC_AV1
@@ -132,15 +133,24 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                 val manager = context.getSystemService(CameraManager::class.java)
                 val id = manager.cameraIdList.firstOrNull { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == if (front) CameraCharacteristics.LENS_FACING_FRONT else CameraCharacteristics.LENS_FACING_BACK } ?: manager.cameraIdList.first()
                 val info = manager.getCameraCharacteristics(id)
-                val choices = requireNotNull(info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)).getOutputSizes(MediaCodec::class.java)
-                // The largest capture the call size allows, and the steadiest rate up to 30 the camera offers.
-                val size = choices.filter { it.width <= CALL_VIDEO_WIDTH && it.height <= CALL_VIDEO_HEIGHT }.maxByOrNull { it.width * it.height }
-                    ?: choices.minByOrNull { it.width * it.height } ?: error("Unsupported camera size")
-                // The encoder is told the rate the sensor is actually held to, so the two agree.
-                val rates = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)?.filter { it.upper >= 15 }.orEmpty()
-                val range = rates.filter { it.upper <= CALL_VIDEO_FPS }.maxWithOrNull(compareBy({ it.upper }, { it.lower }))
-                    ?: rates.minWithOrNull(compareBy({ it.upper }, { it.lower }))
-                val fps = range?.upper ?: CALL_VIDEO_FPS
+                val streams = requireNotNull(info.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP))
+                val choices = streams.getOutputSizes(MediaCodec::class.java)
+                    .filter { it.width <= CALL_VIDEO_WIDTH && it.height <= CALL_VIDEO_HEIGHT }
+                    .sortedByDescending { it.width * it.height }
+                val encoderInfo = requireNotNull(callVideoEncoder(MediaFormat.MIMETYPE_VIDEO_AV1))
+                val capabilities = encoderInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AV1).videoCapabilities
+                val ceiling = if (encoderInfo.isHardwareAccelerated) CALL_VIDEO_FPS else 30
+                val rates = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty()
+                    .filter { it.upper in 15..ceiling }.sortedWith(compareByDescending<android.util.Range<Int>> { it.upper }.thenByDescending { it.lower })
+                val selected = choices.firstNotNullOfOrNull { size ->
+                    val duration = streams.getOutputMinFrameDuration(MediaCodec::class.java, size)
+                    rates.firstOrNull { rate ->
+                        (duration == 0L || duration <= 1_000_000_000L / rate.upper + 1000L) &&
+                            capabilities.areSizeAndRateSupported(size.width, size.height, rate.upper.toDouble())
+                    }?.let { size to it }
+                } ?: error("No supported camera and AV1 encoder mode")
+                val (size, range) = selected
+                val fps = range.upper
                 val rotation = info.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
                 android.util.Log.i("SigilTiming", "video out ${size.width}x${size.height}@$fps ${callVideoBitrate(size.width, size.height, fps) / 1000}kbps")
                 val video = CallEncoder(size.width, size.height, rotation, fps, send) { failed() }
@@ -197,7 +207,7 @@ internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidt
 }
 internal class CallVideoDecoder(private val surface: Surface, private val paced: Boolean, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
     private val running = AtomicBoolean(true)
-    private val queue = ArrayBlockingQueue<VideoPacket>(4)
+    private val queue = ArrayBlockingQueue<VideoPacket>(8)
     private val lostFrame = AtomicBoolean(false)
     private val worker = Thread({
         var codec: MediaCodec? = null
@@ -206,7 +216,8 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         var lastTimestamp = Long.MIN_VALUE
         var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
         var resynced = 0L; var anchor = 0L; var anchorStamp = Long.MIN_VALUE
-        fun reset() {
+        fun reset(reason: String = "reconfigure") {
+            if (codec != null) android.util.Log.i("SigilTiming", "video decoder reset=$reason queued=${queue.size} paced=$paced")
             anchorStamp = Long.MIN_VALUE
             lastTimestamp = Long.MIN_VALUE
             val previous = codec; codec = null; dimensions = null
@@ -245,18 +256,18 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         }
         try {
             while (running.get()) {
-                if (lostFrame.getAndSet(false)) reset()
-                try { drainOutput() } catch (_: Exception) { reset() }
+                if (lostFrame.getAndSet(false)) reset("queue overflow")
+                try { drainOutput() } catch (_: Exception) { reset("output failed") }
                 val packet = queue.poll(10, TimeUnit.MILLISECONDS) ?: continue
                 try {
-                    if (lostFrame.getAndSet(false)) reset()
-                    if (packet.timestamp <= lastTimestamp) { reset(); continue }
+                    if (lostFrame.getAndSet(false)) reset("queue overflow")
+                    if (packet.timestamp <= lastTimestamp) { reset("timestamp"); continue }
                     val bytes = packet.bytes
                     require(bytes.size > VIDEO_HEADER)
                     val buffer = ByteBuffer.wrap(bytes)
                     val wire = buffer.get(); val mime = requireNotNull(callVideoMime(wire))
                     val rotation = buffer.short.toInt() and 65535; val width = buffer.short.toInt() and 65535; val height = buffer.short.toInt() and 65535
-                    require(rotation in listOf(0, 90, 180, 270) && width in 16..1920 && height in 16..1920 && width * height <= 1920 * 1080)
+                    require(rotation in listOf(0, 90, 180, 270) && width in 16..3840 && height in 16..3840 && width * height <= 3840 * 2160)
                     // The header travels inside the authenticated encryption, so its
                     // keyframe flag and dimensions need no bitstream cross-check.
                     val keyframe = packet.keyframe
@@ -267,7 +278,13 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                         val chosen = callVideoDecoder(mime)
                         android.util.Log.i("SigilTiming", "codec decode ${chosen?.name} hardware=${chosen?.isHardwareAccelerated} ${width}x$height")
                         codec = chosen?.let { MediaCodec.createByCodecName(it.name) } ?: MediaCodec.createDecoderByType(mime)
-                        val format = MediaFormat.createVideoFormat(mime, width, height).apply { setInteger(MediaFormat.KEY_PRIORITY, 0) }
+                        val format = MediaFormat.createVideoFormat(mime, width, height).apply {
+                            setInteger(MediaFormat.KEY_PRIORITY, 0)
+                            setInteger(MediaFormat.KEY_OPERATING_RATE, 60)
+                            if (Build.VERSION.SDK_INT >= 30 && chosen?.getCapabilitiesForType(mime)?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
+                                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                            }
+                        }
                         codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size; decoding = wire
                     }
                     val shape = Triple(width, height, rotation)
@@ -284,11 +301,11 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                         active.queueInputBuffer(input, 0, bytes.size - VIDEO_HEADER, packet.timestamp, 0)
                         lastTimestamp = packet.timestamp
                     } else {
-                        reset()
+                        reset("input timeout")
                     }
                     drainOutput()
                 } catch (interrupted: InterruptedException) { throw interrupted }
-                catch (_: Exception) { reset() }
+                catch (_: Exception) { reset("frame failed") }
                 finally { packet.bytes.fill(0) }
             }
         } catch (_: InterruptedException) { }

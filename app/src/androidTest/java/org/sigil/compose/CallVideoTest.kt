@@ -57,6 +57,38 @@ class CallVideoTest {
             }
         } finally { decoder.close(); Thread.sleep(100); reader.close(); thread.quitSafely() }
     }
+    @Test fun hardwareAv1Sustains1080p60() { hardwareRoundTrip(1920, 1080) }
+    @Test fun hardwareAv1Sustains4k60() { hardwareRoundTrip(3840, 2160) }
+    private fun hardwareRoundTrip(width: Int, height: Int) {
+        val mime = android.media.MediaFormat.MIMETYPE_VIDEO_AV1
+        val encoderInfo = requireNotNull(callVideoEncoder(mime))
+        assertTrue("Hardware AV1 encoder required for this acceptance target", encoderInfo.isHardwareAccelerated)
+        assertTrue(encoderInfo.getCapabilitiesForType(mime).videoCapabilities.areSizeAndRateSupported(width, height, 60.0))
+        val thread = HandlerThread("60 fps acceptance").apply { start() }
+        val decoded = AtomicInteger(); val encoded = AtomicInteger(); val failures = AtomicInteger()
+        val reader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 4)
+        reader.setOnImageAvailableListener({ source -> source.acquireNextImage()?.use { decoded.incrementAndGet() } }, Handler(thread.looper))
+        val decoder = CallVideoDecoder(reader.surface, false) { _, _, _ -> }
+        try {
+            CallEncoder(width, height, 0, 60, { timestamp, keyframe, bytes -> encoded.incrementAndGet(); decoder.offer(timestamp, keyframe, bytes) }, { failures.incrementAndGet() }).use { encoder ->
+                DrawSurface(encoder.surface).use { draw ->
+                    val start = System.nanoTime()
+                    repeat(600) { index ->
+                        val remaining = start + index * 1_000_000_000L / 60 - System.nanoTime()
+                        if (remaining > 0) TimeUnit.NANOSECONDS.sleep(remaining)
+                        draw.frame(index, 60)
+                    }
+                    val elapsed = (System.nanoTime() - start) / 1_000_000
+                    Thread.sleep(1000)
+                    android.util.Log.i("SigilTiming", "acceptance AV1 ${width}x${height}@60 source_ms=$elapsed encoded=${encoded.get()} decoded=${decoded.get()} failures=${failures.get()}")
+                    assertTrue("Capture could not sustain 60 fps: $elapsed ms", elapsed < 11000)
+                    assertTrue("Only ${encoded.get()} encoded frames", encoded.get() >= 590)
+                    assertTrue("Only ${decoded.get()} decoded frames", decoded.get() >= 570)
+                    assertEquals(0, failures.get())
+                }
+            }
+        } finally { decoder.close(); Thread.sleep(100); reader.close(); thread.quitSafely() }
+    }
     @Test fun invalidFrameDoesNotPreventLaterVideoFromRendering() {
         videoRoundTrip(true)
     }
@@ -89,6 +121,6 @@ internal class DrawSurface(surface: Surface) : AutoCloseable {
         target = EGL14.eglCreateWindowSurface(display, configs[0], surface, intArrayOf(EGL14.EGL_NONE), 0)
         check(EGL14.eglMakeCurrent(display, target, target, context))
     }
-    fun frame(index: Int) { GLES20.glClearColor((index % 3) / 2f, .3f, .7f, 1f); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT); EGLExt.eglPresentationTimeANDROID(display, target, index * 40_000_000L); check(EGL14.eglSwapBuffers(display, target)) }
+    fun frame(index: Int, fps: Int = 25) { GLES20.glClearColor((index % 3) / 2f, .3f, .7f, 1f); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT); EGLExt.eglPresentationTimeANDROID(display, target, index * 1_000_000_000L / fps); check(EGL14.eglSwapBuffers(display, target)) }
     override fun close() { EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT); EGL14.eglDestroySurface(display, target); EGL14.eglDestroyContext(display, context); EGL14.eglReleaseThread(); EGL14.eglTerminate(display) }
 }
