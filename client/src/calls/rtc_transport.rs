@@ -46,6 +46,8 @@ mod turn_stream;
 struct Packet {
     ssrc: u32,
     sequence: u16,
+    timestamp: u32,
+    marker: bool,
     payload: Vec<u8>,
 }
 struct Handler {
@@ -84,6 +86,8 @@ impl PeerConnectionEventHandler for Handler {
                             .try_send(Packet {
                                 ssrc: packet.header.ssrc,
                                 sequence: packet.header.sequence_number,
+                                timestamp: packet.header.timestamp,
+                                marker: packet.header.marker,
                                 payload: packet.payload.to_vec(),
                             })
                             .is_err()
@@ -125,6 +129,7 @@ pub struct RtcCall {
     incoming: std::collections::BTreeMap<u32, packet_order::PacketOrder<Packet>>,
     video_gaps: std::collections::BTreeSet<u32>,
     ready: ready_frames::ReadyFrames,
+    camera_assembly: std::collections::BTreeMap<u32, sigil_calls::av1::Assembly>,
     ready_cursor: usize,
     incoming_cursor: usize,
     tally: Tally,
@@ -401,6 +406,7 @@ impl ClientStore {
             incoming: Default::default(),
             video_gaps: Default::default(),
             ready: Default::default(),
+            camera_assembly: Default::default(),
             ready_cursor: 0,
             incoming_cursor: 0,
             tally: Tally::default(),
@@ -471,8 +477,10 @@ impl ClientStore {
             return Err(Error::Unprepared);
         }
         let index = kind as usize;
-        let packets =
-            self.seal_call_packets(&mut call.media, kind, timestamp, keyframe, encoded, now)?;
+        let packets = if kind == MediaKind::Camera {
+            let sealed = self.seal_call_frame(&mut call.media, kind, timestamp, keyframe, encoded, now)?;
+            sigil_calls::av1::packetize(&sealed, keyframe).map_err(failure)?
+        } else { self.seal_call_packets(&mut call.media, kind, timestamp, keyframe, encoded, now)? };
         let mut wire = Vec::with_capacity(packets.len());
         for (n, payload) in packets.iter().enumerate() {
             let packet = rtc::rtp::packet::Packet {
@@ -550,10 +558,11 @@ impl ClientStore {
                 call.ready.clear(packet.ssrc);
                 call.video_gaps.insert(packet.ssrc);
             }
-            match call
-                .media
-                .assemble(stream.track.sender, stream.track.kind, &packet.payload)
-            {
+            let assembled = if stream.track.kind == MediaKind::Camera {
+                call.camera_assembly.entry(packet.ssrc).or_default()
+                    .push(packet.sequence, packet.timestamp, packet.marker, &packet.payload).map_err(failure)
+            } else { call.media.assemble(stream.track.sender, stream.track.kind, &packet.payload) };
+            match assembled {
                 Ok(Some(encrypted)) => {
                     call.tally.assembled += 1;
                     if call.ready.push(

@@ -27,6 +27,8 @@ use webrtc::{
 pub struct Packet {
     pub pt: u8,
     pub seq: u16,
+    pub timestamp: u32,
+    pub marker: bool,
     pub ssrc: u32,
     pub received: std::time::Instant,
     pub payload: Vec<u8>,
@@ -50,6 +52,8 @@ impl PeerConnectionEventHandler for Handler {
                     let _ = packets.try_send(Packet {
                         pt: p.header.payload_type,
                         seq: p.header.sequence_number,
+                        timestamp: p.header.timestamp,
+                        marker: p.header.marker,
                         ssrc: p.header.ssrc,
                         received: std::time::Instant::now(),
                         payload: p.payload.to_vec(),

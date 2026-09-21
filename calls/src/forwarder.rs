@@ -470,9 +470,8 @@ impl Forwarder {
                         self.traffic.unrouted[kind as usize] += 1;
                         continue;
                     };
-                    // A browser takes audio as ordinary RTP so the browser itself decodes and plays it;
-                    // video still rides the data channel until it packetizes natively too.
-                    if peer.browser && kind != MediaKind::Audio {
+                    // Audio and camera use RTP. The legacy screen path still uses the data channel.
+                    if peer.browser && kind == MediaKind::Screen {
                         if let Some(mut channel) = peer.channel.and_then(|id| peer.rtc.channel(id))
                         {
                             let sent = channel.buffered_amount() <= 192 * 1024

@@ -291,6 +291,9 @@ pub(crate) fn open_audio(sender: &str, bytes: &[u8]) -> Result<Option<Zeroizing<
 }
 pub(crate) fn receive(event: &web_sys::MessageEvent) -> bool {
     let data = event.data();
+    if let Some(id) = get(&data, "video_ack").ok().and_then(|v| v.as_string()).and_then(|v| v.parse::<u64>().ok()) {
+        crate::transform::acknowledge(id); return true;
+    }
     if get(&data, "binary").ok().and_then(|v| v.as_bool()) != Some(true) {
         return false;
     }
@@ -350,4 +353,31 @@ pub async fn call_command(request: String, bytes: Uint8Array) -> Result<Uint8Arr
         return Err(fail("Invalid call payload"));
     }
     host::rpc(request, Some(bytes)).await?.dyn_into()
+}
+
+pub(crate) fn seal_video(call: &str, bytes: &[u8], timestamp: u64, keyframe: bool, width: u16, height: u16) -> Result<Vec<u8>, JsValue> {
+    if width < 16 || height < 16 || width as u32 * height as u32 > 1920 * 1080 { return Err(fail("Invalid video dimensions")); }
+    let call = id(call)?;
+    let mut body = Zeroizing::new(vec![2, 0, 0]); // AV1, zero rotation.
+    body.extend_from_slice(&width.to_be_bytes()); body.extend_from_slice(&height.to_be_bytes()); body.extend_from_slice(bytes);
+    STORE.with(|slot| {
+        let mut slot = slot.borrow_mut(); let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut(); let active = slot.as_mut().filter(|a| a.id == call).ok_or_else(|| fail("Call changed"))?;
+            let sealed = store.seal_call_frame(&mut active.media, MediaKind::Camera, timestamp, keyframe, &body, (js_sys::Date::now()/1000.0) as u64).map_err(|_| fail("Video not sealed"))?;
+            sigil_calls::av1::wrap(&sealed).map_err(|_| fail("Invalid video envelope"))
+        })
+    })
+}
+pub(crate) fn open_video(call: &str, sender: &str, bytes: &[u8]) -> Result<Vec<u8>, JsValue> {
+    let call = id(call)?; let sender = id(sender)?;
+    let encrypted = sigil_calls::av1::unwrap(bytes).map_err(|_| fail("Invalid video envelope"))?;
+    STORE.with(|slot| {
+        let mut slot = slot.borrow_mut(); let store = slot.as_mut().ok_or_else(|| fail("Browser is locked"))?;
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut(); let active = slot.as_mut().filter(|a| a.id == call).ok_or_else(|| fail("Call changed"))?;
+            let frame = store.open_call_frame(&mut active.media, sender, MediaKind::Camera, encrypted, (js_sys::Date::now()/1000.0) as u64).map_err(|_| fail("Video not opened"))?;
+            let mut bytes = vec![1, u8::from(frame.keyframe)]; bytes.extend_from_slice(&frame.timestamp.to_be_bytes()); bytes.extend_from_slice(&frame.data); Ok(bytes)
+        })
+    })
 }

@@ -21,6 +21,7 @@ struct Session {
     members: Vec<Id>,
     pc: JsValue,
     channel: JsValue,
+    camera: JsValue,
     sequence: [u64; 3],
     sending: [bool; 3],
     outgoing: [VecDeque<Outgoing>; 3],
@@ -195,7 +196,16 @@ pub async fn browser_call_audio_stats() -> String {
         let report = promise(invoke(&pc, "getStats", &[])?).await?;
         let counts = std::rc::Rc::new(Cell::new([0.0f64; 3]));
         let sink = counts.clone();
+        let video = std::rc::Rc::new(RefCell::new(Vec::<String>::new()));
+        let video_sink = video.clone();
         let visit = Closure::<dyn FnMut(JsValue)>::new(move |entry: JsValue| {
+            if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() == Some("video") {
+                let n = |key| get(&entry,key).ok().and_then(|v|v.as_f64()).unwrap_or(0.0);
+                let direction = get(&entry,"type").ok().and_then(|v|v.as_string()).unwrap_or_default();
+                if direction == "outbound-rtp" || direction == "inbound-rtp" {
+                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} received={} lost={} encode_ms={:.0} jitter_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
+                }
+            }
             if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() != Some("audio") {
                 return;
             }
@@ -215,8 +225,8 @@ pub async fn browser_call_audio_stats() -> String {
         drop(visit);
         let totals = counts.get();
         Ok(format!(
-            "sent={:.0} received={:.0} lost={:.0}",
-            totals[0], totals[1], totals[2]
+            "sent={:.0} received={:.0} lost={:.0} video=[{}]",
+            totals[0], totals[1], totals[2], video.borrow().join("; ")
         ))
     }
     read().await.unwrap_or_else(|_| "unavailable".into())
@@ -360,6 +370,14 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                     .await;
                 }
             }
+            if kind == MediaKind::Camera {
+                let caps = invoke(&get(&js_sys::global(), "RTCRtpSender")?, "getCapabilities", &["video".into()])?;
+                let codecs = Array::from(&get(&caps, "codecs")?);
+                let av1 = codecs.iter().filter(|c| get(c, "mimeType").ok().and_then(|v| v.as_string()).is_some_and(|v| v.eq_ignore_ascii_case("video/AV1"))).collect::<Array>();
+                if av1.length() == 0 { return Err(fail("This browser cannot send AV1 video")); }
+                invoke(&transceiver, "setCodecPreferences", &[av1.into()])?;
+                attach_transform(&get(&transceiver, "sender")?, serde_json::json!({"operation":"seal","kind":"camera","call":id}))?;
+            }
             uploads.push(transceiver);
         }
         for member in &members {
@@ -382,6 +400,9 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                         &get(&transceiver, "receiver")?,
                         serde_json::json!({"operation":"open","sender":call::hex(*member)}),
                     )?;
+                }
+                if kind == MediaKind::Camera {
+                    attach_transform(&get(&transceiver, "receiver")?, serde_json::json!({"operation":"open","kind":"camera","call":id,"sender":call::hex(*member)}))?;
                 }
                 downloads.push((*member, kind, transceiver));
             }
@@ -449,6 +470,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             incoming(generation, event)
         });
         set(&channel, "onmessage", message.as_ref())?;
+        let camera = get(&uploads[1], "sender")?;
         SESSION.with(|slot| {
             *slot.borrow_mut() = Some(Session {
                 generation,
@@ -457,6 +479,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 members,
                 pc: pc.clone(),
                 channel,
+                camera,
                 sequence: [0; 3],
                 sending: [false; 3],
                 outgoing: std::array::from_fn(|_| VecDeque::new()),
@@ -480,6 +503,7 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
         if !current(generation) {
             return Err(fail("Call interrupted"));
         }
+        if let Some(track) = crate::video::camera_track() { camera_track(Some(&track)).await?; }
         Ok(())
     }
     .await;
@@ -577,15 +601,6 @@ pub async fn browser_call_send(
     }
     receive.await.map_err(|_| fail("Call changed"))?
 }
-thread_local! {
-    /// Frames and fragments actually written to the channel, so the rate that leaves here can be
-    /// compared with the rate that arrives rather than with the rate the encoder produced.
-    static WRITTEN: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
-}
-/// Frames and fragments written since the last call.
-pub(crate) fn written() -> (u32, u32) {
-    WRITTEN.with(|v| v.replace((0, 0)))
-}
 /// True only when a newer frame is already waiting, so the pipeline always makes progress.
 fn stale(generation: u64, media: usize) -> bool {
     SESSION.with(|slot| {
@@ -628,7 +643,6 @@ async fn send_queued(generation: u64, kind: MediaKind) {
     if get(&session.channel,"bufferedAmount")?.as_f64().unwrap_or(f64::INFINITY)+total as f64>BACKLOG*4.0/3.0{note("send: channel backed up");return Ok(false);}
     note(&format!("send: writing kind={media} fragments={} bytes={total}",fragments.len()));
     let count=fragments.len();
-    if media==1{WRITTEN.with(|v|{let(f,p)=v.get();v.set((f+1,p+count as u32));});}
     for(index,payload)in fragments.into_iter().enumerate(){
      session.sequence[media]=session.sequence[media].checked_add(1).ok_or_else(||fail("Call sequence exhausted"))?;
      let packet=Packet{sender:session.own,kind,sequence:session.sequence[media],timestamp:(frame.timestamp*(if media==0{48000.0}else{90000.0})/1_000_000.0) as u64 as u32,marker:index+1==count,payload:payload.into()}.encode().map_err(|_|fail("Invalid encrypted packet"))?;
@@ -715,4 +729,28 @@ async fn drain(generation: u64) {
             bytes.fill(0, 0, bytes.length());
         }
     }
+}
+
+/// Camera RTP is encoded by the browser and sealed by its worker before packetization.
+pub(crate) async fn camera_track(track: Option<&web_sys::MediaStreamTrack>) -> Result<(), JsValue> {
+    let sender = SESSION.with(|s| s.borrow().as_ref().map(|s| s.camera.clone())).ok_or_else(|| fail("Call is not connected"))?;
+    promise(invoke(&sender, "replaceTrack", &[track.map(|t| t.clone().into()).unwrap_or(JsValue::NULL)])?).await?;
+    if track.is_some() {
+        let params = invoke(&sender, "getParameters", &[])?;
+        let encodings = Array::from(&get(&params, "encodings")?);
+        for encoding in encodings.iter() {
+            set(&encoding, "maxBitrate", &3_500_000.into())?;
+            set(&encoding, "maxFramerate", &30.into())?;
+        }
+        set(&params, "degradationPreference", &"maintain-framerate".into())?;
+        promise(invoke(&sender, "setParameters", &[params])?).await?;
+    }
+    Ok(())
+}
+pub(crate) fn receive_video(message: &JsValue) -> Result<(), JsValue> {
+    let call = get(message, "call")?.as_string().ok_or_else(|| fail("Missing call"))?;
+    let sender = get(message, "sender")?.as_string().ok_or_else(|| fail("Missing sender"))?;
+    let callback = SESSION.with(|s| s.borrow().as_ref().filter(|s| s.call == call && s.members.iter().any(|m| call::hex(*m) == sender)).map(|s| s.frames.clone()));
+    if let Some(callback) = callback { callback.call2(&JsValue::NULL, &sender.into(), &Uint8Array::new(&get(message, "data")?))?; }
+    Ok(())
 }

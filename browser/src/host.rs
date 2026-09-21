@@ -58,6 +58,15 @@ pub async fn start_browser() -> Result<(), JsValue> {
     let (ready, receive) = oneshot::channel();
     let messages = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
         let data = event.data();
+        if get(&data, "video_frame").ok().and_then(|v| v.as_bool()) == Some(true) {
+            let _ = crate::rtc::receive_video(&data);
+            if let (Some(worker), Ok(id)) = (crate::host::worker(), get(&data, "ack")) {
+                let reply = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(&reply, &"video_ack".into(), &id);
+                let _ = worker.post_message(&reply);
+            }
+            return;
+        }
         if get(&data, "transport").ok().and_then(|v| v.as_bool()) == Some(true) {
             spawn_local(async move {
                 let _ = transport::fetch(data).await;

@@ -151,21 +151,23 @@ async fn data_channel_and_rtp_forward_the_same_authenticated_fragmented_media() 
         receivers.push(Receiver::new(&key).unwrap());
     }
     let mut assemblies = [Assembly::default(), Assembly::default()];
+    let mut cameras = [av1::Assembly::default(), av1::Assembly::default()];
     let mut sequences = [[0u16; 3]; 2];
     let mut seen = [[false; 3]; 2];
+    let mut video_frames = [0; 2];
     for iteration in 0..100 {
         for source in 0..2 {
             for kind in [MediaKind::Audio, MediaKind::Camera, MediaKind::Screen] {
-                let body = vec![kind as u8 + source as u8 + 17; 3500];
+                let body = vec![kind as u8 + source as u8 + 17; if kind == MediaKind::Camera { 20_000 } else { 3500 }];
                 let sealed = senders[source]
                     .seal(kind, iteration, kind != MediaKind::Audio, &body)
                     .unwrap();
-                let fragments = packetize(kind, &sealed).unwrap();
+                let fragments = if kind == MediaKind::Camera { av1::packetize(&sealed, true).unwrap() } else { packetize(kind, &sealed).unwrap() };
                 let count = fragments.len();
                 for (index, payload) in fragments.into_iter().enumerate() {
                     let seq = &mut sequences[source][kind as usize];
                     *seq += 1;
-                    if source == 0 {
+                    if source == 0 && kind == MediaKind::Screen {
                         channel
                             .send(bytes::BytesMut::from(
                                 channel::Packet {
@@ -202,7 +204,7 @@ async fn data_channel_and_rtp_forward_the_same_authenticated_fragmented_media() 
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(33)).await;
         while let Ok(bytes) = rx.try_recv() {
             let packet = channel::Packet::decode(&bytes).unwrap();
             assert_eq!(packet.sender, members[1].id);
@@ -215,23 +217,22 @@ async fn data_channel_and_rtp_forward_the_same_authenticated_fragmented_media() 
                 seen[0][packet.kind as usize] = true;
             }
         }
-        while let Ok(packet) = peers[1].packets.try_recv() {
-            let route = &maps[1]
-                .iter()
-                .find(|entry| entry.ssrc == packet.ssrc)
-                .unwrap()
-                .track;
-            assert_eq!(route.sender, members[0].id);
-            if let Some(encrypted) = assemblies[1]
-                .push(route.sender, route.kind, &packet.payload, Instant::now())
-                .unwrap()
-            {
-                let frame = receivers[0].open(&encrypted).unwrap();
-                assert_eq!(frame.data.as_slice(), vec![route.kind as u8 + 17; 3500]);
-                seen[1][route.kind as usize] = true;
+        for target in 0..2 {
+            while let Ok(packet) = peers[target].packets.try_recv() {
+                let route = &maps[target].iter().find(|entry| entry.ssrc == packet.ssrc).unwrap().track;
+                assert_eq!(route.sender, members[1-target].id);
+                let encrypted = if route.kind == MediaKind::Camera {
+                    cameras[target].push(packet.seq, packet.timestamp, packet.marker, &packet.payload).unwrap()
+                } else { assemblies[target].push(route.sender, route.kind, &packet.payload, Instant::now()).unwrap() };
+                if let Some(encrypted) = encrypted {
+                    let frame = receivers[1-target].open(&encrypted).unwrap();
+                    assert_eq!(frame.data.as_slice(), vec![route.kind as u8 + (1-target) as u8 + 17; if route.kind == MediaKind::Camera { 20_000 } else { 3500 }]);
+                    seen[target][route.kind as usize] = true;
+                    if route.kind == MediaKind::Camera { video_frames[target] += 1; }
+                }
             }
         }
-        if seen.iter().flatten().all(|value| *value) {
+        if seen.iter().flatten().all(|value| *value) && video_frames.iter().all(|n| *n >= 60) {
             break;
         }
     }
@@ -239,6 +240,7 @@ async fn data_channel_and_rtp_forward_the_same_authenticated_fragmented_media() 
         seen.iter().flatten().all(|value| *value),
         "not all encrypted tracks crossed both transports: {seen:?}"
     );
+    assert!(video_frames.iter().all(|n| *n >= 60), "camera RTP did not sustain the stream: {video_frames:?}");
     channel
         .send(bytes::BytesMut::from(
             channel::Packet {
