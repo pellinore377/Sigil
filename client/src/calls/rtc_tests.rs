@@ -415,6 +415,24 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(received, [[true; 3]; 2]);
+        // A commit through another connection must revoke even a just-cached proof.
+        alice.block_peer(peer, true).unwrap();
+        let blocked: Vec<u8> = alice.db.query_row("SELECT state FROM peers WHERE id=?1",
+            [peer.as_slice()], |row| row.get(0)).unwrap();
+        alice.block_peer(peer, false).unwrap();
+        assert_eq!(alice.rtc_connection_state(&a, now).unwrap(), "connected");
+        let other = rusqlite::Connection::open(alice.db.path().unwrap()).unwrap();
+        other.execute("UPDATE peers SET state=?1 WHERE id=?2", (blocked, peer.as_slice())).unwrap();
+        assert!(alice.rtc_connection_state(&a, now).is_err());
+        alice.block_peer(peer, false).unwrap();
+        assert_eq!(alice.rtc_connection_state(&a, now).unwrap(), "connected");
+        let original = load(&alice.db, &alice.key, &id).unwrap();
+        let mut replacement = load(&alice.db, &alice.key, &id).unwrap();
+        replacement.lease = [99; 32];
+        save(&other, &alice.key, &replacement).unwrap();
+        assert!(matches!(alice.rtc_connection_state(&a, now), Err(Error::Obsolete)));
+        save(&other, &alice.key, &original).unwrap();
+        assert_eq!(alice.rtc_connection_state(&a, now).unwrap(), "connected");
         // Background sync owns a writer while media continues on its last checked authority.
         alice.refresh_call_media(&mut a.media, now).unwrap();
         alice.db.busy_timeout(Duration::ZERO).unwrap();

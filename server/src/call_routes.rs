@@ -25,6 +25,8 @@ use tower_http::limit::RequestBodyLimitLayer;
 #[derive(Default)]
 pub(crate) struct Runtime {
     inner: Mutex<Current>,
+    // Serialize storage snapshots with admission and roster changes, not UDP traffic.
+    control: Mutex<()>,
 }
 #[derive(Default)]
 struct Current {
@@ -32,9 +34,11 @@ struct Current {
     socket: Option<Arc<UdpSocket>>,
     forwarder: Option<Forwarder>,
     ready: bool,
+    valid_until: Option<Instant>,
 }
 impl Current {
     async fn synchronize(&mut self, snapshot: &Snapshot) -> Result<(), StoreError> {
+        self.valid_until = Some(Instant::now() + AUTHORITY_LIFETIME);
         if self.revision != Some(snapshot.configuration.revision) {
             self.ready = false;
             self.forwarder = None;
@@ -74,7 +78,11 @@ impl Current {
         self.ready = true;
         Ok(())
     }
+    fn authorized(&self, now: Instant) -> bool {
+        self.ready && self.valid_until.is_some_and(|until| now < until)
+    }
     fn fail(&mut self) {
+        self.valid_until = None;
         self.ready = false;
         self.forwarder = None;
         self.revision = None;
@@ -116,6 +124,7 @@ async fn configure(
     State(state): State<AppState>,
     Json(request): Json<call_config::Configure>,
 ) -> Response {
+    let _control = state.calls.control.lock().await;
     let mut current = state.calls.inner.lock().await;
     let result = with_store(state.clone(), move |s| s.configure_calls(request)).await;
     // Reconcile even if a committed write's response was lost.
@@ -155,6 +164,7 @@ async fn publish(
         Ok(v) => v,
         Err(e) => return store_error(e),
     };
+    let _control = state.calls.control.lock().await;
     let mut current = state.calls.inner.lock().await;
     let result = with_store(state.clone(), move |s| {
         s.publish_call(&credential, roster, now()?)
@@ -210,6 +220,7 @@ async fn advance(
     }
 }
 async fn advance_roster(state: AppState, roster: SignedRoster) -> Result<SignedRoster, StoreError> {
+    let _control = state.calls.control.lock().await;
     let mut current = state.calls.inner.lock().await;
     let result = with_store(state.clone(), move |store| {
         store.advance_call(roster, now()?)
@@ -229,6 +240,7 @@ async fn advance_roster(state: AppState, roster: SignedRoster) -> Result<SignedR
     result
 }
 async fn answer(state: AppState, proof: SignedConnect) -> Result<sigil_calls::Answer, StoreError> {
+    let _control = state.calls.control.lock().await;
     let mut current = state.calls.inner.lock().await;
     let copied = proof.clone();
     let admission = with_store(state.clone(), move |s| s.admit_call(&copied, now()?)).await?;
@@ -340,11 +352,40 @@ async fn status(State(state): State<AppState>) -> Response {
         .as_ref()
         .map_or(0, Forwarder::dropped_packets);
     let traffic = current.forwarder.as_ref().map(Forwarder::traffic).cloned();
-    Json(serde_json::json!({"ready":current.ready,"calls":calls,"participants":participants,"dropped_packets":dropped,"traffic":traffic}))
+    Json(serde_json::json!({"ready":current.authorized(Instant::now()),"calls":calls,"participants":participants,"dropped_packets":dropped,"traffic":traffic}))
         .into_response()
 }
+// Refresh ahead of the old 250ms polling boundary. A stalled read may never extend
+// authority, and a control-plane write cannot be overwritten by an older snapshot.
+const AUTHORITY_LIFETIME: Duration = Duration::from_millis(250);
+async fn refresh(state: &AppState) {
+    let _control = state.calls.control.lock().await;
+    let started = Instant::now();
+    let snapshot = with_store(state.clone(), |s| s.call_snapshot(now()?)).await;
+    let mut current = state.calls.inner.lock().await;
+    match snapshot {
+        Ok(snapshot) => {
+            if current.synchronize(&snapshot).await.is_err() {
+                current.fail();
+            } else {
+                current.valid_until = Some(started + AUTHORITY_LIFETIME);
+            }
+        }
+        Err(_) => current.fail(),
+    }
+}
+async fn refresh_loop(state: AppState) {
+    let mut interval = tokio::time::interval(Duration::from_millis(100));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        refresh(&state).await;
+    }
+}
 pub(crate) async fn run(state: AppState) {
-    let mut refreshed = Instant::now() - Duration::from_secs(1);
+    tokio::join!(refresh_loop(state.clone()), forward(state));
+}
+async fn forward(state: AppState) {
     let mut reported = Instant::now();
     let mut bytes = [0; 2049];
     loop {
@@ -358,27 +399,19 @@ pub(crate) async fn run(state: AppState) {
                 }
             }
         }
-        if refreshed.elapsed() >= Duration::from_millis(250) {
-            let mut current = state.calls.inner.lock().await;
-            match with_store(state.clone(), |s| s.call_snapshot(now()?)).await {
-                Ok(snapshot) => {
-                    if current.synchronize(&snapshot).await.is_err() {
-                        current.fail();
-                    }
-                }
-                Err(_) => current.fail(),
-            }
-            refreshed = Instant::now();
-        }
         let (socket, tick) = {
             let mut current = state.calls.inner.lock().await;
             let instant = Instant::now();
             let wall = now().unwrap_or(u64::MAX);
-            let tick = current.forwarder.as_mut().map(|f| f.tick(wall, instant));
+            let tick = if current.authorized(instant) {
+                current.forwarder.as_mut().map(|f| f.tick(wall, instant))
+            } else {
+                None
+            };
             (current.socket.clone(), tick)
         };
         let (Some(socket), Some(tick)) = (socket, tick) else {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
             continue;
         };
         for packet in tick.datagrams {
@@ -387,11 +420,54 @@ pub(crate) async fn run(state: AppState) {
         tokio::select! {
             received=socket.recv_from(&mut bytes)=>if let Ok((n,source))=received {
                 let mut current=state.calls.inner.lock().await;
-                if current.socket.as_ref().is_some_and(|s|Arc::ptr_eq(s,&socket)) {
+                if current.authorized(Instant::now()) && current.socket.as_ref().is_some_and(|s|Arc::ptr_eq(s,&socket)) {
                     if let Some(forwarder)=&mut current.forwarder {forwarder.receive(source,&bytes[..n],Instant::now());}
                 }
             },
             _=tokio::time::sleep_until(tick.next.into())=>(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn storage_refresh_does_not_hold_media_lock_or_extend_stale_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(&directory.path().join("calls.db")).unwrap();
+        let token = crate::AdminToken::load_or_create(&directory.path().join("admin.token")).unwrap();
+        let (_, state) = crate::application(store, token);
+        refresh(&state).await;
+        let before = state.calls.inner.lock().await.valid_until.unwrap();
+        let permit = state.database_slot.acquire().await.unwrap();
+        let copy = state.clone();
+        let task = tokio::spawn(async move { refresh(&copy).await });
+        // Wait until refresh is queued for storage, while it owns control ordering.
+        loop {
+            if state.calls.control.try_lock().is_err() { break; }
+            tokio::task::yield_now().await;
+        }
+        let current = tokio::time::timeout(Duration::from_millis(50), state.calls.inner.lock())
+            .await.expect("storage must not block media forwarding");
+        assert_eq!(current.valid_until, Some(before));
+        assert!(current.authorized(before - Duration::from_nanos(1)));
+        assert!(!current.authorized(before));
+        drop(current);
+        tokio::time::sleep(AUTHORITY_LIFETIME + Duration::from_millis(10)).await;
+        drop(permit);
+        task.await.unwrap();
+        assert!(!state.calls.inner.lock().await.authorized(Instant::now()));
+        refresh(&state).await;
+        assert!(state.calls.inner.lock().await.authorized(Instant::now()));
+    }
+
+    #[test]
+    fn failed_refresh_revokes_authority() {
+        let mut current = Current { ready: true, valid_until: Some(Instant::now() + AUTHORITY_LIFETIME), ..Current::default() };
+        current.fail();
+        assert!(!current.authorized(Instant::now()));
+        assert!(current.valid_until.is_none());
     }
 }

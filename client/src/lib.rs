@@ -152,6 +152,8 @@ pub struct ClientStore {
     /// Bumped whenever a stored call record or a peer's standing changes, so a live call can
     /// tell that its authority needs reading again without touching the database per frame.
     authority: u64,
+    #[cfg(feature = "rtc-client")]
+    rtc_authority: Option<calls::RtcAuthority>,
 }
 fn binding(kind: u8, session: &Id, record: &[u8]) -> Vec<u8> {
     let mut bytes = b"Sigil/client/v0".to_vec();
@@ -537,6 +539,8 @@ impl ClientStore {
             key,
             connection: Default::default(),
             authority: 0,
+            #[cfg(feature = "rtc-client")]
+            rtc_authority: None,
         })
     }
 

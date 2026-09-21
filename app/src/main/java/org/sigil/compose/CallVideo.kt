@@ -127,11 +127,13 @@ internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> U
     private val queue = ArrayBlockingQueue<Pending>(3)
     private val running = AtomicBoolean(true)
     private var waitingKey = true
+    private var skipped = 0L
     private fun clear() { while (true) (queue.poll() ?: break).bytes.fill(0) }
     @Synchronized fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
         if (!running.get()) return
-        if (waitingKey && !keyframe) return
+        if (waitingKey && !keyframe) { skipped++; return }
         if (queue.remainingCapacity() == 0) {
+            skipped += queue.size
             clear(); waitingKey = true; requestKeyframe()
         }
         if (waitingKey && !keyframe) return
@@ -140,15 +142,25 @@ internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> U
     }
     private val worker = Thread({
         try {
+            var since = System.nanoTime(); var sent = 0; var sendMax = 0L; var ageMax = 0L
             while (running.get()) {
                 val packet = queue.poll(20, TimeUnit.MILLISECONDS) ?: continue
                 try {
                     if (!running.get()) continue
-                    if (System.nanoTime() - packet.added > 100_000_000L) {
-                        synchronized(this) { clear(); waitingKey = true; requestKeyframe() }
+                    val started = System.nanoTime()
+                    ageMax = maxOf(ageMax, started - packet.added)
+                    if (started - packet.added > 100_000_000L) {
+                        synchronized(this) { skipped += queue.size + 1; clear(); waitingKey = true; requestKeyframe() }
                         continue
                     }
                     send(packet.stamp, packet.key, packet.bytes)
+                    val finished = System.nanoTime()
+                    sendMax = maxOf(sendMax, finished - started); sent++
+                    if (finished - since >= 5_000_000_000L) {
+                        val dropped = synchronized(this) { skipped.also { skipped = 0 } }
+                        android.util.Log.i("SigilTiming", "video send frames=$sent send_max_ms=${sendMax / 1_000_000} age_max_ms=${ageMax / 1_000_000} dropped=$dropped")
+                        since = finished; sent = 0; sendMax = 0; ageMax = 0
+                    }
                 } finally { packet.bytes.fill(0) }
             }
         } catch (error: Exception) { if (running.get()) failed(error) }

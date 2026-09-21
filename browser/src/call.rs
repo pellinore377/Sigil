@@ -292,7 +292,11 @@ pub(crate) fn publish_media() {
     });
     match result {
         Some(Ok(update)) => { if crate::media_worker::publish(update).is_err() { crate::media_worker::invalidate(); } }
-        _ => crate::media_worker::invalidate(),
+        Some(Err(error)) => {
+            crate::transform::timing(format!("SigilTiming media refresh rejected={error:?}"));
+            crate::media_worker::invalidate();
+        }
+        None => crate::media_worker::invalidate(),
     }
 }
 pub(crate) fn renew_media(context: sigil_calls::Context) {

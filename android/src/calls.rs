@@ -15,6 +15,22 @@ static ACTIVE: Mutex<Option<(i64, Option<Handle>)>> = Mutex::new(None);
 /// The media handle of the last closed transport, kept for the rebuild that follows a roster change.
 static PARKED: Mutex<Option<sigil_client::calls::Media>> = Mutex::new(None);
 static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+struct Timing(&'static str, std::time::Instant);
+impl Drop for Timing {
+    fn drop(&mut self) {
+        static SAMPLES: OnceLock<Mutex<std::collections::BTreeMap<&'static str, (std::time::Instant, u64, u128)>>> = OnceLock::new();
+        let Ok(mut samples) = SAMPLES.get_or_init(|| Mutex::new(Default::default())).lock() else { return };
+        let entry = samples.entry(self.0).or_insert((self.1, 0, 0));
+        entry.1 += 1;
+        entry.2 = entry.2.max(self.1.elapsed().as_millis());
+        if entry.0.elapsed() >= std::time::Duration::from_secs(5) {
+            if let (Ok(tag), Ok(line)) = (std::ffi::CString::new("SigilTiming"), std::ffi::CString::new(format!("call media {} count={} max_ms={}", self.0, entry.1, entry.2))) {
+                unsafe { super::__android_log_write(4, tag.as_ptr(), line.as_ptr()); }
+            }
+            *entry = (std::time::Instant::now(), 0, 0);
+        }
+    }
+}
 fn runtime() -> Option<&'static tokio::runtime::Runtime> {
     RUNTIME
         .get_or_init(|| {
@@ -149,6 +165,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callState(
     _: JObject,
     token: jlong,
 ) -> jint {
+    let _timing = Timing("state", std::time::Instant::now());
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<jint> {
         let handle = handle(token)?;
         let mut active = handle.lock().ok()?;
@@ -209,12 +226,14 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
                 return None;
             }
             let transmission = {
+                let _timing = Timing("prepare", std::time::Instant::now());
                 let mut active = handle.lock().ok()?;
                 let NativeCall { store, call, .. } = &mut *active;
                 store
                     .rtc_prepare_send(call, media, timestamp as u64, keyframe != 0, &bytes, now())
                     .ok()?
             };
+            let _timing = Timing("wire", std::time::Instant::now());
             runtime()?.block_on(transmission.send()).ok()
         })?
     }));
@@ -230,6 +249,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
     _: JObject,
     token: jlong,
 ) -> jbyteArray {
+    let _timing = Timing("receive", std::time::Instant::now());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Option<Zeroizing<Vec<u8>>> {
             let handle = handle(token)?;

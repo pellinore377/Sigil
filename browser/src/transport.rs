@@ -64,7 +64,7 @@ fn collect_response(
     timeout: f64,
 ) -> Result<Response<Body>, JsValue> {
     let started = js_sys::Date::now();
-    js_sys::Atomics::wait_with_timeout(state, 0, 0, timeout)?;
+    wait_for_response(state, timeout)?;
     let waited = js_sys::Date::now() - started;
     if waited >= 30.0 {
         crate::transform::timing(format!("SigilTiming worker network_wait_ms={waited:.0}"));
@@ -103,6 +103,17 @@ fn collect_response(
     response
         .body(Body::new(body))
         .map_err(|_| fail("Invalid response"))
+}
+
+pub(crate) fn wait_for_response(state: &Int32Array, timeout: f64) -> Result<(), JsValue> {
+    let deadline = js_sys::Date::now() + timeout;
+    while js_sys::Atomics::load(state, 0)? == 0 {
+        let remaining = deadline - js_sys::Date::now();
+        if remaining <= 0.0 { break; }
+        crate::media_worker::network_wait_progress();
+        js_sys::Atomics::wait_with_timeout(state, 0, 0, remaining.min(100.0))?;
+    }
+    Ok(())
 }
 
 pub async fn fetch(packet: JsValue) -> Result<(), JsValue> {

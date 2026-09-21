@@ -10,6 +10,7 @@ use wasm_bindgen::{JsCast, prelude::*};
 struct Link {
     port: web_sys::MessagePort,
     gate: Int32Array,
+    published: std::cell::Cell<Option<i32>>,
 }
 thread_local! {
     static LINK: RefCell<Option<Link>> = const { RefCell::new(None) };
@@ -59,17 +60,37 @@ pub(crate) fn publish(update: MediaUpdate) -> Result<(), JsValue> {
         let v = v.borrow();
         let link = v.as_ref().ok_or_else(|| fail("Media worker unavailable"))?;
         let message = js_sys::Object::new();
-        set(
-            &message,
-            "revision",
-            &js_sys::Atomics::load(&link.gate, 0)?.into(),
-        )?;
+        let revision = js_sys::Atomics::load(&link.gate, 0)?;
+        set(&message, "revision", &revision.into())?;
         set(&message, "until", &(js_sys::Date::now() + 2000.0).into())?;
         let data = Uint8Array::from(bytes.as_slice());
         set(&message, "data", &data)?;
-        link.port
-            .post_message_with_transferable(&message, &js_sys::Array::of1(&data.buffer()))
+        link.port.post_message_with_transferable(&message, &js_sys::Array::of1(&data.buffer()))?;
+        link.published.set(Some(revision));
+        Ok(())
     })
+}
+/// The exclusive store owner is alive but waiting for HTTP, with no state writes occurring.
+/// Renew only the snapshot it already published; a synchronous invalidation forbids renewal.
+pub(crate) fn network_wait_progress() {
+    LINK.with(|slot| {
+        let slot = slot.borrow();
+        let Some(link) = slot.as_ref() else { return };
+        let Some(revision) = link.published.get() else { return };
+        if js_sys::Atomics::load(&link.gate, 0).ok() != Some(revision) { return; }
+        let message = js_sys::Object::new();
+        let sent = (|| -> Result<(), JsValue> {
+            set(&message, "heartbeat", &true.into())?;
+            set(&message, "revision", &revision.into())?;
+            set(&message, "until", &(js_sys::Date::now() + 2000.0).into())?;
+            link.port.post_message(&message)
+        })();
+        if sent.is_err() { link.published.set(None); }
+    });
+}
+#[cfg(feature = "video-acceptance")]
+pub(crate) fn test_control_link(port: web_sys::MessagePort, gate: Int32Array) {
+    LINK.with(|v| *v.borrow_mut() = Some(Link { port, gate, published: Default::default() }));
 }
 pub(crate) fn control_receive(event: &web_sys::MessageEvent) -> bool {
     let data = event.data();
@@ -90,7 +111,7 @@ pub(crate) fn control_receive(event: &web_sys::MessageEvent) -> bool {
         port.set_onmessage(Some(handler.as_ref().unchecked_ref()));
         handler.forget();
         port.start();
-        LINK.with(|v| *v.borrow_mut() = Some(Link { port, gate }));
+        LINK.with(|v| *v.borrow_mut() = Some(Link { port, gate, published: Default::default() }));
         let timer = Closure::<dyn FnMut()>::new(crate::call::publish_media);
         js_sys::global()
             .unchecked_into::<web_sys::DedicatedWorkerGlobalScope>()
@@ -131,6 +152,15 @@ pub fn media_worker_start(port: web_sys::MessagePort, buffer: JsValue) -> Result
                 let until = get(&data, "until")?
                     .as_f64()
                     .ok_or_else(|| fail("Invalid deadline"))?;
+                if get(&data, "heartbeat")?.as_bool() == Some(true) {
+                    PROCESSOR.with(|v| {
+                        let mut p = v.borrow_mut();
+                        if p.revision == Some(revision) {
+                            p.until = p.until.max(until);
+                        }
+                    });
+                    return Ok(());
+                }
                 let array = get(&data, "data")?.dyn_into::<Uint8Array>()?;
                 if array.length() > 65536 {
                     array.fill(0, 0, array.length());
@@ -164,7 +194,7 @@ pub fn media_worker_start(port: web_sys::MessagePort, buffer: JsValue) -> Result
     port.set_onmessage(Some(handler.as_ref().unchecked_ref()));
     handler.forget();
     port.start();
-    LINK.with(|v| *v.borrow_mut() = Some(Link { port, gate }));
+    LINK.with(|v| *v.borrow_mut() = Some(Link { port, gate, published: Default::default() }));
     crate::transform::install()
 }
 fn process<T>(
@@ -180,9 +210,8 @@ fn process<T>(
         PROCESSOR.with(|slot| {
             let mut p = slot.borrow_mut();
             let revision = js_sys::Atomics::load(&link.gate, 0)?;
-            if p.revision != Some(revision) || js_sys::Date::now() >= p.until {
-                return Err(fail("Media authority pending"));
-            }
+            if p.revision != Some(revision) { return Err(fail("Media authority revision pending")); }
+            if js_sys::Date::now() >= p.until { return Err(fail("Media authority refresh overdue")); }
             let active = p.call.ok_or_else(|| fail("No media session"))?;
             if call.is_some_and(|call| call != active) {
                 return Err(fail("Call changed"));
