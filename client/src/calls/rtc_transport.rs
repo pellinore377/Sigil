@@ -76,10 +76,20 @@ impl PeerConnectionEventHandler for Handler {
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         let packets = self.packets.clone();
         tokio::spawn(async move {
+            let video = track.kind().await == RtpCodecKind::Video;
+            let mut key_requested = None::<std::time::Instant>;
             let mut seen = 0u64;
             let mut refused = 0u64;
             while let Some(event) = track.poll().await {
                 if let TrackRemoteEvent::OnRtpPacket(packet) = event {
+                    let now = std::time::Instant::now();
+                    if video && key_requested.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1)) {
+                        key_requested = Some(now);
+                        let request = rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
+                            sender_ssrc: 0, media_ssrc: packet.header.ssrc,
+                        };
+                        let _ = track.write_rtcp(vec![Box::new(request)]).await;
+                    }
                     if packet.payload.len() <= 2048 {
                         seen += 1;
                         if packets
