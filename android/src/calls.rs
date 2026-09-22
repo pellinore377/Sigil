@@ -12,6 +12,8 @@ struct NativeCall {
 struct NativeMedia {
     store: sigil_client::ClientStore,
     call: RtcCall,
+    sequence: sigil_calls::av1::Sequence,
+    camera_size: Option<[u8; 4]>,
 }
 type Handle = Arc<NativeCall>;
 static ACTIVE: Mutex<Option<(i64, Option<Handle>)>> = Mutex::new(None);
@@ -142,7 +144,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_openCall(
             let mut active = ACTIVE.lock().ok()?;
             let slot = active.as_mut().filter(|(id, _)| *id == token)?;
             slot.1 = Some(Arc::new(NativeCall {
-                state: Mutex::new(NativeMedia { store: store.into_inner(), call: value }),
+                state: Mutex::new(NativeMedia { store: store.into_inner(), call: value, sequence: Default::default(), camera_size: None }),
                 send_lanes: SendLanes::default(),
             }));
         }
@@ -171,7 +173,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callState(
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<jint> {
         let handle = handle(token)?;
         let mut active = handle.state.lock().ok()?;
-        let NativeMedia { store, call } = &mut *active;
+        let NativeMedia { store, call, .. } = &mut *active;
         Some(match store.rtc_media_state(call, now()).ok()? {
             "connected" => 1,
             "disconnected" => 2,
@@ -195,7 +197,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callTracks(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<()> {
         let handle = handle(token)?;
         let mut active = handle.state.lock().ok()?;
-        let NativeMedia { store, call } = &mut *active;
+        let NativeMedia { store, call, .. } = &mut *active;
         store.rtc_set_tracks(call, tracks(enabled)?, now()).ok()
     }));
     if result.ok().flatten().is_some() {
@@ -228,14 +230,32 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
             }
             let transmission = {
                 let _timing = Timing("prepare", std::time::Instant::now());
+                let waiting = Timing("send_lock", std::time::Instant::now());
                 let mut active = handle.state.lock().ok()?;
-                let NativeMedia { store, call } = &mut *active;
+                drop(waiting);
+                let _prepared = Timing("send_authority", std::time::Instant::now());
+                let NativeMedia { store, call, sequence, camera_size } = &mut *active;
+                let normalized;
+                let encoded = if media == sigil_calls::MediaKind::Camera {
+                    if bytes.len() <= 7 || bytes[0] != 2 { return None; }
+                    let size: [u8; 4] = bytes[3..7].try_into().ok()?;
+                    if *camera_size != Some(size) { sequence.clear(); *camera_size = Some(size); }
+                    let frame = sequence.frame(&bytes[7..], keyframe != 0).map_err(|_| drop(Timing("send_refused_config", std::time::Instant::now()))).ok()?;
+                    match frame {
+                        std::borrow::Cow::Borrowed(_) => &bytes[..],
+                        std::borrow::Cow::Owned(frame) => {
+                            let frame = Zeroizing::new(frame);
+                            normalized = Zeroizing::new([&bytes[..7], &frame[..]].concat());
+                            &normalized[..]
+                        }
+                    }
+                } else { &bytes[..] };
                 store
-                    .rtc_prepare_send(call, media, timestamp as u64, keyframe != 0, &bytes, now())
-                    .ok()?
+                    .rtc_prepare_send(call, media, timestamp as u64, keyframe != 0, encoded, now())
+                    .map_err(|_| drop(Timing("send_refused_authority", std::time::Instant::now()))).ok()?
             };
             let _timing = Timing("wire", std::time::Instant::now());
-            runtime()?.block_on(transmission.send()).ok()
+            runtime()?.block_on(transmission.send()).map_err(|_| drop(Timing("send_refused_wire", std::time::Instant::now()))).ok()
         })?
     }));
     if result.ok().flatten().is_some() {
@@ -255,8 +275,10 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
         || -> Option<Zeroizing<Vec<u8>>> {
             let handle = handle(token)?;
             let mut active = handle.state.lock().ok()?;
-            let NativeMedia { store, call } = &mut *active;
+            let NativeMedia { store, call, .. } = &mut *active;
+            if !call.has_pending_receive() { return Some(Zeroizing::new(Vec::new())); }
             let frames = store.rtc_receive(call, now()).ok()?;
+            drop(active);
             let mut bytes = Zeroizing::new(Vec::with_capacity(
                 frames.iter().map(|v| 46 + v.frame.data.len()).sum(),
             ));
@@ -293,4 +315,15 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_requestCallVideoKeyf
         handle.state.lock().ok()?.call.request_video_keyframe(sender, kind(media)?);
         Some(())
     }));
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_takeCallVideoRequests(
+    _: JNIEnv, _: JObject, token: jlong,
+) -> jint {
+    std::panic::catch_unwind(|| -> Option<jint> {
+        let handle = handle(token)?;
+        let active = handle.state.try_lock().ok()?;
+        Some(i32::from(active.call.take_video_requests()))
+    }).ok().flatten().unwrap_or(0)
 }

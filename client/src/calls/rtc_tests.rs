@@ -519,6 +519,19 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         assert!(!pending.is_finished());
         release.notify_one();
         pending.await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        a.take_video_requests();
+        let own = alice.call_transport_roster(id, now).unwrap().1;
+        b.request_video_keyframe(own, MediaKind::Camera);
+        let mut requested = false;
+        for index in 0..100 {
+            alice.rtc_send(&mut a, MediaKind::Camera, 11_000_000 + index * 33_333, true, &[42; 100], now).await.unwrap();
+            bob.rtc_receive(&mut b, now).unwrap();
+            if a.take_video_requests() & 2 != 0 { requested = true; break; }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        assert!(requested, "Receiver recovery feedback must reach the remote encoder");
+        assert_eq!(a.take_video_requests(), 0, "A consumed request must not repeat");
         // Deliver a complete burst before polling, as happens after a scheduling stall.
         // These are real sealed RTP payloads; only network arrival timing is synthetic.
         let (arrival, packets) = mpsc::channel(512);

@@ -19,6 +19,49 @@ pub fn camera_payload(bytes: &[u8]) -> Result<(u16, u16, u16, &[u8]), Error> {
     Ok((rotation, width, height, &bytes[17..]))
 }
 
+/// Retain codec configuration so a later keyframe can initialize a fresh decoder.
+#[derive(Default)]
+pub struct Sequence(Vec<u8>);
+impl Sequence {
+    pub fn clear(&mut self) { use zeroize::Zeroize; self.0.zeroize(); self.0.clear(); }
+    pub fn frame<'a>(&mut self, bytes: &'a [u8], key: bool) -> Result<std::borrow::Cow<'a, [u8]>, Error> {
+        use std::borrow::Cow;
+        if bytes.is_empty() || bytes.len() > MAX { return Err(Error::Limit); }
+        let mut at = 0;
+        let mut delimiter = 0;
+        let mut sequence = None;
+        while at < bytes.len() {
+            let start = at;
+            let header = bytes[at]; at += 1;
+            if header & 0x81 != 0 || header & 2 == 0 { return Err(Error::Invalid); }
+            if header & 4 != 0 {
+                let extension = *bytes.get(at).ok_or(Error::Invalid)?; at += 1;
+                if extension & 7 != 0 { return Err(Error::Invalid); }
+            }
+            let length = read_length(bytes, &mut at)?;
+            at = at.checked_add(length).filter(|end| *end <= bytes.len()).ok_or(Error::Invalid)?;
+            match (header >> 3) & 15 {
+                1 => { if length == 0 || length > 65536 { return Err(Error::Limit); } sequence = Some(start..at); }
+                2 if start == 0 => delimiter = at,
+                _ => {}
+            }
+        }
+        if let Some(range) = sequence {
+            self.clear(); self.0.extend_from_slice(&bytes[range]);
+            return Ok(Cow::Borrowed(bytes));
+        }
+        if !key { return Ok(Cow::Borrowed(bytes)); }
+        if self.0.is_empty() { return Err(Error::Invalid); }
+        if bytes.len() + self.0.len() > MAX { return Err(Error::Limit); }
+        let mut independent = Vec::with_capacity(bytes.len() + self.0.len());
+        independent.extend_from_slice(&bytes[..delimiter]);
+        independent.extend_from_slice(&self.0);
+        independent.extend_from_slice(&bytes[delimiter..]);
+        Ok(Cow::Owned(independent))
+    }
+}
+impl Drop for Sequence { fn drop(&mut self) { self.clear(); } }
+
 fn length(mut n: usize, out: &mut Vec<u8>) {
     loop { let byte = (n & 127) as u8; n >>= 7; out.push(byte | if n == 0 { 0 } else { 128 }); if n == 0 { break; } }
 }
@@ -106,6 +149,31 @@ mod tests {
             bytes[13..15].copy_from_slice(&width.to_be_bytes()); bytes[15..17].copy_from_slice(&height.to_be_bytes());
             assert!(camera_payload(&bytes).is_err());
         }
+    }
+    #[test] fn recovery_keyframes_repeat_configuration_after_the_delimiter() {
+        let mut sequence = Sequence::default();
+        let configured = [0x12, 0, 0x0a, 2, 7, 8, 0x32, 1, 9];
+        let later = [0x12, 0, 0x32, 1, 10];
+        assert!(sequence.frame(&later, true).is_err());
+        assert_eq!(sequence.frame(&configured, true).unwrap().as_ref(), configured);
+        assert_eq!(sequence.frame(&later, false).unwrap().as_ref(), later);
+        assert_eq!(sequence.frame(&later, true).unwrap().as_ref(), [0x12, 0, 0x0a, 2, 7, 8, 0x32, 1, 10]);
+        assert_eq!(sequence.frame(&[0x32, 1, 11], true).unwrap().as_ref(), [0x0a, 2, 7, 8, 0x32, 1, 11]);
+        assert!(sequence.frame(&[0x0a, 4, 99], true).is_err());
+        assert_eq!(sequence.frame(&later, true).unwrap().as_ref(), [0x12, 0, 0x0a, 2, 7, 8, 0x32, 1, 10]);
+        sequence.frame(&[0x0a, 1, 42, 0x32, 1, 9], true).unwrap();
+        assert_eq!(sequence.frame(&later, true).unwrap().as_ref(), [0x12, 0, 0x0a, 1, 42, 0x32, 1, 10]);
+        sequence.clear();
+        assert!(sequence.frame(&later, true).is_err());
+    }
+    #[test] fn sequence_rejects_malformed_obus_without_replacing_configuration() {
+        let mut sequence = Sequence::default();
+        let configured = [0x0e, 0, 1, 7, 0x32, 1, 9];
+        assert!(matches!(sequence.frame(&configured, true).unwrap(), std::borrow::Cow::Borrowed(_)));
+        for invalid in [&[0x8a, 0][..], &[0x0b, 0], &[0x08, 1, 7], &[0x0e], &[0x0e, 1, 1, 7], &[0x0a, 0x80], &[0x0a, 0xff, 0xff, 0xff, 0xff, 0], &[0x0a, 0]] {
+            assert!(sequence.frame(invalid, true).is_err());
+        }
+        assert_eq!(sequence.frame(&[0x32, 1, 10], true).unwrap().as_ref(), [0x0e, 0, 1, 7, 0x32, 1, 10]);
     }
     #[test] fn encrypted_obu_round_trip_and_sequence_wrap() {
         for size in [1, 1100, 1101, 100_000, MAX] {

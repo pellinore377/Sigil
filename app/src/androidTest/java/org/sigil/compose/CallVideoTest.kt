@@ -27,6 +27,7 @@ class CallVideoTest {
             assertEquals(7, bytes[0].toInt())
             stamps.add(stamp)
             if (stamp == 9L) delivered.countDown()
+            true
         }, { requested.incrementAndGet() }, { failures.incrementAndGet() })
         try {
             val bytes = byteArrayOf(7)
@@ -42,13 +43,31 @@ class CallVideoTest {
             assertEquals(0, failures.get())
         } finally { release.countDown(); sender.close() }
     }
+    @Test fun rejectedSendWaitsForAnIndependentFrame() {
+        val rejected = CountDownLatch(1); val recovered = CountDownLatch(1)
+        val stamps = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        val sender = CallVideoSender({ stamp, _, _ ->
+            stamps.add(stamp)
+            if (stamp == 3L) recovered.countDown()
+            stamp != 0L
+        }, { rejected.countDown() }, { throw AssertionError(it) })
+        try {
+            sender.offer(0, true, byteArrayOf(7))
+            assertTrue(rejected.await(2, TimeUnit.SECONDS))
+            sender.offer(1, false, byteArrayOf(7))
+            sender.offer(2, false, byteArrayOf(7))
+            sender.offer(3, true, byteArrayOf(7))
+            assertTrue(recovered.await(2, TimeUnit.SECONDS))
+            assertEquals(listOf(0L, 3L), stamps.toList())
+        } finally { sender.close() }
+    }
     @Test fun shortSendPausePreservesTheReferenceChain() {
         val entered = CountDownLatch(1); val release = CountDownLatch(1); val delivered = CountDownLatch(6)
         val requested = AtomicInteger(); val failures = AtomicInteger()
         val stamps = java.util.Collections.synchronizedList(mutableListOf<Long>())
         val sender = CallVideoSender({ stamp, _, _ ->
             if (stamp == 0L) { entered.countDown(); assertTrue(release.await(2, TimeUnit.SECONDS)) }
-            stamps.add(stamp); delivered.countDown()
+            stamps.add(stamp); delivered.countDown(); true
         }, { requested.incrementAndGet() }, { failures.incrementAndGet() })
         try {
             sender.offer(0, true, byteArrayOf(7))
@@ -60,24 +79,11 @@ class CallVideoTest {
             assertEquals(0, requested.get()); assertEquals(0, failures.get())
         } finally { release.countDown(); sender.close() }
     }
-    @Test fun rotationPreservesAspectAndFitsInsideTheView() {
-        for ((width, height) in listOf(640 to 480, 1280 to 720)) {
-            for ((viewWidth, viewHeight) in listOf(400 to 800, 800 to 400, 120 to 120)) {
-                for (rotation in listOf(0, 90, 180, 270)) {
-                    val bounds = android.graphics.RectF(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
-                    callVideoTransform(width, height, rotation, viewWidth, viewHeight).mapRect(bounds)
-                    val expected = if (rotation % 180 == 0) width.toFloat() / height else height.toFloat() / width
-                    assertEquals("$rotation degrees in $viewWidth x $viewHeight", expected, bounds.width() / bounds.height(), .001f)
-                    assertTrue(bounds.left >= -.01f && bounds.top >= -.01f && bounds.right <= viewWidth + .01f && bounds.bottom <= viewHeight + .01f)
-                }
-            }
-        }
-    }
     @Test fun cameraProducesLiveAv1AndStopsAfterClose() {
         val instrument = InstrumentationRegistry.getInstrumentation()
         instrument.uiAutomation.grantRuntimePermission(instrument.targetContext.packageName, android.Manifest.permission.CAMERA)
         val frames = AtomicInteger(); val failures = AtomicInteger(); val ready = CountDownLatch(12)
-        val camera = CallCamera(instrument.targetContext, true, { _, _, bytes -> assertTrue(bytes.size > 6); frames.incrementAndGet(); ready.countDown() }, { failures.incrementAndGet() })
+        val camera = CallCamera(instrument.targetContext, true, { _, _, bytes -> assertTrue(bytes.size > 6); frames.incrementAndGet(); ready.countDown(); true }, { failures.incrementAndGet() })
         try { assertTrue("Camera produced ${frames.get()} frames; ${failures.get()} failures", ready.await(15, TimeUnit.SECONDS)); assertEquals(0, failures.get()) }
         finally { camera.close() }
         Thread.sleep(400); val stopped = frames.get(); Thread.sleep(400); assertEquals(stopped, frames.get())
@@ -110,7 +116,7 @@ class CallVideoTest {
             })
         }
         assertTrue(ready.await(5, TimeUnit.SECONDS))
-        val camera = CallCamera(instrument.targetContext, true, { _, _, _ -> encoded.incrementAndGet() }, { failures.incrementAndGet() }, preview)
+        val camera = CallCamera(instrument.targetContext, true, { _, _, _ -> encoded.incrementAndGet(); true }, { failures.incrementAndGet() }, preview)
         try {
             assertTrue("Direct camera preview did not update", seen.await(10, TimeUnit.SECONDS))
             assertTrue("Encoding stopped while preview ran", encoded.get() >= 30)
@@ -164,6 +170,45 @@ class CallVideoTest {
             }
         } finally { decoder.close(); Thread.sleep(100); reader.close(); thread.quitSafely() }
     }
+    @Test fun directSurfacePreservesRotation() {
+        for (rotation in listOf(0, 90, 180, 270)) {
+            val ready = CountDownLatch(1)
+            lateinit var view: android.view.SurfaceView
+            ui.runOnUiThread {
+                view = android.view.SurfaceView(ui.activity)
+                view.holder.addCallback(object : android.view.SurfaceHolder.Callback {
+                    override fun surfaceCreated(holder: android.view.SurfaceHolder) { ready.countDown() }
+                    override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+                    override fun surfaceDestroyed(holder: android.view.SurfaceHolder) = Unit
+                })
+                val root = android.widget.FrameLayout(ui.activity)
+                root.addView(view, android.widget.FrameLayout.LayoutParams(if (rotation % 180 == 0) 640 else 480, if (rotation % 180 == 0) 480 else 640, android.view.Gravity.CENTER))
+                ui.activity.setContentView(root)
+            }
+            assertTrue(ready.await(3, TimeUnit.SECONDS))
+            val decoder = CallVideoDecoder(view.holder.surface, true, surfaceRotation = true, releaseSurface = false) { _, _, _ -> }
+            try {
+                CallEncoder(640, 480, rotation, 30, { time, key, bytes -> decoder.offer(time, key, bytes) }, { throw it }).use { encoder ->
+                    DrawSurface(encoder.surface).use { draw ->
+                        repeat(30) { draw.splitFrame(it); Thread.sleep(34) }
+                        Thread.sleep(100)
+                        val point = IntArray(2)
+                        ui.runOnUiThread { view.getLocationOnScreen(point) }
+                        val shot = requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
+                        try {
+                            val vertical = rotation % 180 != 0
+                            val first = shot.getPixel(point[0] + view.width / (if (vertical) 2 else 4), point[1] + view.height / (if (vertical) 4 else 2))
+                            val second = shot.getPixel(point[0] + view.width * (if (vertical) 2 else 3) / 4, point[1] + view.height * (if (vertical) 3 else 2) / 4)
+                            val redFirst = rotation == 0 || rotation == 90
+                            fun red(pixel: Int) = android.graphics.Color.red(pixel) > 150 && android.graphics.Color.green(pixel) < 100
+                            fun green(pixel: Int) = android.graphics.Color.green(pixel) > 150 && android.graphics.Color.red(pixel) < 100
+                            assertTrue("Rotation $rotation was distorted or blank: ${Integer.toHexString(first)}, ${Integer.toHexString(second)}", if (redFirst) red(first) && green(second) else green(first) && red(second))
+                        } finally { shot.recycle() }
+                    }
+                }
+            } finally { decoder.close(); Thread.sleep(100) }
+        }
+    }
     @Test fun hardwareAv1Sustains1080p60() { hardwareRoundTrip(1920, 1080) }
     @Test fun hardwareAv1Sustains4k60() { hardwareRoundTrip(3840, 2160) }
     private fun hardwareRoundTrip(width: Int, height: Int) {
@@ -191,6 +236,31 @@ class CallVideoTest {
                     assertTrue("Capture could not sustain 60 fps: $elapsed ms", elapsed < 11000)
                     assertTrue("Only ${encoded.get()} encoded frames", encoded.get() >= 590)
                     assertTrue("Only ${decoded.get()} decoded frames", decoded.get() >= 570)
+                    assertEquals(0, failures.get())
+                }
+            }
+        } finally { decoder.close(); Thread.sleep(100); reader.close(); thread.quitSafely() }
+    }
+    @Test fun laterKeyframeStartsAFreshDecoder() {
+        val thread = HandlerThread("Late decoder acceptance").apply { start() }
+        val decoded = CountDownLatch(10); val failures = AtomicInteger(); val encoded = AtomicInteger()
+        val reader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 3)
+        reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { decoded.countDown() } }, Handler(thread.looper))
+        val decoder = CallVideoDecoder(reader.surface, false) { _, _, _ -> }
+        var admitted = false
+        try {
+            CallEncoder(640, 480, 0, 30, { timestamp, keyframe, bytes ->
+                val count = encoded.incrementAndGet()
+                if (count >= 60 && keyframe) admitted = true
+                if (admitted) decoder.offer(timestamp, keyframe, bytes)
+            }, { failures.incrementAndGet() }).use { encoder ->
+                DrawSurface(encoder.surface).use { draw ->
+                    repeat(150) { index ->
+                        if (index == 65) encoder.requestKeyframe()
+                        draw.frame(index, 30)
+                        Thread.sleep(33)
+                    }
+                    assertTrue("A later keyframe did not initialize a fresh decoder", decoded.await(3, TimeUnit.SECONDS))
                     assertEquals(0, failures.get())
                 }
             }
@@ -227,6 +297,14 @@ internal class DrawSurface(surface: Surface) : AutoCloseable {
         context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT, intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0)
         target = EGL14.eglCreateWindowSurface(display, configs[0], surface, intArrayOf(EGL14.EGL_NONE), 0)
         check(EGL14.eglMakeCurrent(display, target, target, context))
+    }
+    fun splitFrame(index: Int) {
+        GLES20.glEnable(GLES20.GL_SCISSOR_TEST)
+        GLES20.glScissor(0, 0, 320, 480); GLES20.glClearColor(1f, 0f, 0f, 1f); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        GLES20.glScissor(320, 0, 320, 480); GLES20.glClearColor(0f, 1f, 0f, 1f); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+        EGLExt.eglPresentationTimeANDROID(display, target, index * 1_000_000_000L / 30)
+        check(EGL14.eglSwapBuffers(display, target))
     }
     fun frame(index: Int, fps: Int = 25) { GLES20.glClearColor((index % 3) / 2f, .3f, .7f, 1f); GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT); EGLExt.eglPresentationTimeANDROID(display, target, index * 1_000_000_000L / fps); check(EGL14.eglSwapBuffers(display, target)) }
     override fun close() { EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT); EGL14.eglDestroySurface(display, target); EGL14.eglDestroyContext(display, context); EGL14.eglReleaseThread(); EGL14.eglTerminate(display) }

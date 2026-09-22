@@ -1,7 +1,6 @@
 package org.sigil.compose
 
 import android.content.Context
-import android.graphics.Matrix
 import android.hardware.camera2.*
 import android.media.*
 import android.os.*
@@ -95,12 +94,17 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
         worker = Thread({
             val info = MediaCodec.BufferInfo()
             var counted = 0L; var since = android.os.SystemClock.elapsedRealtime()
+            var keys = 0; var configs = 0; var partials = 0; var largest = 0
             try {
                 while (running.get()) {
                     if (keyframeRequested.getAndSet(false)) codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
                     val index = codec.dequeueOutputBuffer(info, 10000)
                     if (index < 0) continue
                     try {
+                        if (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) keys++
+                        if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) configs++
+                        if (info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME != 0) partials++
+                        largest = maxOf(largest, info.size)
                         if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
                             require(info.size <= 1024 * 1024 - VIDEO_HEADER)
                             val bytes = ByteArray(info.size + VIDEO_HEADER)
@@ -110,7 +114,7 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
                                 send(info.presentationTimeUs.coerceAtLeast(0), info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, bytes)
                                 counted++
                                 val at = android.os.SystemClock.elapsedRealtime()
-                                if (at - since >= 5000) { android.util.Log.i("SigilTiming", "video out fps=${counted * 1000 / (at - since)}"); counted = 0; since = at }
+                                if (at - since >= 5000) { android.util.Log.i("SigilTiming", "video out fps=${counted * 1000 / (at - since)} keys=$keys configs=$configs partials=$partials largest=$largest"); counted = 0; keys = 0; configs = 0; partials = 0; largest = 0; since = at }
                             } finally { bytes.fill(0) }
                         }
                     } finally { codec.releaseOutputBuffer(index, false) }
@@ -122,19 +126,24 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
     override fun close() { running.set(false); worker.interrupt() }
 }
 // Six frames cover the existing 100 ms age limit at 60 fps; gaps require a fresh keyframe.
-internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> Unit, private val requestKeyframe: () -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
+internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> Boolean, private val requestKeyframe: () -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
     private data class Pending(val stamp: Long, val key: Boolean, val bytes: ByteArray, val added: Long)
     private val queue = ArrayBlockingQueue<Pending>(6)
     private val running = AtomicBoolean(true)
     private var waitingKey = true
     private var skipped = 0L
+    private var repairAt = 0L
+    private fun repair() {
+        val now = System.nanoTime()
+        if (repairAt == 0L || now - repairAt >= 200_000_000L) { repairAt = now; requestKeyframe() }
+    }
     private fun clear() { while (true) (queue.poll() ?: break).bytes.fill(0) }
     @Synchronized fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
         if (!running.get()) return
-        if (waitingKey && !keyframe) { skipped++; return }
+        if (waitingKey && !keyframe) { skipped++; repair(); return }
         if (queue.remainingCapacity() == 0) {
             skipped += queue.size
-            clear(); waitingKey = true; requestKeyframe()
+            clear(); waitingKey = true; repair()
         }
         if (waitingKey && !keyframe) return
         waitingKey = false
@@ -150,10 +159,13 @@ internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> U
                     val started = System.nanoTime()
                     ageMax = maxOf(ageMax, started - packet.added)
                     if (started - packet.added > 100_000_000L) {
-                        synchronized(this) { skipped += queue.size + 1; clear(); waitingKey = true; requestKeyframe() }
+                        synchronized(this) { skipped += queue.size + 1; clear(); waitingKey = true; repair() }
                         continue
                     }
-                    send(packet.stamp, packet.key, packet.bytes)
+                    if (!send(packet.stamp, packet.key, packet.bytes)) {
+                        synchronized(this) { skipped += queue.size + 1; clear(); waitingKey = true; repair() }
+                        continue
+                    }
                     val finished = System.nanoTime()
                     sendMax = maxOf(sendMax, finished - started); sent++
                     if (finished - since >= 5_000_000_000L) {
@@ -175,13 +187,14 @@ internal class CallCameraPreview(private val texture: android.graphics.SurfaceTe
     fun restoreSize() { size?.let { texture.setDefaultBufferSize(it.width, it.height) } }
     override fun close() = surface.release()
 }
-internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Unit, private val failed: () -> Unit, private val preview: CallCameraPreview? = null) : AutoCloseable {
+internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Boolean, private val failed: () -> Unit, private val preview: CallCameraPreview? = null) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val thread = HandlerThread("Sigil camera").apply { start() }
     private val handler = Handler(thread.looper)
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     @Volatile private var encoder: CallEncoder? = null
+    fun requestKeyframe() { encoder?.requestKeyframe() }
     private val outgoing = CallVideoSender(send, { encoder?.requestKeyframe() }, { error ->
         android.util.Log.e("SigilTiming", "camera send failed", error)
         if (running.get()) failed()
@@ -271,17 +284,7 @@ private data class VideoPacket(val timestamp: Long, val keyframe: Boolean, val b
 /// from ours before the schedule is taken again from the frame in hand.
 private const val LEAD = 30_000_000L
 private const val SLIP = 100_000_000L
-internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidth: Int, viewHeight: Int): Matrix {
-    val sideways = rotation == 90 || rotation == 270
-    val aspect = if (sideways) height.toFloat() / width else width.toFloat() / height
-    val display = viewWidth.toFloat() / viewHeight
-    return Matrix().apply {
-        setRotate(rotation.toFloat(), viewWidth / 2f, viewHeight / 2f)
-        if (sideways) postScale(viewWidth.toFloat() / viewHeight, viewHeight.toFloat() / viewWidth, viewWidth / 2f, viewHeight / 2f)
-        postScale(if (aspect < display) aspect / display else 1f, if (aspect > display) display / aspect else 1f, viewWidth / 2f, viewHeight / 2f)
-    }
-}
-internal class CallVideoDecoder(private val surface: Surface, private val paced: Boolean, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
+internal class CallVideoDecoder(private val surface: Surface, private val paced: Boolean, private val surfaceRotation: Boolean = false, private val releaseSurface: Boolean = true, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
     @Volatile var requestKeyframe: () -> Unit = {}
     private var requestedAt = 0L
     @Synchronized private fun needKeyframe() {
@@ -296,6 +299,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         var dimensions: Size? = null
         var adaptiveLimit: Size? = null
         var rendered: Triple<Int, Int, Int>? = null
+        var decodingRotation = 0
         var outputWait = 0L
         var lastTimestamp = Long.MIN_VALUE
         var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
@@ -368,8 +372,9 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                     val size = Size(width, height)
                     val limit = adaptiveLimit
                     val resize = size != dimensions
-                    if (resize && !keyframe) { needKeyframe(); continue }
-                    if (codec == null || wire != decoding || (resize && (limit == null || width > limit.width || height > limit.height))) {
+                    val rotate = surfaceRotation && rotation != decodingRotation
+                    if ((resize || rotate) && !keyframe) { needKeyframe(); continue }
+                    if (codec == null || wire != decoding || rotate || (resize && (limit == null || width > limit.width || height > limit.height))) {
                         if (!keyframe) { needKeyframe(); continue }
                         reset()
                         val chosen = callVideoDecoder(mime)
@@ -383,13 +388,14 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                         codec = chosen?.let { MediaCodec.createByCodecName(it.name) } ?: MediaCodec.createDecoderByType(mime)
                         val format = MediaFormat.createVideoFormat(mime, width, height).apply {
                             setInteger(MediaFormat.KEY_PRIORITY, 0)
+                            if (surfaceRotation) setInteger(MediaFormat.KEY_ROTATION, rotation)
                             setInteger(MediaFormat.KEY_OPERATING_RATE, 60)
                             adaptiveLimit?.let { setInteger(MediaFormat.KEY_MAX_WIDTH, it.width); setInteger(MediaFormat.KEY_MAX_HEIGHT, it.height) }
                             if (Build.VERSION.SDK_INT >= 30 && chosen?.getCapabilitiesForType(mime)?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
                                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                             }
                         }
-                        codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size; decoding = wire
+                        codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size; decoding = wire; decodingRotation = rotation
                     }
                     dimensions = size
                     val shape = Triple(width, height, rotation)
@@ -416,7 +422,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
             }
         } catch (_: InterruptedException) { }
         catch (_: Exception) { }
-        finally { synchronized(queue) { running.set(false); drain() }; reset("closed"); surface.release() }
+        finally { synchronized(queue) { running.set(false); drain() }; reset("closed"); if (releaseSurface) surface.release() }
     }, "Sigil video decoder").apply { start() }
     private var offered = 0L
     private var awaitingKey = false
@@ -452,37 +458,39 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
     var aspect by remember(member, screen) { mutableStateOf(16f / 9f) }
     DisposableEffect(member, screen) { onDispose { release() } }
     org.sigil.CallVideoFrame(aspect, member == "self", modifier) { fitted ->
+    if (member != "self" || screen) {
+        AndroidView(factory = { context -> SurfaceView(context).apply {
+            holder.addCallback(object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    val target = this@apply
+                    decoder = CallVideoDecoder(holder.surface, member != "self", surfaceRotation = true, releaseSurface = false) { w, h, rotation ->
+                        target.post {
+                            if (holder.surface.isValid) aspect = if (rotation % 180 == 0) w.toFloat() / h else h.toFloat() / w
+                        }
+                    }
+                    calls.videoOutput(member, screen, decoder)
+                }
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) = Unit
+                override fun surfaceDestroyed(holder: SurfaceHolder) { release() }
+            })
+        } }, modifier = fitted)
+    } else {
     AndroidView(factory = { context -> TextureView(context).apply {
         isOpaque = false
         surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            private var geometry: Triple<Int, Int, Int>? = null
-            private fun resize() {
-                val (w, h, rotation) = geometry ?: return
-                val target = this@apply
-                if (target.width <= 0 || target.height <= 0) return
-                // Camera TextureView buffers already carry producer rotation and front-camera mirroring.
-                target.setTransform(if (member == "self" && !screen) Matrix() else callVideoTransform(w, h, rotation, target.width, target.height))
-            }
             override fun onSurfaceTextureAvailable(texture: android.graphics.SurfaceTexture, width: Int, height: Int) {
                 val target = this@apply
                 val measured = { w: Int, h: Int, rotation: Int -> target.post {
                     if (target.surfaceTexture === texture) {
                         aspect = if (rotation % 180 == 0) w.toFloat() / h else h.toFloat() / w
-                        geometry = Triple(w, h, rotation); resize()
                     }
                 }; Unit }
-                if (member == "self" && !screen) {
-                    preview = CallCameraPreview(texture, measured)
-                    calls.cameraPreview(preview)
-                } else {
-                    decoder = CallVideoDecoder(Surface(texture), member != "self", measured)
-                    calls.videoOutput(member, screen, decoder)
-                }
+                preview = CallCameraPreview(texture, measured)
+                calls.cameraPreview(preview)
             }
             override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, width: Int, height: Int) {
                 // TextureView resets the buffer to its widget dimensions during layout.
                 preview?.restoreSize()
-                resize()
             }
             override fun onSurfaceTextureDestroyed(texture: android.graphics.SurfaceTexture): Boolean {
                 release()
@@ -491,12 +499,12 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
             private var frames = 0
             private var since = SystemClock.elapsedRealtime()
             override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) {
-                if (member != "self" || screen) return
                 frames++
                 val now = SystemClock.elapsedRealtime()
                 if (now - since >= 5000) { android.util.Log.i("SigilTiming", "video preview fps=${frames * 1000 / (now - since)}"); frames = 0; since = now }
             }
         }
     } }, modifier = fitted)
+    }
     }
 }
