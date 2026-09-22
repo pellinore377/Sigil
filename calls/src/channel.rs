@@ -59,6 +59,31 @@ impl Packet {
     }
 }
 
+const KEY_REQUEST: &[u8; 5] = b"SGKR\x01";
+/// A receiver's explicit request for a keyframe from one sender's video track. Browsers send
+/// this instead of RTCP, which Chrome also emits on its own for tracks it never decodes.
+pub fn key_request(sender: Id, kind: MediaKind) -> Result<Vec<u8>, Error> {
+    if sender == [0; 32] || kind == MediaKind::Audio {
+        return Err(Error::Invalid);
+    }
+    let mut bytes = KEY_REQUEST.to_vec();
+    bytes.push(kind as u8);
+    bytes.extend_from_slice(&sender);
+    Ok(bytes)
+}
+pub fn decode_key_request(bytes: &[u8]) -> Option<(Id, MediaKind)> {
+    if bytes.len() != 38 || &bytes[..5] != KEY_REQUEST {
+        return None;
+    }
+    let kind = match bytes[5] {
+        1 => MediaKind::Camera,
+        2 => MediaKind::Screen,
+        _ => return None,
+    };
+    let sender: Id = bytes[6..].try_into().ok()?;
+    (sender != [0; 32]).then_some((sender, kind))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +120,22 @@ mod tests {
         packet.payload = vec![1].into();
         packet.sender = [0; 32];
         assert!(packet.encode().is_err());
+    }
+    #[test]
+    fn key_requests_name_one_video_track_and_never_parse_as_media() {
+        let bytes = key_request([3; 32], MediaKind::Screen).unwrap();
+        assert_eq!(decode_key_request(&bytes), Some(([3; 32], MediaKind::Screen)));
+        assert!(Packet::decode(&bytes).is_err());
+        assert!(key_request([3; 32], MediaKind::Audio).is_err());
+        assert!(key_request([0; 32], MediaKind::Camera).is_err());
+        for (index, value) in [(0, 0), (4, 2), (5, 0), (5, 3)] {
+            let mut bad = bytes.clone();
+            bad[index] = value;
+            assert_eq!(decode_key_request(&bad), None);
+        }
+        assert_eq!(decode_key_request(&bytes[..37]), None);
+        let mut zero = bytes.clone();
+        zero[6..].fill(0);
+        assert_eq!(decode_key_request(&zero), None);
     }
 }

@@ -120,11 +120,9 @@ impl PeerConnectionEventHandler for Handler {
 }
 struct Transport {
     pc: Arc<dyn PeerConnection>,
-    packets: mpsc::Receiver<Packet>,
     gathered: mpsc::Receiver<()>,
     connection: Arc<AtomicU8>,
     runtime: tokio::runtime::Handle,
-    key_requests: KeyRequests,
     encoder_requests: Arc<AtomicU8>,
 }
 impl Drop for Transport {
@@ -153,16 +151,112 @@ pub struct RtcCall {
     transport: Transport,
     media: Media,
     roster: Id,
-    streams: Vec<Downstream>,
+    send: Option<RtcSend>,
+    receive: Option<RtcReceive>,
+}
+/// Per-frame send state. Holds no storage; authority comes from the caller's `FrameCrypto`.
+pub struct RtcSend {
     uploads: Vec<Arc<TrackLocalStaticRTP>>,
     sequence: [u16; 3],
+    connection: Arc<AtomicU8>,
+}
+/// Per-frame receive state. Holds no storage; authority comes from the caller's `FrameCrypto`.
+pub struct RtcReceive {
+    packets: mpsc::Receiver<Packet>,
+    held: Option<Packet>,
+    runtime: tokio::runtime::Handle,
+    key_requests: KeyRequests,
+    streams: Vec<Downstream>,
     incoming: std::collections::BTreeMap<u32, packet_order::PacketOrder<Packet>>,
     video_gaps: std::collections::BTreeSet<u32>,
     ready: ready_frames::ReadyFrames,
     camera_assembly: std::collections::BTreeMap<u32, sigil_calls::av1::Assembly>,
+    assembly: sigil_calls::Assembly,
     ready_cursor: usize,
     incoming_cursor: usize,
     tally: Tally,
+}
+/// Seals and opens frames under whatever authority its owner holds.
+pub trait FrameCrypto {
+    /// Whether frames may flow now; checked before any packet is consumed.
+    fn ready(&mut self) -> Result<(), Error>;
+    fn seal(&mut self, kind: MediaKind, timestamp: u64, keyframe: bool, bytes: &[u8]) -> Result<Vec<u8>, Error>;
+    fn open(&mut self, sender: Id, kind: MediaKind, bytes: &[u8]) -> Result<sigil_calls::Frame, Error>;
+}
+/// Authority read from storage on the frame path; tests and single-threaded hosts.
+struct Stored<'a> {
+    store: &'a mut ClientStore,
+    media: &'a mut Media,
+    connection: &'a AtomicU8,
+    roster: Id,
+    now: u64,
+}
+impl FrameCrypto for Stored<'_> {
+    fn ready(&mut self) -> Result<(), Error> {
+        if self.store.rtc_connection_check(self.media, self.roster, self.connection, self.now)? != "connected" {
+            return Err(Error::Unprepared);
+        }
+        self.store.checked_call_media(self.media, self.now).map(|_| ())
+    }
+    fn seal(&mut self, kind: MediaKind, timestamp: u64, keyframe: bool, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        self.store.seal_call_frame(self.media, kind, timestamp, keyframe, bytes, self.now)
+    }
+    fn open(&mut self, sender: Id, kind: MediaKind, bytes: &[u8]) -> Result<sigil_calls::Frame, Error> {
+        self.store.open_call_frame(self.media, sender, kind, bytes, self.now)
+    }
+}
+/// Authority published by a store owner on another thread. Frames never touch storage;
+/// a lapsed deadline refuses them until the owner publishes again.
+#[derive(Default)]
+pub struct MediaGate {
+    processor: MediaProcessor,
+    until: Option<std::time::Instant>,
+    renew: Option<sigil_calls::Context>,
+}
+impl MediaGate {
+    pub fn publish(&mut self, update: MediaUpdate, lifetime: Duration) -> Result<(), Error> {
+        self.processor.apply(update)?;
+        self.until = Some(std::time::Instant::now() + lifetime);
+        Ok(())
+    }
+    pub fn revoke(&mut self) {
+        self.until = None;
+    }
+    fn live(&self, now: u64) -> Result<Id, Error> {
+        if !self.until.is_some_and(|until| std::time::Instant::now() < until) || !self.processor.is_live(now) {
+            return Err(Error::Unprepared);
+        }
+        self.processor.context().map(|c| c.call).ok_or(Error::Unprepared)
+    }
+}
+/// Locks the gate per frame only, for microseconds of signing or verification.
+pub struct GateCrypto<'a> {
+    pub gate: &'a std::sync::Mutex<MediaGate>,
+    pub now: u64,
+}
+impl GateCrypto<'_> {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, MediaGate>, Error> {
+        self.gate.lock().map_err(|_| Error::Unprepared)
+    }
+}
+impl FrameCrypto for GateCrypto<'_> {
+    fn ready(&mut self) -> Result<(), Error> {
+        self.lock()?.live(self.now).map(|_| ())
+    }
+    fn seal(&mut self, kind: MediaKind, timestamp: u64, keyframe: bool, bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        let mut gate = self.lock()?;
+        let call = gate.live(self.now)?;
+        let result = gate.processor.seal(call, kind, timestamp, keyframe, bytes, self.now);
+        if matches!(result, Err(Error::Expired)) {
+            gate.renew = gate.processor.context();
+        }
+        result
+    }
+    fn open(&mut self, sender: Id, kind: MediaKind, bytes: &[u8]) -> Result<sigil_calls::Frame, Error> {
+        let mut gate = self.lock()?;
+        let call = gate.live(self.now)?;
+        gate.processor.open(call, sender, kind, bytes, self.now)
+    }
 }
 /// Counts only, so a silent direction can be traced to the step that discards it.
 #[derive(Default)]
@@ -217,26 +311,257 @@ impl RtcCall {
     pub fn take_video_requests(&self) -> u8 {
         self.transport.encoder_requests.swap(0, Ordering::Relaxed)
     }
+    /// Remote recovery requests, readable without the owner of this call.
+    pub fn video_requests(&self) -> Arc<AtomicU8> {
+        self.transport.encoder_requests.clone()
+    }
     /// A newly attached or reset decoder needs an authenticated keyframe.
+    pub fn request_video_keyframe(&mut self, sender: Id, kind: MediaKind) {
+        if let Some(receive) = self.receive.as_mut() { receive.request_video_keyframe(sender, kind); }
+    }
+    /// Queue readiness only; callers must still authorize through rtc_receive before delivery.
+    pub fn has_pending_receive(&self) -> bool {
+        self.receive.as_ref().is_some_and(RtcReceive::has_pending)
+    }
+    /// Hands the frame paths to other threads; the store owner keeps connection and authority.
+    pub fn detach(&mut self) -> Option<(RtcSend, RtcReceive)> {
+        Some((self.send.take()?, self.receive.take()?))
+    }
+    /// The media handle outlives the transport: a rebuild reuses it through `connect_rtc_call_with`.
+    pub fn into_media(self) -> Media {
+        self.media
+    }
+}
+impl RtcSend {
+    pub fn connected(&self) -> bool {
+        self.connection.load(Ordering::Relaxed) == 1
+    }
+    /// Seals and reserves sequence numbers; transmission happens after the caller releases this.
+    pub fn prepare(
+        &mut self,
+        crypto: &mut impl FrameCrypto,
+        kind: MediaKind,
+        timestamp: u64,
+        keyframe: bool,
+        encoded: &[u8],
+    ) -> Result<RtcTransmission, Error> {
+        if !self.connected() {
+            return Err(Error::Unprepared);
+        }
+        let index = kind as usize;
+        let sealed = crypto.seal(kind, timestamp, keyframe, encoded)?;
+        let packets = if kind == MediaKind::Camera {
+            sigil_calls::av1::packetize(&sealed, keyframe)
+        } else {
+            sigil_calls::packetize(kind, &sealed)
+        }
+        .map_err(failure)?;
+        let mut wire = Vec::with_capacity(packets.len());
+        for (n, payload) in packets.iter().enumerate() {
+            wire.push(rtc::rtp::packet::Packet {
+                header: rtc::rtp::header::Header {
+                    version: 2,
+                    marker: n + 1 == packets.len(),
+                    payload_type: if index == 0 { 111 } else { 41 },
+                    sequence_number: self.sequence[index],
+                    timestamp: (timestamp.wrapping_mul(if index == 0 { 48 } else { 90 }) / 1000) as u32,
+                    ssrc: index as u32 + 1,
+                    ..Default::default()
+                },
+                payload: payload.clone().into(),
+            });
+            self.sequence[index] = self.sequence[index].wrapping_add(1);
+        }
+        Ok(RtcTransmission { track: self.uploads[index].clone(), packets: wire })
+    }
+}
+impl RtcReceive {
+    pub fn has_pending(&self) -> bool {
+        self.held.is_some()
+            || !self.packets.is_empty()
+            || !self.ready.is_empty()
+            || self.incoming.values().any(|queue| !queue.is_empty())
+    }
+    /// Blocks until a packet arrives or `timeout` passes; call from outside the async runtime.
+    pub fn wait(&mut self, timeout: Duration) -> bool {
+        if self.has_pending() {
+            return true;
+        }
+        let packets = &mut self.packets;
+        self.held = self.runtime.block_on(async { tokio::time::timeout(timeout, packets.recv()).await.ok().flatten() });
+        self.held.is_some()
+    }
     pub fn request_video_keyframe(&mut self, sender: Id, kind: MediaKind) {
         if kind == MediaKind::Audio { return; }
         for stream in &self.streams {
             if stream.track.sender == sender && stream.track.kind == kind {
                 self.video_gaps.insert(stream.ssrc);
-                if let Ok(mut requests) = self.transport.key_requests.lock() { requests.insert(stream.ssrc); }
+                if let Ok(mut requests) = self.key_requests.lock() { requests.insert(stream.ssrc); }
             }
         }
     }
-
-    /// Queue readiness only; callers must still authorize through rtc_receive before delivery.
-    pub fn has_pending_receive(&self) -> bool {
-        !self.transport.packets.is_empty()
-            || !self.ready.is_empty()
-            || self.incoming.values().any(|queue| !queue.is_empty())
-    }
-    /// The media handle outlives the transport: a rebuild reuses it through `connect_rtc_call_with`.
-    pub fn into_media(self) -> Media {
-        self.media
+    /// Assembles, authenticates and orders frames; nothing is consumed while `crypto` refuses.
+    pub fn receive(&mut self, crypto: &mut impl FrameCrypto) -> Result<Vec<ReceivedFrame>, Error> {
+        if let Err(error) = crypto.ready() {
+            self.tally.stalled += 1;
+            if self.tally.stalled % 50 == 1 {
+                crate::perf::note(format!("call rx stalled={} {error:?}", self.tally.stalled));
+            }
+            return Err(error);
+        }
+        let mut frames = Vec::new();
+        let mut bytes = 0;
+        let clock = crate::clock::Instant::now();
+        for _ in 0..128 {
+            let Some(packet) = self.held.take().or_else(|| self.packets.try_recv().ok()) else {
+                break;
+            };
+            self.tally.packets += 1;
+            if self.streams.iter().any(|s| s.ssrc == packet.ssrc) {
+                self.incoming
+                    .entry(packet.ssrc)
+                    .or_default()
+                    .push(packet.sequence, packet, clock);
+            } else {
+                self.tally.unknown += 1;
+            }
+        }
+        for _ in 0..128 {
+            let mut candidate = None;
+            for _ in 0..self.streams.len() {
+                let stream = &self.streams[self.incoming_cursor];
+                self.incoming_cursor = (self.incoming_cursor + 1) % self.streams.len();
+                // Drain complete frames before assembling more from a burst. Overflow here
+                // used to discard reference frames before the decoder ever had a chance.
+                if self.ready.full(stream.ssrc, stream.track.kind == MediaKind::Audio) {
+                    continue;
+                }
+                let ssrc = stream.ssrc;
+                // Give video retransmission one bounded round trip before discarding references.
+                let repair_wait = Duration::from_millis(if stream.track.kind == MediaKind::Audio { 40 } else { 120 });
+                if let Some(packet) = self.incoming.get_mut(&ssrc).and_then(|q| q.pop(clock, repair_wait)) {
+                    candidate = Some(packet);
+                    break;
+                }
+            }
+            let Some((packet, gap)) = candidate else {
+                break;
+            };
+            let stream = self
+                .streams
+                .iter()
+                .find(|s| s.ssrc == packet.ssrc)
+                .ok_or(Error::InvalidStore)?;
+            if gap && stream.track.kind != MediaKind::Audio {
+                self.ready.clear(packet.ssrc);
+                self.video_gaps.insert(packet.ssrc);
+            }
+            let assembled = if stream.track.kind == MediaKind::Camera {
+                self.camera_assembly.entry(packet.ssrc).or_default()
+                    .push(packet.sequence, packet.timestamp, packet.marker, &packet.payload).map_err(failure)
+            } else { self.assembly.push(stream.track.sender, stream.track.kind, &packet.payload, clock).map_err(failure) };
+            match assembled {
+                Ok(Some(encrypted)) => {
+                    self.tally.assembled += 1;
+                    if self.ready.push(
+                        packet.ssrc,
+                        stream.track.kind == MediaKind::Audio,
+                        encrypted,
+                        clock,
+                    ) && stream.track.kind != MediaKind::Audio
+                    {
+                        self.video_gaps.insert(packet.ssrc);
+                    }
+                }
+                Ok(None) => (),
+                Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
+                    self.tally.rejected += 1;
+                    if self.tally.rejected % 200 == 1 {
+                        // The leading bytes tell a sealed packet apart from a bare codec frame.
+                        let head: String = packet
+                            .payload
+                            .iter()
+                            .take(6)
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
+                        crate::perf::note(format!(
+                            "call rx reject kind={:?} len={} head={head}",
+                            stream.track.kind,
+                            packet.payload.len()
+                        ));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        for _ in 0..128 {
+            let mut candidate = None;
+            for _ in 0..self.streams.len() {
+                let stream = &self.streams[self.ready_cursor];
+                self.ready_cursor = (self.ready_cursor + 1) % self.streams.len();
+                let (encrypted, dropped) = self.ready.pop(stream.ssrc, clock);
+                if dropped && stream.track.kind != MediaKind::Audio {
+                    self.video_gaps.insert(stream.ssrc);
+                }
+                if let Some(encrypted) = encrypted {
+                    candidate = Some((stream, encrypted));
+                    break;
+                }
+            }
+            let Some((stream, encrypted)) = candidate else {
+                break;
+            };
+            match crypto.open(stream.track.sender, stream.track.kind, &encrypted) {
+                Ok(frame) => {
+                    self.tally.opened += 1;
+                    if !self.video_gaps.contains(&stream.ssrc) || frame.keyframe {
+                        self.video_gaps.remove(&stream.ssrc);
+                        bytes += frame.data.len();
+                        frames.push(ReceivedFrame {
+                            sender: stream.track.sender,
+                            frame,
+                        });
+                        self.tally.delivered[stream.track.kind as usize] += 1;
+                    } else {
+                        self.tally.waiting_key += 1;
+                    }
+                }
+                Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => {
+                    self.tally.refused += 1;
+                    if stream.track.kind != MediaKind::Audio {
+                        self.video_gaps.insert(stream.ssrc);
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+            if bytes >= 4 * 1024 * 1024 || clock.elapsed() >= Duration::from_millis(8) {
+                break;
+            }
+        }
+        // Request keyframes only while starting or recovering a damaged dependency
+        // chain. Healthy streams keep their cadence and bitrate for delta frames.
+        if let Ok(mut requests) = self.key_requests.lock() {
+            requests.clone_from(&self.video_gaps);
+        }
+        let due = self
+            .tally
+            .reported
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(1));
+        if due && self.tally.packets > 0 {
+            self.tally.reported = Some(crate::clock::Instant::now());
+            crate::perf::note(format!(
+                "call rx packets={} unknown={} assembled={} rejected={} opened={} refused={} delivered={:?} waiting_key={}",
+                self.tally.packets,
+                self.tally.unknown,
+                self.tally.assembled,
+                self.tally.rejected,
+                self.tally.opened,
+                self.tally.refused,
+                self.tally.delivered,
+                self.tally.waiting_key
+            ));
+        }
+        Ok(frames)
     }
 }
 impl ClientStore {
@@ -324,11 +649,9 @@ impl ClientStore {
             .map_err(|_| Error::Unprepared)?;
         let mut transport = Transport {
             pc: Arc::new(pc),
-            packets: packet_rx,
             gathered: gather_rx,
             connection,
             runtime: tokio::runtime::Handle::current(),
-            key_requests,
             encoder_requests,
         };
         let mut uploads = Vec::new();
@@ -460,25 +783,36 @@ impl ClientStore {
             )
             .await
             .map_err(|_| Error::Unprepared)?;
-        Ok(RtcCall {
-            transport,
-            media,
-            roster: answer.roster,
+        let receive = RtcReceive {
+            packets: packet_rx,
+            held: None,
+            runtime: transport.runtime.clone(),
+            key_requests,
             video_gaps: answer.streams.iter().filter(|s| s.track.kind != MediaKind::Audio).map(|s| s.ssrc).collect(),
             streams: answer.streams,
-            uploads,
-            sequence: [0; 3],
             incoming: Default::default(),
             ready: Default::default(),
             camera_assembly: Default::default(),
+            assembly: Default::default(),
             ready_cursor: 0,
             incoming_cursor: 0,
             tally: Tally::default(),
-        })
+        };
+        let send = RtcSend { uploads, sequence: [0; 3], connection: transport.connection.clone() };
+        Ok(RtcCall { transport, media, roster: answer.roster, send: Some(send), receive: Some(receive) })
     }
     pub fn rtc_connection_state(
         &mut self,
         call: &RtcCall,
+        now: u64,
+    ) -> Result<&'static str, Error> {
+        self.rtc_connection_check(&call.media, call.roster, &call.transport.connection, now)
+    }
+    fn rtc_connection_check(
+        &mut self,
+        media: &Media,
+        roster: Id,
+        connection: &AtomicU8,
         now: u64,
     ) -> Result<&'static str, Error> {
         // data_version observes commits from other connections; total_changes observes this
@@ -488,12 +822,12 @@ impl ClientStore {
         if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.revision", stage); }
         let changes = self.db.total_changes();
         let current = self.db.is_autocommit() && self.rtc_authority.as_ref().is_some_and(|checked|
-            checked.call == call.media.call && checked.lease == call.media.lease
+            checked.call == media.call && checked.lease == media.lease
                 && checked.version == version && checked.changes == changes
                 && checked.checked.elapsed() < Duration::from_millis(200)
                 && now.saturating_add(sigil_calls::CLOCK_SKEW) >= checked.created && now < checked.expires
         );
-        let roster = if current {
+        let checked_roster = if current {
             self.rtc_authority.as_ref().ok_or(Error::Unprepared)?.roster
         } else {
             self.rtc_authority = None;
@@ -501,15 +835,15 @@ impl ClientStore {
             // Read the call and its peer proofs from one snapshot. Releasing the reader
             // between queries repeatedly waits behind unrelated durable commits.
             let snapshot = self.db.is_autocommit().then(|| self.db.unchecked_transaction()).transpose()?;
-            let record = load(&self.db, &self.key, &call.media.call)?;
+            let record = load(&self.db, &self.key, &media.call)?;
             record.authorize(&self.db, &self.key, now)?;
             if stage.elapsed().as_millis() >= 10 { crate::perf::mark("call.connection_authority", stage); }
-            if record.lease != call.media.lease { return Err(Error::Obsolete); }
+            if record.lease != media.lease { return Err(Error::Obsolete); }
             let roster = record.state.roster.roster.digest().map_err(failure)?;
             if let Some(snapshot) = snapshot { snapshot.commit()?; }
             if self.db.is_autocommit() {
                 self.rtc_authority = Some(RtcAuthority {
-                    call: call.media.call, lease: call.media.lease, roster,
+                    call: media.call, lease: media.lease, roster,
                     created: record.state.roster.roster.created,
                     expires: record.state.roster.roster.expires,
                     version, changes, checked: stage,
@@ -517,10 +851,10 @@ impl ClientStore {
             }
             roster
         };
-        if roster != call.roster {
+        if checked_roster != roster {
             return Ok("reconnect");
         }
-        Ok(match call.transport.connection.load(Ordering::Relaxed) {
+        Ok(match connection.load(Ordering::Relaxed) {
             1 => "connected",
             2 => "disconnected",
             3 => "failed",
@@ -537,6 +871,45 @@ impl ClientStore {
             Ok(_) | Err(Error::Unprepared) => Ok("securing"),
             Err(error) => Err(error),
         }
+    }
+    /// Publishes this owner's authority to detached frame paths and reports the call state.
+    /// Anything but a connected, keyed call revokes the gate at once rather than at its deadline.
+    pub fn rtc_publish(
+        &mut self,
+        call: &mut RtcCall,
+        gate: &std::sync::Mutex<MediaGate>,
+        lifetime: Duration,
+        now: u64,
+    ) -> Result<&'static str, Error> {
+        let result = self.rtc_publish_with(call, gate, lifetime, now);
+        if !matches!(result, Ok("connected")) {
+            if let Ok(mut gate) = gate.lock() { gate.revoke(); }
+        }
+        result
+    }
+    fn rtc_publish_with(
+        &mut self,
+        call: &mut RtcCall,
+        gate: &std::sync::Mutex<MediaGate>,
+        lifetime: Duration,
+        now: u64,
+    ) -> Result<&'static str, Error> {
+        let state = self.rtc_connection_state(call, now)?;
+        if state != "connected" {
+            return Ok(state);
+        }
+        let renew = gate.lock().map_err(|_| Error::Unprepared)?.renew.take();
+        if let Some(context) = renew {
+            self.renew_detached_media(&mut call.media, context, now)?;
+        }
+        let update = match self.detach_call_media(&mut call.media, now) {
+            Ok(update) => update,
+            Err(Error::Unprepared) => return Ok("securing"),
+            Err(error) => return Err(error),
+        };
+        let keyed = update.receivers() > 0;
+        gate.lock().map_err(|_| Error::Unprepared)?.publish(update, lifetime)?;
+        Ok(if keyed { "connected" } else { "securing" })
     }
     pub fn rtc_set_tracks(
         &mut self,
@@ -568,210 +941,21 @@ impl ClientStore {
         encoded: &[u8],
         now: u64,
     ) -> Result<RtcTransmission, Error> {
-        if self.rtc_connection_state(call, now)? != "connected" {
+        let RtcCall { transport, media, roster, send, .. } = call;
+        let send = send.as_mut().ok_or(Error::Unprepared)?;
+        let mut stored = Stored { store: self, media, connection: &transport.connection, roster: *roster, now };
+        if stored.store.rtc_connection_check(stored.media, stored.roster, stored.connection, now)? != "connected" {
             return Err(Error::Unprepared);
         }
-        let index = kind as usize;
-        let packets = if kind == MediaKind::Camera {
-            let sealed = self.seal_call_frame(&mut call.media, kind, timestamp, keyframe, encoded, now)?;
-            sigil_calls::av1::packetize(&sealed, keyframe).map_err(failure)?
-        } else { self.seal_call_packets(&mut call.media, kind, timestamp, keyframe, encoded, now)? };
-        let mut wire = Vec::with_capacity(packets.len());
-        for (n, payload) in packets.iter().enumerate() {
-            let packet = rtc::rtp::packet::Packet {
-                header: rtc::rtp::header::Header {
-                    version: 2,
-                    marker: n + 1 == packets.len(),
-                    payload_type: if index == 0 { 111 } else { 41 },
-                    sequence_number: call.sequence[index],
-                    timestamp: (timestamp.wrapping_mul(if index == 0 { 48 } else { 90 }) / 1000)
-                        as u32,
-                    ssrc: index as u32 + 1,
-                    ..Default::default()
-                },
-                payload: payload.clone().into(),
-            };
-            call.sequence[index] = call.sequence[index].wrapping_add(1);
-            wire.push(packet);
-        }
-        Ok(RtcTransmission {
-            track: call.uploads[index].clone(),
-            packets: wire,
-        })
+        send.prepare(&mut stored, kind, timestamp, keyframe, encoded)
     }
     pub fn rtc_receive(
         &mut self,
         call: &mut RtcCall,
         now: u64,
     ) -> Result<Vec<ReceivedFrame>, Error> {
-        if self.rtc_connection_state(call, now)? != "connected" {
-            return Err(Error::Unprepared);
-        }
-        if let Err(error) = self.checked_call_media(&mut call.media, now) {
-            call.tally.stalled += 1;
-            if call.tally.stalled % 50 == 1 {
-                crate::perf::note(format!("call rx stalled={} {error:?}", call.tally.stalled));
-            }
-            return Err(error);
-        }
-        let mut frames = Vec::new();
-        let mut bytes = 0;
-        let clock = crate::clock::Instant::now();
-        for _ in 0..128 {
-            let Ok(packet) = call.transport.packets.try_recv() else {
-                break;
-            };
-            call.tally.packets += 1;
-            if call.streams.iter().any(|s| s.ssrc == packet.ssrc) {
-                call.incoming
-                    .entry(packet.ssrc)
-                    .or_default()
-                    .push(packet.sequence, packet, clock);
-            } else {
-                call.tally.unknown += 1;
-            }
-        }
-        for _ in 0..128 {
-            let mut candidate = None;
-            for _ in 0..call.streams.len() {
-                let stream = &call.streams[call.incoming_cursor];
-                call.incoming_cursor = (call.incoming_cursor + 1) % call.streams.len();
-                // Drain complete frames before assembling more from a burst. Overflow here
-                // used to discard reference frames before the decoder ever had a chance.
-                if call.ready.full(stream.ssrc, stream.track.kind == MediaKind::Audio) {
-                    continue;
-                }
-                let ssrc = stream.ssrc;
-                // Give video retransmission one bounded round trip before discarding references.
-                let repair_wait = Duration::from_millis(if stream.track.kind == MediaKind::Audio { 40 } else { 120 });
-                if let Some(packet) = call.incoming.get_mut(&ssrc).and_then(|q| q.pop(clock, repair_wait)) {
-                    candidate = Some(packet);
-                    break;
-                }
-            }
-            let Some((packet, gap)) = candidate else {
-                break;
-            };
-            let stream = call
-                .streams
-                .iter()
-                .find(|s| s.ssrc == packet.ssrc)
-                .ok_or(Error::InvalidStore)?;
-            if gap && stream.track.kind != MediaKind::Audio {
-                call.ready.clear(packet.ssrc);
-                call.video_gaps.insert(packet.ssrc);
-            }
-            let assembled = if stream.track.kind == MediaKind::Camera {
-                call.camera_assembly.entry(packet.ssrc).or_default()
-                    .push(packet.sequence, packet.timestamp, packet.marker, &packet.payload).map_err(failure)
-            } else { call.media.assemble(stream.track.sender, stream.track.kind, &packet.payload) };
-            match assembled {
-                Ok(Some(encrypted)) => {
-                    call.tally.assembled += 1;
-                    if call.ready.push(
-                        packet.ssrc,
-                        stream.track.kind == MediaKind::Audio,
-                        encrypted,
-                        clock,
-                    ) && stream.track.kind != MediaKind::Audio
-                    {
-                        call.video_gaps.insert(packet.ssrc);
-                    }
-                }
-                Ok(None) => (),
-                Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared | Error::Limit) => {
-                    call.tally.rejected += 1;
-                    if call.tally.rejected % 200 == 1 {
-                        // The leading bytes tell a sealed packet apart from a bare codec frame.
-                        let head: String = packet
-                            .payload
-                            .iter()
-                            .take(6)
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        crate::perf::note(format!(
-                            "call rx reject kind={:?} len={} head={head}",
-                            stream.track.kind,
-                            packet.payload.len()
-                        ));
-                    }
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        for _ in 0..128 {
-            let mut candidate = None;
-            for _ in 0..call.streams.len() {
-                let stream = &call.streams[call.ready_cursor];
-                call.ready_cursor = (call.ready_cursor + 1) % call.streams.len();
-                let (encrypted, dropped) = call.ready.pop(stream.ssrc, clock);
-                if dropped && stream.track.kind != MediaKind::Audio {
-                    call.video_gaps.insert(stream.ssrc);
-                }
-                if let Some(encrypted) = encrypted {
-                    candidate = Some((stream, encrypted));
-                    break;
-                }
-            }
-            let Some((stream, encrypted)) = candidate else {
-                break;
-            };
-            match self.open_call_frame(
-                &mut call.media,
-                stream.track.sender,
-                stream.track.kind,
-                &encrypted,
-                now,
-            ) {
-                Ok(frame) => {
-                    call.tally.opened += 1;
-                    if !call.video_gaps.contains(&stream.ssrc) || frame.keyframe {
-                        call.video_gaps.remove(&stream.ssrc);
-                        bytes += frame.data.len();
-                        frames.push(ReceivedFrame {
-                            sender: stream.track.sender,
-                            frame,
-                        });
-                        call.tally.delivered[stream.track.kind as usize] += 1;
-                    } else {
-                        call.tally.waiting_key += 1;
-                    }
-                }
-                Err(Error::InvalidEvent | Error::Conflict | Error::Unprepared) => {
-                    call.tally.refused += 1;
-                    if stream.track.kind != MediaKind::Audio {
-                        call.video_gaps.insert(stream.ssrc);
-                    }
-                }
-                Err(error) => return Err(error),
-            }
-            if bytes >= 4 * 1024 * 1024 || clock.elapsed() >= Duration::from_millis(8) {
-                break;
-            }
-        }
-        // Request keyframes only while starting or recovering a damaged dependency
-        // chain. Healthy streams keep their cadence and bitrate for delta frames.
-        if let Ok(mut requests) = call.transport.key_requests.lock() {
-            requests.clone_from(&call.video_gaps);
-        }
-        let due = call
-            .tally
-            .reported
-            .is_none_or(|at| at.elapsed() >= Duration::from_secs(1));
-        if due && call.tally.packets > 0 {
-            call.tally.reported = Some(crate::clock::Instant::now());
-            crate::perf::note(format!(
-                "call rx packets={} unknown={} assembled={} rejected={} opened={} refused={} delivered={:?} waiting_key={}",
-                call.tally.packets,
-                call.tally.unknown,
-                call.tally.assembled,
-                call.tally.rejected,
-                call.tally.opened,
-                call.tally.refused,
-                call.tally.delivered,
-                call.tally.waiting_key
-            ));
-        }
-        Ok(frames)
+        let RtcCall { transport, media, roster, receive, .. } = call;
+        let receive = receive.as_mut().ok_or(Error::Unprepared)?;
+        receive.receive(&mut Stored { store: self, media, connection: &transport.connection, roster: *roster, now })
     }
 }

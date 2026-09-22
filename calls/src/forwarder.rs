@@ -401,6 +401,15 @@ impl Forwarder {
                                 peer.rtc.disconnect();
                                 continue;
                             }
+                            if let Some((sender, kind)) = crate::channel::decode_key_request(&data.data) {
+                                if clock.duration_since(peer.feedback) >= Duration::from_millis(250)
+                                    && peer.layout.downloads.iter().any(|t| t.sender == sender && t.kind == kind)
+                                {
+                                    feedback.push((sender, kind, str0m::media::KeyframeRequestKind::Pli));
+                                    peer.feedback = clock;
+                                }
+                                continue;
+                            }
                             match crate::channel::Packet::decode(&data.data) {
                                 Ok(packet) if packet.sender == *id => {
                                     let kind = packet.kind;
@@ -423,7 +432,9 @@ impl Forwarder {
                         {
                             peer.rtc.disconnect()
                         }
-                        Ok(Output::Event(Event::KeyframeRequest(request))) => {
+                        // Chrome requests keyframes by RTCP for tracks it never decodes itself;
+                        // browsers ask explicitly over their channel instead.
+                        Ok(Output::Event(Event::KeyframeRequest(request))) if !peer.browser => {
                             if clock.duration_since(peer.feedback) >= Duration::from_millis(500) {
                                 if let Some(track) = peer
                                     .layout

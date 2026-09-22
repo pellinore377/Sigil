@@ -240,12 +240,13 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 var status = 0
                 var nextStatus = 0L
                 val receiving = java.util.concurrent.atomic.AtomicBoolean(false)
+                // Native receive blocks until media arrives, so this loop has no polling schedule.
                 val receiver = scope.async(Dispatchers.IO) {
                     while (isActive && token == handle) {
-                        val received = if (receiving.get()) NativeStorage.receiveCallFrames(handle)?.let { bytes ->
-                            try { receive(handle, bytes); bytes.isNotEmpty() } finally { bytes.fill(0) }
-                        } == true else false
-                        delay(if (received) 5 else 20)
+                        if (!receiving.get()) { delay(20); continue }
+                        NativeStorage.receiveCallFrames(handle, 50)?.let { bytes ->
+                            try { receive(handle, bytes) } finally { bytes.fill(0) }
+                        }
                     }
                 }
                 try {

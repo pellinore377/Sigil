@@ -15,6 +15,11 @@ pub struct MediaUpdate {
     receiver_contexts: Vec<Context>,
     receivers: Vec<KeyShare>,
 }
+impl MediaUpdate {
+    pub fn receivers(&self) -> usize {
+        self.receiver_contexts.len()
+    }
+}
 impl ClientStore {
     /// Only an exclusive store owner with a synchronous invalidation channel may detach media.
     /// Every update is gated by that channel's revision before and after processing each frame.

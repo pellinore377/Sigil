@@ -387,7 +387,8 @@ impl Decoder {
         }
         let (rotation, _, _, encoded) = sigil_calls::av1::camera_payload(payload)
             .map_err(|_| crate::fail("Invalid camera frame"))?;
-        let key = payload[1] != 0;
+        // Only a shown KEY_FRAME can restart a decoder; senders may flag intra-only frames.
+        let key = payload[1] != 0 && sigil_calls::av1::random_access(encoded);
         let timestamp = u64::from_be_bytes(payload[2..10].try_into().unwrap());
         if self
             .state
