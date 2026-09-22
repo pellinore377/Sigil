@@ -16,6 +16,7 @@ struct Capture { stream: MediaStream, video: HtmlVideoElement }
 struct NativeViewer {
     track: Option<MediaStreamTrack>, video: Option<HtmlVideoElement>, shape: Option<(u16,u16,u16)>,
     canvas: Option<HtmlCanvasElement>, probe: Option<HtmlCanvasElement>, good: u8, token: u32, failures:u8, probe_at:f64,
+    displayed:u32, report_at:f64, last_frame:f64, gap:f64, draw_max:f64,
 }
 thread_local! { static NATIVE: RefCell<HashMap<String, NativeViewer>> = RefCell::new(HashMap::new()); }
 impl NativeViewer {
@@ -67,6 +68,10 @@ pub(crate) fn native_frame(sender:&str, frame:&JsValue, rotation:u16, token:u32)
         let mut n=n.borrow_mut();let Some(v)=n.get_mut(sender) else{return Ok(false)};
         v.attach()?;
         let (Some(canvas),Some(video),Some(probe))=(&v.canvas,&v.video,&v.probe) else{return Ok(false)};
+        let started=js_sys::Date::now();
+        if v.last_frame>0.0 {v.gap=v.gap.max(started-v.last_frame);}
+        v.last_frame=started;
+        if v.report_at==0.0 {v.report_at=started;}
         if v.token!=token {v.token=token;v.good=0;v.failures=0;v.probe_at=0.0;canvas.remove_attribute("hidden")?;}
         let width=number(frame,"displayWidth").unwrap_or(0.0);let height=number(frame,"displayHeight").unwrap_or(0.0);
         let turned=rotation==90||rotation==270;let (cw,ch)=if turned{(height,width)}else{(width,height)};
@@ -74,18 +79,23 @@ pub(crate) fn native_frame(sender:&str, frame:&JsValue, rotation:u16, token:u32)
         let ctx=canvas.get_context("2d")?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
         ctx.save();ctx.translate(cw/2.0,ch/2.0)?;ctx.rotate(f64::from(rotation)*std::f64::consts::PI/180.0)?;
         let painted=invoke(&ctx,"drawImage",&[frame.clone(),(-width/2.0).into(),(-height/2.0).into(),width.into(),height.into()]);ctx.restore();painted?;
-        let ctx=probe.get_context("2d")?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
+        v.displayed+=1;v.draw_max=v.draw_max.max(js_sys::Date::now()-started);
+        if started-v.report_at>=5000.0 {
+            web_sys::console::log_1(&format!("SigilTiming video display fps={:.1} gap_ms={:.0} draw_ms={:.0} native_ready={} matches={} failures={}",f64::from(v.displayed)*1000.0/(started-v.report_at),v.gap,v.draw_max,video.ready_state(),v.good,v.failures).into());
+            v.displayed=0;v.gap=0.0;v.draw_max=0.0;v.report_at=started;
+        }
+        let ctx=probe.get_context_with_context_options("2d",&object(serde_json::json!({"willReadFrequently":true}))?)?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
         let sample=|image:&JsValue|->Result<([f64;3],u8),JsValue>{
             invoke(&ctx,"drawImage",&[image.clone(),0.into(),0.into(),16.into(),16.into()])?;
             let data=ctx.get_image_data(0.0,0.0,16.0,16.0)?.data();let mut rgb=[0.0;3];let(mut low,mut high)=(255,0);
             for p in data.chunks_exact(4){for i in 0..3{rgb[i]+=f64::from(p[i])/256.0;low=low.min(p[i]);high=high.max(p[i]);}}
             Ok((rgb,high-low))
         };
-        if video.ready_state()>=2 && js_sys::Date::now()>=v.probe_at {
+        if v.failures<12 && video.ready_state()>=2 && js_sys::Date::now()>=v.probe_at {
             v.probe_at=js_sys::Date::now()+50.0;
             let (soft,contrast)=sample(frame)?;let(native,_)=sample(video.as_ref())?;
             let difference=(0..3).map(|i|(soft[i]-native[i]).abs()).fold(0.0,f64::max);
-            if contrast>16&&difference<12.0 {v.good=v.good.saturating_add(1);}else{v.good=0;v.failures=v.failures.saturating_add(1);if v.failures>=12 {v.probe_at=js_sys::Date::now()+5000.0;}}
+            if contrast>16&&difference<12.0 {v.good=v.good.saturating_add(1);}else{v.good=0;v.failures=v.failures.saturating_add(1);if v.failures==12 {web_sys::console::log_1(&"SigilTiming native video presentation rejected; retaining software".into());}}
             if v.good>=12 {canvas.set_attribute("hidden","")?;return Ok(true);}
         }
         Ok(false)
@@ -148,7 +158,7 @@ pub async fn video_camera_start(video: HtmlVideoElement, front: bool) -> Result<
     let capture = Capture { stream, video };
     if generation != GENERATION.with(Cell::get) { return Err(fail("Camera cancelled")); }
     let track = capture.stream.get_video_tracks().get(0).dyn_into::<MediaStreamTrack>()?;
-    capture.video.set_muted(true); capture.video.set_attribute("playsinline", "")?; capture.video.set_src_object(Some(&capture.stream));
+    capture.video.set_muted(true); capture.video.set_autoplay(true); capture.video.set_attribute("playsinline", "")?; capture.video.set_src_object(Some(&capture.stream));
     JsFuture::from(capture.video.play()?).await?;
     if generation != GENERATION.with(Cell::get) { return Err(fail("Camera cancelled")); }
     crate::rtc::camera_track(Some(&track)).await?;
