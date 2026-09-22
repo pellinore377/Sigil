@@ -361,7 +361,13 @@ const AUTHORITY_LIFETIME: Duration = Duration::from_millis(250);
 async fn refresh(state: &AppState) {
     let _control = state.calls.control.lock().await;
     let started = Instant::now();
-    let snapshot = with_store(state.clone(), |s| s.call_snapshot(now()?)).await;
+    let active = {
+        let current = state.calls.inner.lock().await;
+        if current.authorized(started) {
+            current.forwarder.as_ref().map(Forwarder::active_calls).unwrap_or_default()
+        } else { Vec::new() }
+    };
+    let snapshot = with_store(state.clone(), move |s| s.call_snapshot_with_activity(now()?, &active)).await;
     let mut current = state.calls.inner.lock().await;
     match snapshot {
         Ok(snapshot) => {
