@@ -88,7 +88,7 @@ impl PeerConnectionEventHandler for Handler {
                     let now = std::time::Instant::now();
                     let repair = video && key_requested.is_none_or(|at| now.duration_since(at) >= Duration::from_millis(200))
                         && key_requests.lock().is_ok_and(|mut requests| requests.remove(&packet.header.ssrc));
-                    if video && (repair || key_requested.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1))) {
+                    if video && (repair || key_requested.is_none()) {
                         key_requested = Some(now);
                         let request = rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
                             sender_ssrc: 0, media_ssrc: packet.header.ssrc,
@@ -210,6 +210,17 @@ where
     Ok(())
 }
 impl RtcCall {
+    /// A newly attached or reset decoder needs an authenticated keyframe.
+    pub fn request_video_keyframe(&mut self, sender: Id, kind: MediaKind) {
+        if kind == MediaKind::Audio { return; }
+        for stream in &self.streams {
+            if stream.track.sender == sender && stream.track.kind == kind {
+                self.video_gaps.insert(stream.ssrc);
+                if let Ok(mut requests) = self.transport.key_requests.lock() { requests.insert(stream.ssrc); }
+            }
+        }
+    }
+
     /// Queue readiness only; callers must still authorize through rtc_receive before delivery.
     pub fn has_pending_receive(&self) -> bool {
         !self.transport.packets.is_empty()
@@ -442,11 +453,11 @@ impl ClientStore {
             transport,
             media,
             roster: answer.roster,
+            video_gaps: answer.streams.iter().filter(|s| s.track.kind != MediaKind::Audio).map(|s| s.ssrc).collect(),
             streams: answer.streams,
             uploads,
             sequence: [0; 3],
             incoming: Default::default(),
-            video_gaps: Default::default(),
             ready: Default::default(),
             camera_assembly: Default::default(),
             ready_cursor: 0,
@@ -727,8 +738,8 @@ impl ClientStore {
                 break;
             }
         }
-        // A damaged dependency chain needs a keyframe promptly, not at the next
-        // periodic request. The track task sends feedback outside the media lock.
+        // Request keyframes only while starting or recovering a damaged dependency
+        // chain. Healthy streams keep their cadence and bitrate for delta frames.
         if let Ok(mut requests) = call.transport.key_requests.lock() {
             requests.clone_from(&call.video_gaps);
         }

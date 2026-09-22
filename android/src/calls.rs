@@ -281,3 +281,16 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
         .map(|v| v.into_raw())
         .unwrap_or(std::ptr::null_mut())
 }
+
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_requestCallVideoKeyframe(
+    env: JNIEnv, _: JObject, token: jlong, sender: JByteArray, media: jint,
+) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<()> {
+        if env.get_array_length(&sender).ok()? != 32 { return None; }
+        let sender = env.convert_byte_array(&sender).ok()?.try_into().ok()?;
+        let handle = handle(token)?;
+        handle.state.lock().ok()?.call.request_video_keyframe(sender, kind(media)?);
+        Some(())
+    }));
+}

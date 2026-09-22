@@ -282,6 +282,12 @@ internal fun callVideoTransform(width: Int, height: Int, rotation: Int, viewWidt
     }
 }
 internal class CallVideoDecoder(private val surface: Surface, private val paced: Boolean, private val geometry: (Int, Int, Int) -> Unit) : AutoCloseable {
+    @Volatile var requestKeyframe: () -> Unit = {}
+    private var requestedAt = 0L
+    @Synchronized private fun needKeyframe() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - requestedAt >= 200) { requestedAt = now; requestKeyframe() }
+    }
     private val running = AtomicBoolean(true)
     private val queue = ArrayBlockingQueue<VideoPacket>(8)
     private val lostFrame = AtomicBoolean(false)
@@ -356,9 +362,9 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                     val size = Size(width, height)
                     val limit = adaptiveLimit
                     val resize = size != dimensions
-                    if (resize && !keyframe) continue
+                    if (resize && !keyframe) { needKeyframe(); continue }
                     if (codec == null || wire != decoding || (resize && (limit == null || width > limit.width || height > limit.height))) {
-                        if (!keyframe) continue
+                        if (!keyframe) { needKeyframe(); continue }
                         reset()
                         val chosen = callVideoDecoder(mime)
                         val capabilities = chosen?.getCapabilitiesForType(mime)
@@ -416,7 +422,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         }
         if (keyframe) awaitingKey = false
         offered = timestamp
-        if (awaitingKey) return
+        if (awaitingKey) { needKeyframe(); return }
         val packet = VideoPacket(timestamp, keyframe, bytes.copyOf())
         if (!queue.offer(packet)) {
             drain()
@@ -433,7 +439,7 @@ internal fun CallVideoView(calls: NativeCalls, member: String, screen: Boolean, 
     var decoder by remember(member, screen) { mutableStateOf<CallVideoDecoder?>(null) }
     var preview by remember(member, screen) { mutableStateOf<CallCameraPreview?>(null) }
     fun release() {
-        if (member == "self" && !screen) { calls.cameraPreview(null); preview?.close(); preview = null }
+        if (member == "self" && !screen) { preview?.let { calls.releaseCameraPreview(it); it.close() }; preview = null }
         else { calls.videoOutput(member, screen, null); decoder?.close(); decoder = null }
     }
     var aspect by remember(member, screen) { mutableStateOf(16f / 9f) }

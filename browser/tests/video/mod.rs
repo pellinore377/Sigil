@@ -50,6 +50,8 @@ fn attach(
 fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::Worker), JsValue> {
     let media = worker()?;
     let reply = media.clone();
+    let gate = js_sys::SharedArrayBuffer::new(12);
+    let presentation_gate = js_sys::Int32Array::new(&gate);
     let events =
         Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |e: web_sys::MessageEvent| {
             if let Ok(frame) = get(&e.data(), "frame") {
@@ -58,8 +60,10 @@ fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::
                     let sender = get(&data, "sender").unwrap().as_string().unwrap();
                     let rotation = get(&data, "rotation").unwrap().as_f64().unwrap() as u16;
                     let token = get(&data, "id").unwrap().as_f64().unwrap() as u32;
-                    let native = crate::video::native_frame(&sender, &frame, rotation, token)
-                        .unwrap_or(false);
+                    let valid = js_sys::Atomics::load(&presentation_gate, 0).ok().map(f64::from) == get(&data, "revision").ok().and_then(|v| v.as_f64())
+                        && get(&data, "until").ok().and_then(|v| v.as_f64()).is_some_and(|until| js_sys::Date::now() < until);
+                    if valid {
+                    if let Err(error)=crate::video::native_frame(&sender, &frame, rotation, token) { web_sys::console::error_1(&error); }
                     PRESENTED.with(|p| {
                         let mut p = p.borrow_mut();
                         let v = p.entry(sender).or_default();
@@ -70,11 +74,10 @@ fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::
                         v.last = now;
                         v.frames += 1;
                     });
-                    let _ = invoke(&frame, "close", &[]);
-                    let _ = set(&data, "native", &native.into());
+                    }
                     let _ = set(&data, "video_ack", &true.into());
-                    let _ = set(&data, "frame", &JsValue::UNDEFINED);
-                    let _ = reply.post_message(&data);
+                    let pixels = get(&frame,"pixels").unwrap().dyn_into::<js_sys::Uint8Array>().unwrap();
+                    let _ = reply.post_message_with_transfer(&data,&Array::of1(&pixels.buffer()));
                 }
             }
             if let Some(v) = get(&e.data(), "media_timing").ok().and_then(|v| v.as_string()) {
@@ -84,7 +87,6 @@ fn media_worker(update: serde_json::Value) -> Result<(web_sys::Worker, web_sys::
     media.set_onmessage(Some(events.as_ref().unchecked_ref()));
     events.forget();
     let channel = web_sys::MessageChannel::new()?;
-    let gate = js_sys::SharedArrayBuffer::new(12);
     let options = web_sys::WorkerOptions::new();
     options.set_type(web_sys::WorkerType::Module);
     let control = web_sys::Worker::new_with_options("/web/sigil-video-control.mjs", &options)?;
@@ -270,7 +272,7 @@ pub async fn video_test_start(width: u32, height: u32, fps: u32) -> Result<(), J
         canvas.set_attribute("style", "width:20%")?;
         body.append_child(&canvas)?;
         let context = canvas
-            .get_context("2d")?
+            .get_context_with_context_options("2d", &object(serde_json::json!({"willReadFrequently":true}))?)?
             .unwrap()
             .dyn_into::<web_sys::CanvasRenderingContext2d>()?;
         let paint = move || {
@@ -407,7 +409,8 @@ pub async fn video_test_start(width: u32, height: u32, fps: u32) -> Result<(), J
             let result = (|| -> Result<(), JsValue> {
                 let stream = construct("MediaStream", &Array::of1(&get(&event, "track")?))?;
 
-                crate::video::native_track(peer_member.clone(), get(&event, "track")?.dyn_into()?)?;
+                if web_sys::window().unwrap().location().search()? != "?plain" { return Ok(()); }
+                video.remove_attribute("hidden")?;
                 set(&video, "srcObject", &stream)?;
                 let _ = invoke(&video, "play", &[])?;
                 Ok(())
@@ -484,7 +487,7 @@ pub async fn video_test_start(width: u32, height: u32, fps: u32) -> Result<(), J
                         .get_element_by_id(&format!("remote{i}"))
                         .and_then(|v| v.dyn_into::<web_sys::HtmlVideoElement>().ok())
                     {
-                        if video.video_width() > 0 {
+                        if video.video_width() > 0 || video.parent_element().and_then(|p| p.query_selector("canvas:not([hidden])").ok().flatten()).is_some() {
                             let canvas = document
                                 .create_element("canvas")
                                 .unwrap()

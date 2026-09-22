@@ -10,6 +10,7 @@ object NativeStorage {
     external fun callState(token: Long): Int
     external fun callTracks(token: Long, tracks: Int): Boolean
     external fun sendCallFrame(token: Long, kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray): Boolean
+    external fun requestCallVideoKeyframe(token: Long, sender: ByteArray, kind: Int)
     external fun receiveCallFrames(token: Long): ByteArray?
     external fun mapResource(directory: String, key: ByteArray, path: String): ByteArray?
     external fun setWallpaper(directory: String, key: ByteArray, peer: String, bytes: ByteArray): Boolean
