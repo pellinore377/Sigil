@@ -13,6 +13,8 @@ pub struct Uplink {
     /// RTCP fraction lost, out of 256.
     pub loss: AtomicU8,
     pub key_requests: AtomicU32,
+    /// Retransmission requests for the camera upload.
+    pub nacks: AtomicU32,
 }
 const CAMERA: u32 = 2;
 
@@ -47,6 +49,8 @@ impl<P: Interceptor> Feedback<P> {
                     self.reported(&rr.reports);
                 } else if let Some(sr) = any.downcast_ref::<rtc::rtcp::sender_report::SenderReport>() {
                     self.reported(&sr.reports);
+                } else if any.downcast_ref::<rtc::rtcp::transport_feedbacks::transport_layer_nack::TransportLayerNack>().is_some_and(|n| n.media_ssrc == CAMERA) {
+                    self.uplink.nacks.fetch_add(1, Ordering::Relaxed);
                 }
                 if packet.as_any().is::<rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication>()
                     || packet.as_any().is::<rtc::rtcp::payload_feedbacks::full_intra_request::FullIntraRequest>()
