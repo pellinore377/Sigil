@@ -12,7 +12,8 @@ internal class CallScreen(context: Context, private val projection: MediaProject
     private val thread = HandlerThread("Sigil screen").apply { start() }
     private val handler = Handler(thread.looper)
     private var display: VirtualDisplay? = null
-    private var encoder: CallEncoder? = null
+    @Volatile private var encoder: CallEncoder? = null
+    fun requestKeyframe() { encoder?.requestKeyframe() }
     private val density = context.resources.displayMetrics.densityDpi
     private var width = 0
     private var height = 0

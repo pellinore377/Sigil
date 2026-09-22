@@ -251,6 +251,9 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 try {
                     while (scope.isActive && desired == id && generation == current) {
                         if (receiver.isCompleted) receiver.await()
+                        val requests = NativeStorage.takeCallVideoRequests(handle)
+                        if (requests and 2 != 0) { camera?.requestKeyframe(); android.util.Log.i("SigilTiming", "video remote keyframe requested") }
+                        if (requests and 4 != 0) screen?.requestKeyframe()
                         val clock = SystemClock.elapsedRealtime()
                         val refreshStatus = clock >= nextStatus
                         if (refreshStatus) {
@@ -284,9 +287,9 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         catch (_: Exception) { visible = visible?.copy(connection = "reconnecting"); emit(); delay(1000) }
         finally { media = null }
     }
-    private fun send(kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
+    private fun send(kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray): Boolean {
         val handle = token
-        if (handle != 0L) NativeStorage.sendCallFrame(handle, kind, timestamp, keyframe, bytes)
+        return handle != 0L && NativeStorage.sendCallFrame(handle, kind, timestamp, keyframe, bytes)
     }
     private fun receive(handle: Long, bytes: ByteArray) {
         val buffer = ByteBuffer.wrap(bytes)

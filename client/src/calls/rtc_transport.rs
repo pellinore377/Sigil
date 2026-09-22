@@ -33,6 +33,8 @@ use webrtc::{
         RTCPeerConnectionState,
     },
 };
+#[path = "encoder_feedback.rs"]
+mod encoder_feedback;
 #[path = "packet_order.rs"]
 mod packet_order;
 #[path = "ready_frames.rs"]
@@ -123,6 +125,7 @@ struct Transport {
     connection: Arc<AtomicU8>,
     runtime: tokio::runtime::Handle,
     key_requests: KeyRequests,
+    encoder_requests: Arc<AtomicU8>,
 }
 impl Drop for Transport {
     fn drop(&mut self) {
@@ -210,6 +213,10 @@ where
     Ok(())
 }
 impl RtcCall {
+    /// Consume coalesced remote video recovery requests.
+    pub fn take_video_requests(&self) -> u8 {
+        self.transport.encoder_requests.swap(0, Ordering::Relaxed)
+    }
     /// A newly attached or reset decoder needs an authenticated keyframe.
     pub fn request_video_keyframe(&mut self, sender: Id, kind: MediaKind) {
         if kind == MediaKind::Audio { return; }
@@ -287,7 +294,10 @@ impl ClientStore {
                 typ: "nack".into(), parameter: parameter.into(),
             }, RtpCodecKind::Video);
         }
+        let encoder_requests = Arc::new(AtomicU8::new(0));
+        let feedback = encoder_requests.clone();
         let interceptors = Registry::new()
+            .with(move |inner| encoder_feedback::Feedback::new(inner, feedback))
             .with(NackGeneratorBuilder::new().with_interval(Duration::from_millis(10)).build())
             .with(NackResponderBuilder::new().build());
         let mut settings = SettingEngine::default();
@@ -319,6 +329,7 @@ impl ClientStore {
             connection,
             runtime: tokio::runtime::Handle::current(),
             key_requests,
+            encoder_requests,
         };
         let mut uploads = Vec::new();
         let mut senders = Vec::new();

@@ -31,6 +31,8 @@ struct State {
     tick: Option<js_sys::Function>,
     submitted: BTreeMap<u64, (i32, u16)>,
     last_stamp: Option<u64>,
+    last_input: (bool, usize, i64),
+    recent: VecDeque<(bool, usize, i64, Vec<u8>)>,
     output_wait: Option<f64>,
     produced_output: bool,
     report_at: f64,
@@ -249,6 +251,8 @@ impl Decoder {
             tick: None,
             submitted: BTreeMap::new(),
             last_stamp: None,
+            last_input: (false, 0, 0),
+            recent: VecDeque::new(),
             output_wait: None,
             produced_output: false,
             report_at: now(),
@@ -309,7 +313,10 @@ impl Decoder {
                 .unwrap_or_default();
             crate::transform::timing(format!("SigilTiming video decoder error={name}: {message}"));
             if let Some(s) = weak.upgrade() {
-                s.borrow_mut().failed = true;
+                let mut s = s.borrow_mut();
+                crate::transform::timing(format!("SigilTiming video decoder input key={} bytes={} stamp_gap_us={}", s.last_input.0, s.last_input.1, s.last_input.2));
+                crate::transform::timing(format!("SigilTiming video decoder recent={:?}",s.recent));
+                s.failed = true;
             }
         });
         let weak = Rc::downgrade(&state);
@@ -374,6 +381,8 @@ impl Decoder {
         }
         // The input was authenticated before yielding; never relabel it with newer authority.
         if !crate::media_worker::valid_revision(revision) {
+            self.discontinuity();
+            crate::transform::timing("SigilTiming video decoder recovery=authority changed".into());
             return Ok(false);
         }
         let (rotation, _, _, encoded) = sigil_calls::av1::camera_payload(payload)
@@ -459,6 +468,11 @@ impl Decoder {
             s.decoder = Some(d);
         }
         s.output_wait.get_or_insert_with(now);
+        s.last_input = (key, encoded.len(), s.last_stamp.map_or(0, |last| timestamp as i64 - last as i64));
+        let diagnostic = frame_headers(encoded);
+        let input = s.last_input;
+        s.recent.push_back((input.0, input.1, input.2, diagnostic));
+        if s.recent.len() > 8 { s.recent.pop_front(); }
         s.last_stamp = Some(timestamp);
         s.submitted.insert(timestamp, (revision, rotation));
         while s.submitted.len() > 8 {
@@ -501,4 +515,18 @@ impl Decoder {
         });
         true
     }
+}
+
+fn frame_headers(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new(); let mut at = 0;
+    while at < bytes.len() {
+        let header=bytes[at]; at+=1;
+        if header & 4 != 0 { at+=1; }
+        if header & 2 == 0 {break;}
+        let mut size=0usize; let mut shift=0;
+        loop { let Some(&b)=bytes.get(at) else {return out}; at+=1; size|=usize::from(b&127)<<shift; if b&128==0 {break;} shift+=7;if shift>28{return out;} }
+        if matches!((header>>3)&15,3|6) {if let Some(&b)=bytes.get(at) {out.push(b>>3);}}
+        let Some(end)=at.checked_add(size) else {break}; at=end;
+    }
+    out
 }

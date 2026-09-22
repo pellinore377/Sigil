@@ -8,6 +8,7 @@ object NativeStorage {
     external fun openCall(directory: String, key: ByteArray, call: ByteArray, tracks: Int): Long
     external fun closeCall(token: Long)
     external fun callState(token: Long): Int
+    external fun takeCallVideoRequests(token: Long): Int
     external fun callTracks(token: Long, tracks: Int): Boolean
     external fun sendCallFrame(token: Long, kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray): Boolean
     external fun requestCallVideoKeyframe(token: Long, sender: ByteArray, kind: Int)

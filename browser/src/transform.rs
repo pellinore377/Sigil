@@ -48,6 +48,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
     let mut dropped = 0u64;
     let mut recovery_at = 0.0;
     let mut shape = None;
+    let mut sequence = sigil_calls::av1::Sequence::default();
+    let mut encoded_size = None;
     #[cfg(feature = "video-acceptance")]
     let mut fixture_frame = 0u32;
     let mut video_since = js_sys::Date::now();
@@ -72,7 +74,17 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                 if let Some(last) = last_stamp { elapsed += u64::from(stamp.wrapping_sub(last)); }
                 last_stamp = Some(stamp);
                 let key = get(&frame, "type")?.as_string().as_deref() == Some("key");
-                crate::media_worker::seal_video(&call, &bytes, elapsed * 1000 / 90, key, dimension("width"), dimension("height")).map(Some)
+                let size = (dimension("width"), dimension("height"));
+                if encoded_size != Some(size) { sequence.clear(); encoded_size = Some(size); }
+                sequence.frame(&bytes, key).map_err(|_| fail("Invalid AV1 configuration"))
+                    .and_then(|encoded| {
+                        let owned;
+                        let encoded = match encoded {
+                            std::borrow::Cow::Borrowed(bytes) => bytes,
+                            std::borrow::Cow::Owned(bytes) => { owned = zeroize::Zeroizing::new(bytes); &owned[..] }
+                        };
+                        crate::media_worker::seal_video(&call, encoded, elapsed * 1000 / 90, key, size.0, size.1).map(Some)
+                    })
             } else { crate::media_worker::open_video(&call, &sender, &bytes).map(Some) }
         } else { convert(&frame, sealing, &call, &sender) };
         #[cfg(feature = "video-acceptance")]
