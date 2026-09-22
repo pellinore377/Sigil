@@ -107,7 +107,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         }
         let Ok(Some(payload)) = converted else { continue };
         if video && !sealing {
-            let (rotation, width, height, encoded) = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
+            let (rotation, width, height, _encoded) = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
             if let Some(decoder) = &software {
                 if !decoder.push(&payload).unwrap_or(false) && arrived - recovery_at >= 250.0 {
                     recovery_at = arrived;
@@ -122,9 +122,6 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                 worker.post_message(&message)?;
                 shape = Some((rotation, width, height));
             }
-            // Return authenticated AV1 to WebRTC's decoder and presentation scheduler.
-            set(&frame, "data", &js_sys::Uint8Array::from(encoded).buffer().into())?;
-            JsFuture::from(invoke(&writer, "write", &[frame])?.unchecked_into::<js_sys::Promise>()).await?;
             video_count += 1;
             video_gap = video_gap.max(arrived - video_last);
             video_last = arrived;

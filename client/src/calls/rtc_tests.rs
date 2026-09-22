@@ -577,6 +577,20 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
                 assert!(!b.transport.key_requests.lock().unwrap().contains(&ssrc));
             }
         }
+        // A decoder attached after the original keyframe must recover without periodic PLI.
+        b.request_video_keyframe(own, MediaKind::Camera);
+        assert!(b.transport.key_requests.lock().unwrap().contains(&ssrc));
+        for (timestamp, keyframe) in [(22_000_000, false), (22_033_333, true)] {
+            let wire = alice.rtc_prepare_send(&mut a, MediaKind::Camera, timestamp, keyframe, &[42; 100], now).unwrap();
+            for packet in wire.packets {
+                arrival.try_send(Packet { ssrc, sequence: packet.header.sequence_number,
+                    timestamp: packet.header.timestamp, marker: packet.header.marker,
+                    payload: packet.payload.to_vec() }).ok().unwrap();
+            }
+            let delivered = bob.rtc_receive(&mut b, now).unwrap();
+            assert_eq!(delivered.len(), usize::from(keyframe));
+            assert_eq!(b.transport.key_requests.lock().unwrap().contains(&ssrc), !keyframe);
+        }
         assert!(bob.rtc_receive(&mut a, now).is_err());
         alice.leave_call(id, now).unwrap();
         assert!(alice

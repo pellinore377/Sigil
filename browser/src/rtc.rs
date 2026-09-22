@@ -412,7 +412,6 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
                 }
                 if kind == MediaKind::Camera {
                     attach_transform(&get(&transceiver, "receiver")?, serde_json::json!({"operation":"open","kind":"camera","call":id,"sender":call::hex(*member),"generation":generation}))?;
-                    crate::video::native_track(call::hex(*member), get(&get(&transceiver, "receiver")?, "track")?.dyn_into()?)?;
                 }
                 downloads.push((*member, kind, transceiver));
             }
@@ -770,11 +769,11 @@ pub(crate) fn receive_video(message: &JsValue) -> Result<(), JsValue> {
     Ok(())
 }
 
-pub(crate) fn receive_decoded_video(message:&JsValue)->Result<bool,JsValue>{
+pub(crate) fn receive_decoded_video(message:&JsValue)->Result<(),JsValue>{
     let call=get(message,"call")?.as_string().unwrap_or_default();let sender=get(message,"sender")?.as_string().unwrap_or_default();
     let generation=get(message,"generation")?.as_f64().unwrap_or(0.0) as u64;
     let active=SESSION.with(|s|s.borrow().as_ref().is_some_and(|s|s.generation==generation&&s.call==call&&s.members.iter().any(|m|call::hex(*m)==sender)));
-    if !active{return Ok(false);}
+    if !active{return Ok(());}
     let rotation=get(message,"rotation")?.as_f64().unwrap_or(0.0) as u16;
     let token=get(message,"id")?.as_f64().unwrap_or(0.0) as u32;
     crate::video::native_frame(&sender,&get(message,"frame")?,rotation,token)

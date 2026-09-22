@@ -79,10 +79,11 @@ pub async fn start_browser() -> Result<(), JsValue> {
             let frame=get(&data,"frame").unwrap_or(JsValue::UNDEFINED);
             let valid=HOST.with(|h|h.borrow().as_ref().is_some_and(|h|js_sys::Atomics::load(&h.gate,0).ok().map(f64::from)==get(&data,"revision").ok().and_then(|v|v.as_f64())));
             let valid=valid && get(&data,"until").ok().and_then(|v|v.as_f64()).is_some_and(|until|js_sys::Date::now()<until);
-            let native=valid && crate::rtc::receive_decoded_video(&data).unwrap_or(false);
-            let _=crate::rtc::invoke(&frame,"close",&[]);
-            let _=crate::set(&data,"frame",&JsValue::UNDEFINED);let _=crate::set(&data,"video_ack",&true.into());let _=crate::set(&data,"native",&native.into());
-            if let Some(worker)=crate::host::worker(){let _=worker.post_message(&data);}
+            if valid { let _=crate::rtc::receive_decoded_video(&data); }
+            let _=crate::set(&data,"video_ack",&true.into());
+            if let (Some(worker), Ok(pixels)) = (crate::host::worker(), get(&frame,"pixels").and_then(|p|p.dyn_into::<js_sys::Uint8Array>())) {
+                let _=worker.post_message_with_transfer(&data,&js_sys::Array::of1(&pixels.buffer()));
+            }
             return;
         }
         if get(&data, "video_shape").ok().and_then(|v| v.as_bool()) == Some(true) {

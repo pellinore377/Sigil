@@ -80,10 +80,26 @@ internal class NativeCalls(private val app: Application, private val update: (Li
         }
     }
     private fun stopScreen() { sharing = false; projectionRequest = null; screen?.close(); screen = null; applyTracks() }
-    fun videoOutput(member: String, screen: Boolean, decoder: CallVideoDecoder?) { val key = "$member:${if (screen) 2 else 1}"; if (decoder == null) videoOutputs.remove(key) else videoOutputs[key] = decoder }
+    fun videoOutput(member: String, screen: Boolean, decoder: CallVideoDecoder?) {
+        val kind = if (screen) 2 else 1
+        val key = "$member:$kind"
+        if (decoder == null) videoOutputs.remove(key) else {
+            if (member != "self") {
+                val sender = member.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                decoder.requestKeyframe = {
+                    val handle = token
+                    scope.launch(Dispatchers.IO) { if (handle != 0L && token == handle) NativeStorage.requestCallVideoKeyframe(handle, sender, kind) }
+                }
+            }
+            videoOutputs[key] = decoder
+        }
+    }
     fun cameraPreview(preview: CallCameraPreview?) {
         if (cameraTarget === preview) return
         camera?.close(); camera = null; cameraTarget = preview
+    }
+    fun releaseCameraPreview(preview: CallCameraPreview) {
+        if (cameraTarget === preview) cameraPreview(null)
     }
     private fun startCamera() {
         var capture: CallCamera? = null
@@ -223,8 +239,18 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 var disconnectedAt = 0L
                 var status = 0
                 var nextStatus = 0L
+                val receiving = java.util.concurrent.atomic.AtomicBoolean(false)
+                val receiver = scope.async(Dispatchers.IO) {
+                    while (isActive && token == handle) {
+                        val received = if (receiving.get()) NativeStorage.receiveCallFrames(handle)?.let { bytes ->
+                            try { receive(handle, bytes); bytes.isNotEmpty() } finally { bytes.fill(0) }
+                        } == true else false
+                        delay(if (received) 5 else 20)
+                    }
+                }
                 try {
                     while (scope.isActive && desired == id && generation == current) {
+                        if (receiver.isCompleted) receiver.await()
                         val clock = SystemClock.elapsedRealtime()
                         val refreshStatus = clock >= nextStatus
                         if (refreshStatus) {
@@ -240,18 +266,17 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                             if (visible?.connection != state) android.util.Log.i("SigilTiming", "call media $state status=$status")
                             visible = visible?.copy(connection = state, seconds = if (started == 0L) 0 else (SystemClock.elapsedRealtime() - started) / 1000, levels = levels); emit()
                         }
-                        var received = false
+                        receiving.set(status == 1)
                         if (status == 1) {
                             usedVideo = usedVideo || video || history.find { it.id == id }?.participants?.any { it.camera } == true
                             retry = 1000
                             if (started == 0L && history.find { it.id == id }?.participants?.size?.let { it > 1 } == true) started = SystemClock.elapsedRealtime()
                             if (microphone == null) microphone = CallMicrophone({ timestamp, bytes -> send(0, timestamp, false, bytes) }, { amplitude -> scope.launch { levels = levels + ("self" to amplitude) } }, { scope.launch { issue("Microphone capture stopped."); end() } }).apply { muted = this@NativeCalls.muted }
                             if (video && cameraReady && camera == null) startCamera()
-                            received = withContext(Dispatchers.IO) { NativeStorage.receiveCallFrames(handle)?.let { bytes -> try { receive(handle, bytes); bytes.isNotEmpty() } finally { bytes.fill(0) } } == true }
                         }
-                        delay(if (received) 5 else 20)
+                        delay(20)
                     }
-                } finally { token = 0; microphone?.close(); microphone = null; camera?.close(); camera = null; synchronized(speakers) { speakers.values.forEach { it.close() }; speakers.clear() }; NativeStorage.closeCall(handle) }
+                } finally { receiving.set(false); token = 0; withContext(NonCancellable) { receiver.cancelAndJoin() }; microphone?.close(); microphone = null; camera?.close(); camera = null; synchronized(speakers) { speakers.values.forEach { it.close() }; speakers.clear() }; NativeStorage.closeCall(handle) }
                 // A roster change reconnects at once; only failures wait.
                 delay(if (status == 4) 50 else 500)
             }
