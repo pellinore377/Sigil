@@ -554,6 +554,29 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         assert_eq!(burst[0], (0..12).map(|n| 20_000_000 + n * 33_333).collect::<Vec<_>>());
         assert_eq!(burst[1], (0..8).map(|n| 20_000_000 + n * 33_333).collect::<Vec<_>>());
         assert!(!b.has_pending_receive());
+        // Losing a complete camera frame must request recovery immediately, and
+        // an authenticated keyframe must clear it without delivering dependent frames.
+        let ssrc = b.streams.iter().find(|s| s.track.sender == own && s.track.kind == MediaKind::Camera).unwrap().ssrc;
+        alice.rtc_prepare_send(&mut a, MediaKind::Camera, 21_000_000, false, &[42; 100], now).unwrap();
+        for (timestamp, keyframe) in [(21_033_333, false), (21_066_666, true)] {
+            let wire = alice.rtc_prepare_send(&mut a, MediaKind::Camera, timestamp, keyframe, &[42; 100], now).unwrap();
+            for packet in wire.packets {
+                arrival.try_send(Packet { ssrc, sequence: packet.header.sequence_number,
+                    timestamp: packet.header.timestamp, marker: packet.header.marker,
+                    payload: packet.payload.to_vec() }).ok().unwrap();
+            }
+            let mut delivered = bob.rtc_receive(&mut b, now).unwrap();
+            if !keyframe {
+                tokio::time::sleep(Duration::from_millis(130)).await;
+                delivered.extend(bob.rtc_receive(&mut b, now).unwrap());
+                assert!(delivered.is_empty());
+                assert!(b.transport.key_requests.lock().unwrap().contains(&ssrc));
+            } else {
+                assert_eq!(delivered.len(), 1);
+                assert_eq!(delivered[0].frame.timestamp, timestamp);
+                assert!(!b.transport.key_requests.lock().unwrap().contains(&ssrc));
+            }
+        }
         assert!(bob.rtc_receive(&mut a, now).is_err());
         alice.leave_call(id, now).unwrap();
         assert!(alice

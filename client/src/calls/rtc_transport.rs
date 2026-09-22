@@ -50,10 +50,12 @@ struct Packet {
     marker: bool,
     payload: Vec<u8>,
 }
+type KeyRequests = Arc<std::sync::Mutex<std::collections::BTreeSet<u32>>>;
 struct Handler {
     gathered: mpsc::Sender<()>,
     packets: mpsc::Sender<Packet>,
     connection: Arc<AtomicU8>,
+    key_requests: KeyRequests,
 }
 #[async_trait::async_trait]
 impl PeerConnectionEventHandler for Handler {
@@ -75,6 +77,7 @@ impl PeerConnectionEventHandler for Handler {
     }
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         let packets = self.packets.clone();
+        let key_requests = self.key_requests.clone();
         tokio::spawn(async move {
             let video = track.kind().await == RtpCodecKind::Video;
             let mut key_requested = None::<std::time::Instant>;
@@ -83,12 +86,15 @@ impl PeerConnectionEventHandler for Handler {
             while let Some(event) = track.poll().await {
                 if let TrackRemoteEvent::OnRtpPacket(packet) = event {
                     let now = std::time::Instant::now();
-                    if video && key_requested.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1)) {
+                    let repair = video && key_requested.is_none_or(|at| now.duration_since(at) >= Duration::from_millis(200))
+                        && key_requests.lock().is_ok_and(|mut requests| requests.remove(&packet.header.ssrc));
+                    if video && (repair || key_requested.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1))) {
                         key_requested = Some(now);
                         let request = rtc::rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication {
                             sender_ssrc: 0, media_ssrc: packet.header.ssrc,
                         };
-                        let _ = track.write_rtcp(vec![Box::new(request)]).await;
+                        let sent = track.write_rtcp(vec![Box::new(request)]).await.is_ok();
+                        if repair && sent { crate::perf::note("call rx recovery_request".into()); }
                     }
                     if packet.payload.len() <= 2048 {
                         seen += 1;
@@ -116,6 +122,7 @@ struct Transport {
     gathered: mpsc::Receiver<()>,
     connection: Arc<AtomicU8>,
     runtime: tokio::runtime::Handle,
+    key_requests: KeyRequests,
 }
 impl Drop for Transport {
     fn drop(&mut self) {
@@ -277,6 +284,7 @@ impl ClientStore {
         let (gathered, gather_rx) = mpsc::channel(1);
         let (packets, packet_rx) = mpsc::channel(512);
         let connection = Arc::new(AtomicU8::new(0));
+        let key_requests = KeyRequests::default();
         let pc = PeerConnectionBuilder::new()
             .with_configuration(config.build())
             .with_media_engine(engine)
@@ -287,6 +295,7 @@ impl ClientStore {
                 gathered,
                 packets,
                 connection: connection.clone(),
+                key_requests: key_requests.clone(),
             }))
             .with_udp_addrs(vec!["0.0.0.0:0"])
             .build()
@@ -298,6 +307,7 @@ impl ClientStore {
             gathered: gather_rx,
             connection,
             runtime: tokio::runtime::Handle::current(),
+            key_requests,
         };
         let mut uploads = Vec::new();
         let mut senders = Vec::new();
@@ -716,6 +726,11 @@ impl ClientStore {
             if bytes >= 4 * 1024 * 1024 || clock.elapsed() >= Duration::from_millis(8) {
                 break;
             }
+        }
+        // A damaged dependency chain needs a keyframe promptly, not at the next
+        // periodic request. The track task sends feedback outside the media lock.
+        if let Ok(mut requests) = call.transport.key_requests.lock() {
+            requests.clone_from(&call.video_gaps);
         }
         let due = call
             .tally
