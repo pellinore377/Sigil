@@ -228,10 +228,7 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
             }
             let transmission = {
                 let _timing = Timing("prepare", std::time::Instant::now());
-                let wait = Timing("prepare_wait", std::time::Instant::now());
                 let mut active = handle.state.lock().ok()?;
-                drop(wait);
-                let _work = Timing("prepare_work", std::time::Instant::now());
                 let NativeMedia { store, call } = &mut *active;
                 store
                     .rtc_prepare_send(call, media, timestamp as u64, keyframe != 0, &bytes, now())
@@ -253,23 +250,13 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
     _: JObject,
     token: jlong,
 ) -> jbyteArray {
-    let mut timing = Timing("receive", std::time::Instant::now());
+    let _timing = Timing("receive", std::time::Instant::now());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Option<Zeroizing<Vec<u8>>> {
             let handle = handle(token)?;
-            let wait = Timing("receive_wait", std::time::Instant::now());
             let mut active = handle.state.lock().ok()?;
-            drop(wait);
             let NativeMedia { store, call } = &mut *active;
-            if !call.has_pending_receive() {
-                timing.0 = "receive_idle";
-                return Some(Zeroizing::new(Vec::new()));
-            }
-            let frames = {
-                let _work = Timing("receive_work", std::time::Instant::now());
-                store.rtc_receive(call, now()).ok()?
-            };
-            drop(active);
+            let frames = store.rtc_receive(call, now()).ok()?;
             let mut bytes = Zeroizing::new(Vec::with_capacity(
                 frames.iter().map(|v| 46 + v.frame.data.len()).sum(),
             ));
