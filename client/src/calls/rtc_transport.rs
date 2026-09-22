@@ -10,7 +10,7 @@ use rtc::{
         sdp::RTCSessionDescription,
     },
     rtp_transceiver::{
-        rtp_sender::{RTCRtpCodec, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
+        rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters, RTCRtpCodingParameters, RTCRtpEncodingParameters, RtpCodecKind},
         RTCRtpTransceiverDirection, RTCRtpTransceiverInit,
     },
 };
@@ -35,6 +35,7 @@ use webrtc::{
 };
 #[path = "encoder_feedback.rs"]
 mod encoder_feedback;
+pub use encoder_feedback::Uplink;
 #[path = "packet_order.rs"]
 mod packet_order;
 #[path = "ready_frames.rs"]
@@ -127,6 +128,7 @@ struct Transport {
     connection: Arc<AtomicU8>,
     runtime: tokio::runtime::Handle,
     encoder_requests: Arc<AtomicU8>,
+    uplink: Arc<encoder_feedback::Uplink>,
 }
 impl Drop for Transport {
     fn drop(&mut self) {
@@ -296,10 +298,17 @@ impl RtcTransmission {
         .await
     }
 }
+fn video_codecs() -> Vec<RTCRtpCodecParameters> {
+    let codec = |mime: &str, fmtp: &str, payload_type| RTCRtpCodecParameters {
+        rtp_codec: RTCRtpCodec { mime_type: mime.into(), clock_rate: 90000, channels: 0, sdp_fmtp_line: fmtp.into(), rtcp_feedback: vec![] },
+        payload_type,
+    };
+    vec![codec("video/AV1", "profile-id=0", 41), codec("video/rtx", "apt=41", 106)]
+}
 /// About 26 Mbit/s: a keyframe spreads over a frame interval or so instead of leaving as one
-/// burst, which shallow queues on tunnels and home routers drop wholesale.
-const BURST: usize = 6;
-const BURST_GAP: Duration = Duration::from_millis(2);
+/// burst, which shallow queues on tunnels and home routers drop wholesale. Deadlines run from
+/// the first packet, so timer overshoot never accumulates.
+const PACE_BYTES_PER_MS: u64 = 3300;
 async fn send_packets<F, U>(
     packets: Vec<rtc::rtp::packet::Packet>,
     mut write: F,
@@ -308,10 +317,14 @@ where
     F: FnMut(rtc::rtp::packet::Packet) -> U,
     U: std::future::Future<Output = Result<(), Error>>,
 {
-    for (index, packet) in packets.into_iter().enumerate() {
-        if index > 0 && index % BURST == 0 {
-            tokio::time::sleep(BURST_GAP).await;
+    let started = tokio::time::Instant::now();
+    let mut sent = 0u64;
+    for packet in packets {
+        let due = started + Duration::from_micros(sent * 1000 / PACE_BYTES_PER_MS);
+        if due > tokio::time::Instant::now() + Duration::from_millis(1) {
+            tokio::time::sleep_until(due).await;
         }
+        sent += packet.payload.len() as u64;
         write(packet).await?;
     }
     Ok(())
@@ -324,6 +337,10 @@ impl RtcCall {
     /// Remote recovery requests, readable without the owner of this call.
     pub fn video_requests(&self) -> Arc<AtomicU8> {
         self.transport.encoder_requests.clone()
+    }
+    /// Forwarder reports on the camera upload, readable without the owner of this call.
+    pub fn uplink(&self) -> Arc<encoder_feedback::Uplink> {
+        self.transport.uplink.clone()
     }
     /// A newly attached or reset decoder needs an authenticated keyframe.
     pub fn request_video_keyframe(&mut self, sender: Id, kind: MediaKind) {
@@ -630,9 +647,10 @@ impl ClientStore {
             }, RtpCodecKind::Video);
         }
         let encoder_requests = Arc::new(AtomicU8::new(0));
-        let feedback = encoder_requests.clone();
+        let uplink = Arc::new(encoder_feedback::Uplink::default());
+        let (feedback, reports) = (encoder_requests.clone(), uplink.clone());
         let interceptors = Registry::new()
-            .with(move |inner| encoder_feedback::Feedback::new(inner, feedback))
+            .with(move |inner| encoder_feedback::Feedback::new(inner, feedback.clone(), reports.clone()))
             .with(NackGeneratorBuilder::new().with_interval(Duration::from_millis(10)).build())
             .with(NackResponderBuilder::new().build());
         let mut settings = SettingEngine::default();
@@ -663,6 +681,7 @@ impl ClientStore {
             connection,
             runtime: tokio::runtime::Handle::current(),
             encoder_requests,
+            uplink,
         };
         let mut uploads = Vec::new();
         let mut senders = Vec::new();
@@ -692,19 +711,23 @@ impl ClientStore {
                     ..Default::default()
                 }],
             )));
-            senders.push(
-                transport
-                    .pc
-                    .add_transceiver_from_track(
-                        track.clone() as Arc<dyn TrackLocal>,
-                        Some(RTCRtpTransceiverInit {
-                            direction: RTCRtpTransceiverDirection::Sendonly,
-                            ..Default::default()
-                        }),
-                    )
-                    .await
-                    .map_err(|_| Error::Unprepared)?,
-            );
+            let transceiver = transport
+                .pc
+                .add_transceiver_from_track(
+                    track.clone() as Arc<dyn TrackLocal>,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Sendonly,
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .map_err(|_| Error::Unprepared)?;
+            // The forwarder fixes each codec's payload types from the first section it negotiates,
+            // which is this upload: without RTX here, no lost video packet is ever resent.
+            if !audio {
+                transceiver.set_codec_preferences(video_codecs()).await.map_err(|_| Error::Unprepared)?;
+            }
+            senders.push(transceiver);
             uploads.push(track);
         }
         let mut downloads = Vec::new();

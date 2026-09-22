@@ -16,9 +16,18 @@ struct NativeCall {
     receive: Mutex<RtcReceive>,
     camera: Mutex<(sigil_calls::av1::Sequence, Option<[u8; 4]>)>,
     requests: Arc<AtomicU8>,
+    uplink: Arc<sigil_client::calls::Uplink>,
+    rate: Mutex<Option<Rate>>,
     state: AtomicI32,
     stopped: AtomicBool,
     send_lanes: SendLanes,
+}
+struct Rate {
+    control: sigil_calls::rate::RateControl,
+    mode: (u32, u32),
+    reports: u32,
+    keys: u32,
+    logged: (std::time::Instant, u32, u32, u8),
 }
 struct Control {
     store: sigil_client::ClientStore,
@@ -195,6 +204,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_openCall(
         let (send, receive) = value.detach()?;
         let native = Arc::new(NativeCall {
             requests: value.video_requests(),
+            uplink: value.uplink(),
+            rate: Mutex::new(None),
             control: Mutex::new(Control { store: store.into_inner(), call: value }),
             gate: Mutex::new(gate),
             send: Mutex::new(send),
@@ -280,7 +291,10 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
         let keyframe = flagged && (media == sigil_calls::MediaKind::Audio
             || header.is_some_and(|h| bytes.len() > h && sigil_calls::av1::random_access(&bytes[h..])));
         if media == sigil_calls::MediaKind::Camera && flagged {
-            drop(Timing(if keyframe { "send_key" } else { "send_sync_not_key" }, std::time::Instant::now()));
+            drop(Timing(if keyframe { "send_key" } else { "send_refused_intra_only" }, std::time::Instant::now()));
+            // Pixel's encoder emits some sync frames as intra-only frames that conformant decoders
+            // reject as corrupt. Refusing one makes the sender drop dependents and request a keyframe.
+            if !keyframe { return None; }
         }
         let current = handle(token)?;
         current.send_lanes.run(media as usize, || {
@@ -383,4 +397,42 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_takeCallVideoRequest
     _: JNIEnv, _: JObject, token: jlong,
 ) -> jint {
     handle(token).map(|call| i32::from(call.requests.swap(0, Ordering::Relaxed))).unwrap_or(0)
+}
+
+/// Camera bitrate and frame rate for this moment: `ceiling` and `fps` describe the capture mode,
+/// `thermal` is Android's thermal status. Returns bitrate << 32 | fps, or 0 without a call.
+#[no_mangle]
+pub extern "system" fn Java_org_sigil_storage_NativeStorage_callVideoTarget(
+    _: JNIEnv, _: JObject, token: jlong, ceiling: jint, fps: jint, thermal: jint, power_save: jboolean,
+) -> jlong {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Option<jlong> {
+        let handle = handle(token)?;
+        let mode = (u32::try_from(ceiling).ok()?, u32::try_from(fps).ok()?);
+        let now = std::time::Instant::now();
+        let (reports, keys) = (handle.uplink.reports.load(Ordering::Relaxed), handle.uplink.key_requests.load(Ordering::Relaxed));
+        let mut rate = handle.rate.lock().ok()?;
+        let state = match rate.as_mut().filter(|r| r.mode == mode) {
+            Some(state) => state,
+            None => rate.insert(Rate { control: sigil_calls::rate::RateControl::new(mode.0, mode.1, now), mode, reports, keys, logged: (now, reports, keys, 0) }),
+        };
+        let conditions = sigil_calls::rate::Conditions {
+            loss: (reports != state.reports).then(|| f32::from(handle.uplink.loss.load(Ordering::Relaxed)) / 256.0),
+            key_requests: keys.wrapping_sub(state.keys),
+            thermal: sigil_calls::rate::Thermal(thermal.clamp(0, 6) as u8),
+            power_save: power_save != 0,
+        };
+        (state.reports, state.keys) = (reports, keys);
+        let target = state.control.update(&conditions, now);
+        let worst = conditions.loss.map_or(0, |l| (l * 256.0) as u8).max(state.logged.3);
+        state.logged.3 = worst;
+        if now.duration_since(state.logged.0) >= std::time::Duration::from_secs(5) {
+            let line = format!("video uplink reports={} loss_max={:.3} key_requests={} bitrate={} fps={}",
+                reports.wrapping_sub(state.logged.1), f32::from(worst) / 256.0, keys.wrapping_sub(state.logged.2), target.bitrate, target.fps);
+            if let (Ok(tag), Ok(line)) = (std::ffi::CString::new("SigilTiming"), std::ffi::CString::new(line)) {
+                unsafe { super::__android_log_write(4, tag.as_ptr(), line.as_ptr()); }
+            }
+            state.logged = (now, reports, keys, 0);
+        }
+        Some((i64::from(target.bitrate) << 32) | i64::from(target.fps))
+    })).ok().flatten().unwrap_or(0)
 }

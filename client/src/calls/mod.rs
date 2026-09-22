@@ -23,7 +23,7 @@ pub(crate) mod network_tests;
 mod rtc_transport;
 mod signaling;
 #[cfg(feature = "rtc-client")]
-pub use rtc_transport::{FrameCrypto, GateCrypto, MediaGate, ReceivedFrame, RtcCall, RtcReceive, RtcSend, RtcTransmission};
+pub use rtc_transport::{FrameCrypto, GateCrypto, MediaGate, ReceivedFrame, RtcCall, RtcReceive, RtcSend, RtcTransmission, Uplink};
 #[cfg(feature = "rtc-client")]
 pub(crate) use rtc_transport::RtcAuthority;
 #[cfg(test)]

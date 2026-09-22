@@ -87,9 +87,21 @@ impl Peer {
         });
         Self::configured(lite, server).await
     }
+    /// A peer whose interceptors request and answer retransmissions, as the native client does.
+    #[allow(dead_code)]
+    pub async fn repairing() -> Self {
+        Self::build(false, None, true).await
+    }
     pub async fn configured(
         lite: bool,
         server: Option<rtc::peer_connection::configuration::RTCIceServer>,
+    ) -> Self {
+        Self::build(lite, server, false).await
+    }
+    async fn build(
+        lite: bool,
+        server: Option<rtc::peer_connection::configuration::RTCIceServer>,
+        repair: bool,
     ) -> Self {
         let relay = server.is_some();
         let (gather, gather_rx) = mpsc::channel(8);
@@ -114,18 +126,36 @@ impl Peer {
                 .with_ice_servers(vec![server])
                 .with_ice_transport_policy(RTCIceTransportPolicy::Relay);
         }
-        let pc = PeerConnectionBuilder::new()
-            .with_configuration(config.build())
-            .with_media_engine(engine)
-            .with_setting_engine(settings)
-            .with_runtime(Arc::new(webrtc::runtime::TokioRuntime))
-            .with_handler(Arc::new(Handler { gather, packets }))
-            .with_udp_addrs(vec!["127.0.0.1:0"])
-            .build()
-            .await
-            .unwrap();
+        let handler = Arc::new(Handler { gather, packets });
+        let pc: Box<dyn PeerConnection> = if repair {
+            use rtc::interceptor::{NackGeneratorBuilder, NackResponderBuilder, Registry};
+            Box::new(PeerConnectionBuilder::new()
+                .with_interceptor_registry(Registry::new()
+                    .with(NackGeneratorBuilder::new().with_interval(Duration::from_millis(10)).build())
+                    .with(NackResponderBuilder::new().build()))
+                .with_configuration(config.build())
+                .with_media_engine(engine)
+                .with_setting_engine(settings)
+                .with_runtime(Arc::new(webrtc::runtime::TokioRuntime))
+                .with_handler(handler)
+                .with_udp_addrs(vec!["127.0.0.1:0"])
+                .build()
+                .await
+                .unwrap())
+        } else {
+            Box::new(PeerConnectionBuilder::new()
+                .with_configuration(config.build())
+                .with_media_engine(engine)
+                .with_setting_engine(settings)
+                .with_runtime(Arc::new(webrtc::runtime::TokioRuntime))
+                .with_handler(handler)
+                .with_udp_addrs(vec!["127.0.0.1:0"])
+                .build()
+                .await
+                .unwrap())
+        };
         Self {
-            pc: Arc::new(pc),
+            pc: Arc::from(pc),
             gather: gather_rx,
             packets: packets_rx,
             bridge,
@@ -182,11 +212,23 @@ impl Peer {
             )
             .await
             .unwrap();
+        if !audio {
+            transceiver.set_codec_preferences(video_codecs()).await.unwrap();
+        }
         (track, transceiver)
     }
 }
 
 use rtc::rtp_transceiver::{RTCRtpTransceiverDirection, RTCRtpTransceiverInit};
+/// AV1 with its retransmission format, as the native client pins its uploads.
+pub fn video_codecs() -> Vec<rtc::rtp_transceiver::rtp_sender::RTCRtpCodecParameters> {
+    use rtc::rtp_transceiver::rtp_sender::{RTCRtpCodec, RTCRtpCodecParameters};
+    let codec = |mime: &str, fmtp: &str, payload_type| RTCRtpCodecParameters {
+        rtp_codec: RTCRtpCodec { mime_type: mime.into(), clock_rate: 90000, channels: 0, sdp_fmtp_line: fmtp.into(), rtcp_feedback: vec![] },
+        payload_type,
+    };
+    vec![codec("video/AV1", "profile-id=0", 41), codec("video/rtx", "apt=41", 106)]
+}
 use sigil_calls::{Id, Layout, MediaKind, Roster, Track};
 #[allow(dead_code)]
 pub async fn offer(

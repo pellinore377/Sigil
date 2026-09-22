@@ -331,3 +331,106 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
         task.abort();
     }
 }
+
+/// Drops every tenth forwarded video packet on its way to one receiver and counts packets on
+/// that receiver's RTX SSRCs: lost video must be resent, not merely requested.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn downstream_video_loss_is_repaired_by_retransmission() {
+    let owners: Vec<_> = (0..2).map(|_| IdentityKey::generate().unwrap()).collect();
+    let members: Vec<_> = owners.iter().map(|k| Member::new(k.public_key())).collect();
+    let mut sorted = members.clone();
+    sorted.sort_by_key(|m| m.id);
+    let roster = Roster {
+        controller: None, version: 1, call: [22; 32], server: "chat.example".into(),
+        owner: owners[0].public_key(), created: 1000, expires: 2000, revision: 0,
+        previous: None, members: sorted, closed: false,
+    }.sign(&owners[0]).unwrap();
+    let head = roster.roster.digest().unwrap();
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut forwarder = Forwarder::new(socket.local_addr().unwrap(), 1).unwrap();
+    forwarder.install(roster.clone(), 1000).unwrap();
+    let forwarder = Arc::new(Mutex::new(forwarder));
+    let running = forwarder.clone();
+    let task = tokio::spawn(async move {
+        let mut buf = [0; 2048];
+        loop {
+            let tick = running.lock().unwrap().tick(1000, Instant::now());
+            for packet in tick.datagrams { socket.send_to(&packet.contents, packet.destination).await.unwrap(); }
+            tokio::select! {r=socket.recv_from(&mut buf)=>{let(n,source)=r.unwrap();running.lock().unwrap().receive(source,&buf[..n],Instant::now());},_=tokio::time::sleep_until(tick.next.into())=>()}
+        }
+    });
+    let mut peers = Vec::new();
+    let mut resent = None;
+    for i in 0..2 {
+        let mut peer = Peer::repairing().await;
+        let mut uploads = Vec::new();
+        let mut tracks = Vec::new();
+        for n in 1..=3 { let (track, transceiver) = peer.track(n).await; tracks.push(track); uploads.push(transceiver); }
+        // A sender without retransmission must not deny it to receivers that negotiated it.
+        if i == 0 {
+            for t in &uploads[1..] { t.set_codec_preferences(common::video_codecs()[..1].to_vec()).await.unwrap(); }
+        }
+        let (sdp, layout) = offer(&mut peer, &roster.roster, members[i].id, uploads).await;
+        let signed = Connect { call: roster.roster.call, roster: head, participant: members[i].id, sequence: 1, sdp, layout }
+            .sign(&owners[i]).unwrap();
+        let answer = forwarder.lock().unwrap().connect(&signed, 1000, Instant::now()).unwrap();
+        let sdp = if i == 1 {
+            let rtx: Vec<u32> = answer.sdp.lines().filter_map(|l| l.strip_prefix("a=ssrc-group:FID "))
+                .filter_map(|l| l.split_whitespace().nth(1)?.parse().ok()).collect();
+            assert!(!rtx.is_empty(), "the answer must offer retransmission streams");
+            let (sdp, counter) = lossy_downlink(answer.sdp, rtx).await;
+            resent = Some(counter);
+            sdp
+        } else { answer.sdp };
+        peer.pc.set_remote_description(RTCSessionDescription::answer(sdp).unwrap()).await.unwrap();
+        peers.push((peer, tracks));
+    }
+    let camera = peers[0].1[1].clone();
+    for seq in 0..400u16 {
+        camera.write_rtp(rtc::rtp::packet::Packet {
+            header: rtc::rtp::header::Header { version: 2, payload_type: 41, sequence_number: seq,
+                timestamp: u32::from(seq) * 1500, ssrc: 2, marker: true, ..Default::default() },
+            payload: vec![0x10, 0x30, seq as u8, (seq >> 8) as u8].into(),
+        }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (dropped, repaired) = resent.unwrap().lock().unwrap().clone();
+    assert!(dropped > 10, "the proxy must have dropped video: {dropped}");
+    assert!(repaired * 2 >= dropped, "dropped {dropped}, resent {repaired}");
+    task.abort();
+}
+
+/// Proxies one peer's answer, dropping every tenth forwarder-to-peer video packet.
+async fn lossy_downlink(sdp: String, rtx: Vec<u32>) -> (String, Arc<Mutex<(usize, usize)>>) {
+    let first = sdp.lines().find(|l| l.starts_with("a=candidate:")).unwrap();
+    let parts: Vec<_> = first.split_whitespace().collect();
+    let target: std::net::SocketAddr = format!("{}:{}", parts[4], parts[5]).parse().unwrap();
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let local = socket.local_addr().unwrap();
+    let rewritten = sdp.lines().map(|line| if line.starts_with("a=candidate:") {
+        let mut p: Vec<_> = line.split_whitespace().map(str::to_owned).collect();
+        p[4] = local.ip().to_string(); p[5] = local.port().to_string(); p.join(" ")
+    } else { line.to_owned() }).collect::<Vec<_>>().join("\r\n") + "\r\n";
+    let counts = Arc::new(Mutex::new((0usize, 0usize)));
+    let shared = counts.clone();
+    tokio::spawn(async move {
+        let mut buf = [0; 2048];
+        let (mut peer, mut n) = (None, 0usize);
+        loop {
+            let (len, from) = socket.recv_from(&mut buf).await.unwrap();
+            let packet = &buf[..len];
+            if from != target { peer = Some(from); socket.send_to(packet, target).await.unwrap(); continue; }
+            let Some(to) = peer else { continue };
+            // RTP header fields stay readable under SRTP; RTCP uses payload types 200-206.
+            let rtp = len > 12 && packet[0] & 0xc0 == 0x80 && !(200..=206).contains(&packet[1]);
+            if rtp {
+                let ssrc = u32::from_be_bytes(packet[8..12].try_into().unwrap());
+                if rtx.contains(&ssrc) { shared.lock().unwrap().1 += 1; }
+                else if packet[1] & 0x7f != 111 { n += 1; if n % 10 == 0 { shared.lock().unwrap().0 += 1; continue; } }
+            }
+            socket.send_to(packet, to).await.unwrap();
+        }
+    });
+    (rewritten, counts)
+}

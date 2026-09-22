@@ -701,7 +701,8 @@ fn video_packets_leave_in_paced_bursts_and_in_order() {
         }).await.unwrap();
         let sent = sent.into_inner().unwrap();
         assert_eq!(sent.iter().map(|v| v.0).collect::<Vec<_>>(), (0..13).collect::<Vec<_>>());
-        assert!(sent[5].1 < BURST_GAP, "a burst leaves together");
-        assert!(sent[6].1 >= BURST_GAP && sent[12].1 >= BURST_GAP * 2);
+        // 1,100-byte packets at 3,300 bytes/ms: the first few leave at once, the last is due at 4 ms.
+        assert!(sent[2].1 < Duration::from_millis(1), "packets within a millisecond leave together");
+        assert!(sent[12].1 >= Duration::from_micros(3900) && sent[12].1 < Duration::from_millis(20));
     });
 }

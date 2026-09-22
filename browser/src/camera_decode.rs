@@ -15,6 +15,8 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 #[path = "camera_pacing.rs"]
 mod pacing;
+/// Half a second of 60 fps video: beyond this the decoder cannot keep up, so start over.
+const BACKLOG: usize = 30;
 thread_local! {
     static NEXT: Cell<u32> = const {Cell::new(0)};
     static LIVE: RefCell<HashMap<u32, Weak<RefCell<State>>>> = RefCell::new(HashMap::new());
@@ -48,6 +50,11 @@ struct State {
 pub(crate) struct Decoder {
     id: u32,
     state: Rc<RefCell<State>>,
+    inbox: RefCell<VecDeque<Vec<u8>>>,
+    order: RefCell<sigil_calls::av1::Reorder<Vec<u8>>>,
+    feeding: Cell<bool>,
+    requested: Cell<f64>,
+    reported: Cell<f64>,
     output: Closure<dyn FnMut(JsValue)>,
     error: Closure<dyn FnMut(JsValue)>,
     _tick: Closure<dyn FnMut()>,
@@ -334,10 +341,69 @@ impl Decoder {
         Self {
             id,
             state,
+            inbox: RefCell::new(VecDeque::new()),
+            order: RefCell::new(Default::default()),
+            feeding: Cell::new(false),
+            requested: Cell::new(f64::NEG_INFINITY),
+            reported: Cell::new(0.0),
             output,
             error,
             _tick: tick,
         }
+    }
+    /// Accepts frames in completion order, which differs from sending order when a retransmitted
+    /// packet completes an earlier frame late, and releases them in frame-number order.
+    pub(crate) fn receive(self: &Rc<Self>, payload: Vec<u8>) {
+        let numbered = sigil_calls::av1::camera_payload(&payload).ok().and_then(|camera| {
+            let key = payload[1] != 0 && sigil_calls::av1::random_access(camera.encoded);
+            camera.number.map(|number| (number, key))
+        });
+        let Some((number, key)) = numbered else { return self.submit(payload) };
+        let ready = {
+            let mut order = self.order.borrow_mut();
+            let ready = order.accept(number, key, payload, now());
+            if order.filled + order.given_up + order.stale > 0 && now() - self.reported.get() >= 5000.0 {
+                self.reported.set(now());
+                crate::transform::timing(format!("SigilTiming video reorder filled={} filled_max_ms={:.0} given_up={} stale={}", order.filled, order.filled_ms, order.given_up, order.stale));
+                (order.filled, order.filled_ms, order.given_up, order.stale) = (0, 0.0, 0, 0);
+            }
+            ready
+        };
+        for frame in ready { self.submit(frame); }
+    }
+    /// Queues an opened frame and returns at once. Chrome drops encoded frames when a transform
+    /// stops reading, so waiting here for decoder capacity turned a slow keyframe into lost frames.
+    fn submit(self: &Rc<Self>, payload: Vec<u8>) {
+        {
+            let mut inbox = self.inbox.borrow_mut();
+            if inbox.len() >= BACKLOG {
+                inbox.clear();
+                drop(inbox);
+                self.discontinuity();
+                crate::transform::timing("SigilTiming video decoder recovery=backlog".into());
+                self.request_keyframe();
+                return;
+            }
+            inbox.push_back(payload);
+        }
+        if self.feeding.replace(true) { return; }
+        let decoder = self.clone();
+        spawn_local(async move {
+            loop {
+                let Some(next) = decoder.inbox.borrow_mut().pop_front() else { break };
+                if !decoder.push(&next).await.unwrap_or(false) {
+                    decoder.request_keyframe();
+                }
+            }
+            decoder.feeding.set(false);
+        });
+    }
+    fn request_keyframe(&self) {
+        let at = now();
+        if at - self.requested.get() < 250.0 { return; }
+        self.requested.set(at);
+        let s = self.state.borrow();
+        crate::transform::request_keyframe(&s.call, &s.sender);
     }
     pub(crate) fn discontinuity(&self) {
         let mut s = self.state.borrow_mut();
