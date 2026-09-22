@@ -527,6 +527,7 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         b.ready = Default::default();
         b.camera_assembly.clear();
         b.video_gaps.clear();
+        assert!(!b.has_pending_receive());
         let own = alice.call_transport_roster(id, now).unwrap().1;
         for index in 0..12 {
             for kind in [MediaKind::Audio, MediaKind::Camera] {
@@ -543,6 +544,7 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         }
         let mut burst = [Vec::new(), Vec::new()];
         for _ in 0..30 {
+            assert!(b.has_pending_receive(), "Queued media must not be mistaken for an idle poll");
             for value in bob.rtc_receive(&mut b, now).unwrap() {
                 burst[value.frame.kind as usize].push(value.frame.timestamp);
                 assert_eq!(&*value.frame.data, &[42; 8192]);
@@ -551,6 +553,7 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         }
         assert_eq!(burst[0], (0..12).map(|n| 20_000_000 + n * 33_333).collect::<Vec<_>>());
         assert_eq!(burst[1], (0..8).map(|n| 20_000_000 + n * 33_333).collect::<Vec<_>>());
+        assert!(!b.has_pending_receive());
         assert!(bob.rtc_receive(&mut a, now).is_err());
         alice.leave_call(id, now).unwrap();
         assert!(alice

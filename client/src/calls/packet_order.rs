@@ -16,6 +16,9 @@ impl<T> Default for PacketOrder<T> {
     }
 }
 impl<T> PacketOrder<T> {
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
     pub fn push(&mut self, sequence: u16, value: T, now: Instant) {
         let next = *self.next.get_or_insert(sequence);
         if (sequence.wrapping_sub(next) as i16) < 0 || self.pending.len() >= 128 {

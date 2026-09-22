@@ -10,6 +10,9 @@ pub(super) struct ReadyFrames {
     bytes: usize,
 }
 impl ReadyFrames {
+    pub fn is_empty(&self) -> bool {
+        self.streams.is_empty()
+    }
     pub fn full(&self, stream: u32, audio: bool) -> bool {
         self.streams.get(&stream).is_some_and(|v| v.len() >= if audio { 8 } else { 3 })
     }

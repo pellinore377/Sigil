@@ -203,6 +203,12 @@ where
     Ok(())
 }
 impl RtcCall {
+    /// Queue readiness only; callers must still authorize through rtc_receive before delivery.
+    pub fn has_pending_receive(&self) -> bool {
+        !self.transport.packets.is_empty()
+            || !self.ready.is_empty()
+            || self.incoming.values().any(|queue| !queue.is_empty())
+    }
     /// The media handle outlives the transport: a rebuild reuses it through `connect_rtc_call_with`.
     pub fn into_media(self) -> Media {
         self.media
