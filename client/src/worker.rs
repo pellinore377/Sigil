@@ -462,7 +462,14 @@ impl ClientStore {
         if let Some(index) = step
             .calls
             .iter()
-            .position(|item| matches!(item.result, Err(Error::Network(_))))
+            .position(|item| match &item.result {
+                Err(Error::Network(network::Error::Status {
+                    code: 400 | 403 | 404 | 409 | 410 | 422,
+                    retry_after_seconds: None,
+                })) => false,
+                Err(Error::Network(_)) => true,
+                _ => false,
+            })
         {
             step.failure = Some(SyncFailure::CallNetwork(index));
             return step;
@@ -523,7 +530,7 @@ impl ClientStore {
         if let Some(index) = step
             .sends
             .iter()
-            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_specific(e)))
+            .position(|item| matches!(&item.result, Err(Error::Network(e)) if !crate::outbound::recipient_specific(e) && !crate::outbound::recipient_deferred(e)))
         {
             step.failure = Some(SyncFailure::SendIntentNetwork(index));
             return false;
@@ -635,26 +642,67 @@ mod tests {
     }
     #[test]
     fn unavailable_call_service_does_not_block_queued_messages() {
-        let (dir, _fixture, mut alice, mut bob, now) = pair();
-        let (_, peer) = trust(&mut alice, &mut bob);
-        alice.create_direct_call([91; 32], now, 3600).unwrap();
-        alice.invite_to_call([91; 32], peer, now).unwrap();
-        alice
-            .queue_peer_text(peer, [92; 32], "synthetic queued message", now, now)
-            .unwrap();
-        drop(alice);
-        let mut alice = reopen(&dir.path().join("alice.db"));
-        let step = alice.sync_step_online(now);
-        assert!(step.calls.iter().any(|attempt| matches!(
-            attempt.result,
-            Err(Error::Network(network::Error::Status { code: 404, .. }))
-        )));
-        assert!(step.failure.is_none());
-        assert_eq!(step.issue().map(|(stage, _)| stage), Some("updating calls"));
-        assert!(step.sends.iter().any(|attempt| attempt.result.is_ok()));
-        let incoming = bob.receive_mailbox_online(now).unwrap();
-        assert!(incoming.iter().any(|item| matches!(&item.result,
-            Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic queued message")));
+        for setup in [false, true] {
+            let (dir, _fixture, mut alice, mut bob, now) = pair();
+            let (_, peer) = trust(&mut alice, &mut bob);
+            alice.create_direct_call([91; 32], now, 3600).unwrap();
+            alice.invite_to_call([91; 32], peer, now).unwrap();
+            alice
+                .queue_peer_text(peer, [92; 32], "synthetic queued message", now, now)
+                .unwrap();
+            drop(alice);
+            let mut alice = reopen(&dir.path().join("alice.db"));
+            let step = if setup { alice.call_setup_step(now) } else { alice.sync_step_online(now) };
+            assert!(step.calls.iter().any(|attempt| matches!(
+                attempt.result,
+                Err(Error::Network(network::Error::Status { code: 404, .. }))
+            )));
+            assert!(step.failure.is_none());
+            assert_eq!(step.issue().map(|(stage, _)| stage), Some("updating calls"));
+            assert!(step.sends.iter().any(|attempt| attempt.result.is_ok()));
+            let incoming = bob.receive_mailbox_online(now).unwrap();
+            assert!(incoming.iter().any(|item| matches!(&item.result,
+                Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic queued message")));
+        }
+    }
+    #[test]
+    fn denied_claim_does_not_hold_other_messages_or_call_setup() {
+        for setup in [false, true] {
+            let (dir, fixture, mut alice, mut bob, now) = pair();
+            let (_, peer) = trust(&mut alice, &mut bob);
+            alice.queue_peer_text(peer, [94; 32], "synthetic denied", now, now).unwrap();
+            alice.queue_peer_text(peer, [95; 32], "synthetic allowed", now, now).unwrap();
+            let port = fixture.port();
+            drop(fixture);
+            let (router, maintenance) = sigil_server::router_with_maintenance(
+                sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
+                sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
+            );
+            let refused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let router = router.layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let refused = refused.clone();
+                    async move {
+                        if request.uri().path().ends_with("/prekeys/claim")
+                            && !refused.swap(true, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            return axum::http::Response::builder().status(403)
+                                .body(axum::body::Body::empty()).unwrap();
+                        }
+                        next.run(request).await
+                    }
+                },
+            ));
+            let _fixture = network::tests::Fixture::maintained_at(router, maintenance, port);
+            let step = if setup { alice.call_setup_step(now) } else { alice.sync_step_online(now) };
+            assert!(step.failure.is_none(), "{:?}", step.issue());
+            assert!(step.sends.iter().any(|v| matches!(&v.result, Err(Error::Network(network::Error::Status { code: 403, .. })))));
+            assert!(step.sends.iter().any(|v| v.result.is_ok()));
+            assert_eq!(alice.db.query_row("SELECT count(*) FROM send_intent_backoff WHERE until>?1", [now as i64], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            let incoming = bob.receive_mailbox_online(now).unwrap();
+            assert!(incoming.iter().any(|item| matches!(&item.result,
+                Ok(MailboxEvent::Text(text)) if text.text().unwrap().body == "synthetic allowed")));
+        }
     }
     #[test]
     fn small_positive_clock_skew_does_not_exceed_server_delivery_lifetime() {
@@ -671,49 +719,51 @@ mod tests {
     }
     #[test]
     fn call_authentication_and_retry_after_still_defer_network_work() {
-        for (status, retry) in [(401, None), (429, Some(120)), (404, Some(120))] {
-            let (dir, fixture, mut alice, mut bob, now) = pair();
-            let (_, peer) = trust(&mut alice, &mut bob);
-            alice.create_direct_call([91; 32], now, 3600).unwrap();
-            alice
-                .queue_peer_text(peer, [92; 32], "synthetic queued message", now, now)
-                .unwrap();
-            let port = fixture.port();
-            drop(fixture);
-            let (router, maintenance) = sigil_server::router_with_maintenance(
-                sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
-                sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token"))
-                    .unwrap(),
-            );
-            let router = router.layer(axum::middleware::from_fn(
-                move |request: axum::extract::Request, next: axum::middleware::Next| async move {
-                    if request.uri().path() == "/client/v0/calls" {
-                        let mut response = axum::http::Response::builder().status(status);
-                        if let Some(seconds) = retry {
-                            response = response.header("retry-after", seconds.to_string());
-                        }
-                        return response.body(axum::body::Body::empty()).unwrap();
-                    }
-                    next.run(request).await
-                },
-            ));
-            let _fixture = network::tests::Fixture::maintained_at(router, maintenance, port);
-            let result = alice.sync_due_online().unwrap();
-            let step = result.step.unwrap();
-            assert!(matches!(step.failure, Some(SyncFailure::CallNetwork(_))));
-            assert!(step.sends.is_empty() && step.outbound.is_empty());
-            if let Some(seconds) = retry {
-                assert!(result.next_at >= now + seconds);
-            }
-            assert!(alice.sync_due_online().unwrap().step.is_none());
-            assert_eq!(
+        for setup in [false, true] {
+            for (status, retry) in [(401, None), (429, Some(120)), (404, Some(120))] {
+                let (dir, fixture, mut alice, mut bob, now) = pair();
+                let (_, peer) = trust(&mut alice, &mut bob);
+                alice.create_direct_call([91; 32], now, 3600).unwrap();
                 alice
-                    .db
-                    .query_row("SELECT count(*) FROM send_intents", [], |r| r
-                        .get::<_, i64>(0))
-                    .unwrap(),
-                1
-            );
+                    .queue_peer_text(peer, [92; 32], "synthetic queued message", now, now)
+                    .unwrap();
+                let port = fixture.port();
+                drop(fixture);
+                let (router, maintenance) = sigil_server::router_with_maintenance(
+                    sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
+                    sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token"))
+                        .unwrap(),
+                );
+                let router = router.layer(axum::middleware::from_fn(
+                    move |request: axum::extract::Request, next: axum::middleware::Next| async move {
+                        if request.uri().path() == "/client/v0/calls" {
+                            let mut response = axum::http::Response::builder().status(status);
+                            if let Some(seconds) = retry {
+                                response = response.header("retry-after", seconds.to_string());
+                            }
+                            return response.body(axum::body::Body::empty()).unwrap();
+                        }
+                        next.run(request).await
+                    },
+                ));
+                let _fixture = network::tests::Fixture::maintained_at(router, maintenance, port);
+                let result = if setup { alice.sync_call_setup_online() } else { alice.sync_due_online() }.unwrap();
+                let step = result.step.unwrap();
+                assert!(matches!(step.failure, Some(SyncFailure::CallNetwork(_))));
+                assert!(step.sends.is_empty() && step.outbound.is_empty());
+                if let Some(seconds) = retry {
+                    assert!(result.next_at >= now + seconds);
+                }
+                assert!(alice.sync_due_online().unwrap().step.is_none());
+                assert_eq!(
+                    alice
+                        .db
+                        .query_row("SELECT count(*) FROM send_intents", [], |r| r
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+            }
         }
     }
     #[test]

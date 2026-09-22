@@ -4,6 +4,7 @@ use super::*;
 #[path = "send_intent_tests.rs"]
 mod tests;
 
+
 pub struct SendIntentAttempt {
     pub id: Id,
     pub result: Result<Id, Error>,
@@ -564,12 +565,12 @@ impl ClientStore {
                 result = Err(Error::Obsolete);
             }
             let stop =
-                matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_full(e));
+                matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_deferred(e));
             // Every local or recipient failure waits, so a failing row never occupies the
             // fresh window on the next pass; missing stock (network 404) stays retriable.
             let wait = match &result {
                 Ok(_) | Err(Error::Obsolete) => 0,
-                Err(Error::Network(e)) if !crate::outbound::recipient_full(e) => 0,
+                Err(Error::Network(e)) if !crate::outbound::recipient_deferred(e) => 0,
                 // Store failures are transient or catastrophic, never per-item; retry promptly.
                 Err(Error::Storage(_) | Error::InvalidStore) => 0,
                 _ => 60,

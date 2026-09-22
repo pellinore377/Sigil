@@ -1,6 +1,11 @@
 //! Fair, bounded scheduling over existing durable packet journals.
 use super::*;
 
+pub(crate) fn recipient_deferred(error: &network::Error) -> bool {
+    recipient_full(error)
+        || matches!(error, network::Error::Status { code: 403, retry_after_seconds: None })
+}
+
 pub(crate) fn recipient_full(error: &network::Error) -> bool {
     matches!(
         error,
