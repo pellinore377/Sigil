@@ -22,6 +22,18 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 async fn promise(v: JsValue) -> Result<JsValue, JsValue> {
     JsFuture::from(v.dyn_into::<js_sys::Promise>()?).await
 }
+pub(crate) async fn receive_burst(options: &JsValue, frame: u32) -> Result<(), JsValue> {
+    if frame % 600 != 0 || get(options, "receive_bursts").ok().and_then(|v| v.as_bool()) != Some(true) { return Ok(()); }
+    let pause = js_sys::Promise::new(&mut |resolve, reject| {
+        let worker: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
+        if let Err(error) = worker.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 150) {
+            let _ = reject.call1(&JsValue::UNDEFINED, &error);
+        }
+    });
+    promise(pause.into()).await?;
+    crate::transform::timing(format!("SigilTiming acceptance receive burst frame={frame}"));
+    Ok(())
+}
 fn worker() -> Result<web_sys::Worker, JsValue> {
     let options = web_sys::WorkerOptions::new();
     options.set_type(web_sys::WorkerType::Module);
@@ -43,6 +55,7 @@ fn attach(
         serde_json::json!({"operation":if sender.is_some(){"open"}else{"seal"},"kind":"camera","call":call,"sender":sender.unwrap_or("")}),
     )?;
     set(&options, "drop_bursts", &web_sys::window().unwrap().location().search()?.eq("?recovery").into())?;
+    set(&options, "receive_bursts", &web_sys::window().unwrap().location().search()?.contains("burst").into())?;
     let constructor = get(&js_sys::global(), "RTCRtpScriptTransform")?.dyn_into::<Function>()?;
     let value = js_sys::Reflect::construct(&constructor, &Array::of2(worker, &options))?;
     set(target, "transform", &value)

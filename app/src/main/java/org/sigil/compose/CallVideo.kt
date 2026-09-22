@@ -296,12 +296,14 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         var dimensions: Size? = null
         var adaptiveLimit: Size? = null
         var rendered: Triple<Int, Int, Int>? = null
+        var outputWait = 0L
         var lastTimestamp = Long.MIN_VALUE
         var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
         var resynced = 0L; var anchor = 0L; var anchorStamp = Long.MIN_VALUE
         var late = 0L; var lateMax = 0L; var outputGap = 0L; var lastOutput = 0L
         fun reset(reason: String = "reconfigure") {
             if (codec != null) android.util.Log.i("SigilTiming", "video decoder reset=$reason queued=${queue.size} paced=$paced")
+            outputWait = 0L
             anchorStamp = Long.MIN_VALUE
             lastTimestamp = Long.MIN_VALUE
             val previous = codec; codec = null; dimensions = null; adaptiveLimit = null
@@ -315,6 +317,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                 val output = active.dequeueOutputBuffer(info, 0)
                 if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
                 if (output < 0) break
+                outputWait = 0L
                 if (!running.get()) { active.releaseOutputBuffer(output, false); continue }
                 // Our own camera took no journey, so there is no jitter to smooth and a schedule
                 // would only hold the picture back.
@@ -349,6 +352,9 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                 val packet = queue.poll(10, TimeUnit.MILLISECONDS) ?: continue
                 try {
                     if (lostFrame.getAndSet(false)) reset("queue overflow")
+                    if (outputWait != 0L && System.nanoTime() - outputWait >= 250_000_000L) {
+                        reset("stalled output"); needKeyframe()
+                    }
                     if (packet.timestamp <= lastTimestamp) { reset("timestamp"); continue }
                     val bytes = packet.bytes
                     require(bytes.size > VIDEO_HEADER)
@@ -397,6 +403,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                     }
                     if (input >= 0) {
                         val target = requireNotNull(active.getInputBuffer(input)); target.clear(); require(bytes.size - VIDEO_HEADER <= target.remaining()); target.put(bytes, VIDEO_HEADER, bytes.size - VIDEO_HEADER)
+                        if (outputWait == 0L) outputWait = System.nanoTime()
                         active.queueInputBuffer(input, 0, bytes.size - VIDEO_HEADER, packet.timestamp, 0)
                         lastTimestamp = packet.timestamp
                     } else {

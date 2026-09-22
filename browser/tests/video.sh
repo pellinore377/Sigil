@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Synthetic camera tracks only. No capture devices, accounts, or audio.
-# Open the printed URL; ?recovery drops ten receive frames every 600, ?plain bypasses transforms, ?revoke checks revocation and worker expiry.
+# Open the printed URL; ?recovery drops ten receive frames every 600, ?burst releases 150 ms receive bursts, ?plain bypasses transforms, ?revoke checks revocation and worker expiry.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 lab=$(mktemp -d)
