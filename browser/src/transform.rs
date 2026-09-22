@@ -50,6 +50,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
     let mut shape = None;
     let mut sequence = sigil_calls::av1::Sequence::default();
     let mut encoded_size = None;
+    let mut numbered = 0u32;
     #[cfg(feature = "video-acceptance")]
     let mut fixture_frame = 0u32;
     let mut video_since = js_sys::Date::now();
@@ -83,7 +84,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                             std::borrow::Cow::Borrowed(bytes) => bytes,
                             std::borrow::Cow::Owned(bytes) => { owned = zeroize::Zeroizing::new(bytes); &owned[..] }
                         };
-                        crate::media_worker::seal_video(&call, encoded, elapsed * 1000 / 90, key, size.0, size.1).map(Some)
+                        numbered = numbered.wrapping_add(1);
+                        crate::media_worker::seal_video(&call, encoded, elapsed * 1000 / 90, key, size.0, size.1, numbered).map(Some)
                     })
             } else { crate::media_worker::open_video(&call, &sender, &bytes).map(Some) }
         } else { convert(&frame, sealing, &call, &sender) };
@@ -121,7 +123,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         }
         let Ok(Some(payload)) = converted else { continue };
         if video && !sealing {
-            let (rotation, width, height, _encoded) = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
+            let camera = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
+            let (rotation, width, height) = (camera.rotation, camera.width, camera.height);
             if let Some(decoder) = &software {
                 if !decoder.push(&payload).await.unwrap_or(false) && arrived - recovery_at >= 250.0 {
                     recovery_at = arrived;

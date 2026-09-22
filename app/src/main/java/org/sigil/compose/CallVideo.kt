@@ -18,11 +18,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 /// each receiver decodes per sender without any negotiation.
 internal const val CODEC_VP9: Byte = 1
 internal const val CODEC_AV1: Byte = 2
-/// Codec, rotation, width and height, each big endian, ahead of the encoded frame.
-internal const val VIDEO_HEADER = 7
+/// AV1 followed by a per-track frame number, so receivers without RTP sequencing see losses.
+internal const val CODEC_AV1_NUMBERED: Byte = 3
+/// Codec, rotation, width and height, each big endian, ahead of the encoded frame; numbered AV1 adds a u32.
+internal fun videoHeader(codec: Byte) = if (codec == CODEC_AV1_NUMBERED) 11 else 7
 internal fun callVideoMime(codec: Byte) = when (codec) {
     CODEC_VP9 -> MediaFormat.MIMETYPE_VIDEO_VP9
-    CODEC_AV1 -> MediaFormat.MIMETYPE_VIDEO_AV1
+    CODEC_AV1, CODEC_AV1_NUMBERED -> MediaFormat.MIMETYPE_VIDEO_AV1
     else -> null
 }
 /// The decoder to use for a type: a hardware one if the platform offers it.
@@ -68,7 +70,9 @@ internal fun callVideoBitrate(width: Int, height: Int, fps: Int): Int {
     return (base.toLong() * fps.coerceIn(15, 60) / 30).toInt()
 }
 internal class CallEncoder(val width: Int, val height: Int, private val rotation: Int, private val fps: Int, private val send: (Long, Boolean, ByteArray) -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
-    private val wire = CODEC_AV1
+    private val wire = CODEC_AV1_NUMBERED
+    private val header = videoHeader(wire)
+    private var number = 0
     private val mime = requireNotNull(callVideoMime(wire))
     private val codec = callVideoEncoder(mime)
         ?.let { android.util.Log.i("SigilTiming", "codec encode ${it.name} hardware=${it.isHardwareAccelerated}"); MediaCodec.createByCodecName(it.name) }
@@ -106,11 +110,11 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
                         if (info.flags and MediaCodec.BUFFER_FLAG_PARTIAL_FRAME != 0) partials++
                         largest = maxOf(largest, info.size)
                         if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                            require(info.size <= 1024 * 1024 - VIDEO_HEADER)
-                            val bytes = ByteArray(info.size + VIDEO_HEADER)
+                            require(info.size <= 1024 * 1024 - header)
+                            val bytes = ByteArray(info.size + header)
                             try {
-                                ByteBuffer.wrap(bytes).put(wire).putShort(rotation.toShort()).putShort(width.toShort()).putShort(height.toShort())
-                                requireNotNull(codec.getOutputBuffer(index)).apply { position(info.offset); limit(info.offset + info.size) }.get(bytes, VIDEO_HEADER, info.size)
+                                ByteBuffer.wrap(bytes).put(wire).putShort(rotation.toShort()).putShort(width.toShort()).putShort(height.toShort()).putInt(++number)
+                                requireNotNull(codec.getOutputBuffer(index)).apply { position(info.offset); limit(info.offset + info.size) }.get(bytes, header, info.size)
                                 send(info.presentationTimeUs.coerceAtLeast(0), info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, bytes)
                                 counted++
                                 val at = android.os.SystemClock.elapsedRealtime()
@@ -361,9 +365,9 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                     }
                     if (packet.timestamp <= lastTimestamp) { reset("timestamp"); continue }
                     val bytes = packet.bytes
-                    require(bytes.size > VIDEO_HEADER)
                     val buffer = ByteBuffer.wrap(bytes)
-                    val wire = buffer.get(); val mime = requireNotNull(callVideoMime(wire))
+                    val wire = buffer.get(); val mime = requireNotNull(callVideoMime(wire)); val header = videoHeader(wire)
+                    require(bytes.size > header)
                     val rotation = buffer.short.toInt() and 65535; val width = buffer.short.toInt() and 65535; val height = buffer.short.toInt() and 65535
                     require(rotation in listOf(0, 90, 180, 270) && width in 16..3840 && height in 16..3840 && width * height <= 3840 * 2160)
                     // The header travels inside the authenticated encryption, so its
@@ -408,9 +412,9 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                         input = active.dequeueInputBuffer(10000)
                     }
                     if (input >= 0) {
-                        val target = requireNotNull(active.getInputBuffer(input)); target.clear(); require(bytes.size - VIDEO_HEADER <= target.remaining()); target.put(bytes, VIDEO_HEADER, bytes.size - VIDEO_HEADER)
+                        val target = requireNotNull(active.getInputBuffer(input)); target.clear(); require(bytes.size - header <= target.remaining()); target.put(bytes, header, bytes.size - header)
                         if (outputWait == 0L) outputWait = System.nanoTime()
-                        active.queueInputBuffer(input, 0, bytes.size - VIDEO_HEADER, packet.timestamp, 0)
+                        active.queueInputBuffer(input, 0, bytes.size - header, packet.timestamp, 0)
                         lastTimestamp = packet.timestamp
                     } else {
                         reset("input timeout")

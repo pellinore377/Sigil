@@ -31,6 +31,7 @@ struct State {
     tick: Option<js_sys::Function>,
     submitted: BTreeMap<u64, (i32, u16)>,
     last_stamp: Option<u64>,
+    last_number: Option<u32>,
     last_input: (bool, usize, i64),
     recent: VecDeque<(bool, usize, i64, Vec<u8>)>,
     output_wait: Option<f64>,
@@ -251,6 +252,7 @@ impl Decoder {
             tick: None,
             submitted: BTreeMap::new(),
             last_stamp: None,
+            last_number: None,
             last_input: (false, 0, 0),
             recent: VecDeque::new(),
             output_wait: None,
@@ -385,10 +387,19 @@ impl Decoder {
             crate::transform::timing("SigilTiming video decoder recovery=authority changed".into());
             return Ok(false);
         }
-        let (rotation, _, _, encoded) = sigil_calls::av1::camera_payload(payload)
+        let camera = sigil_calls::av1::camera_payload(payload)
             .map_err(|_| crate::fail("Invalid camera frame"))?;
+        let (rotation, encoded) = (camera.rotation, camera.encoded);
         // Only a shown KEY_FRAME can restart a decoder; senders may flag intra-only frames.
         let key = payload[1] != 0 && sigil_calls::av1::random_access(encoded);
+        // Chrome hands over only complete frames, so a lost one shows up as a numbering gap.
+        // Decoding past it paints against a missing reference until the next keyframe.
+        let previous = std::mem::replace(&mut self.state.borrow_mut().last_number, camera.number);
+        if !key && camera.number.is_some_and(|n| previous.is_some_and(|p| n != p.wrapping_add(1))) {
+            self.discontinuity();
+            crate::transform::timing(format!("SigilTiming video decoder recovery=lost frames={}", camera.number.unwrap_or(0).wrapping_sub(previous.unwrap_or(0)).wrapping_sub(1)));
+            return Ok(false);
+        }
         let timestamp = u64::from_be_bytes(payload[2..10].try_into().unwrap());
         if self
             .state

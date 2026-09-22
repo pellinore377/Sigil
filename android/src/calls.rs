@@ -276,8 +276,9 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
         let media = kind(media)?;
         // The wire flag promises a decoder can start here; encoders also flag intra-only frames.
         let flagged = keyframe != 0;
+        let header = bytes.first().and_then(|codec| sigil_calls::av1::camera_header(*codec));
         let keyframe = flagged && (media == sigil_calls::MediaKind::Audio
-            || bytes.len() > 7 && bytes[0] == 2 && sigil_calls::av1::random_access(&bytes[7..]));
+            || header.is_some_and(|h| bytes.len() > h && sigil_calls::av1::random_access(&bytes[h..])));
         if media == sigil_calls::MediaKind::Camera && flagged {
             drop(Timing(if keyframe { "send_key" } else { "send_sync_not_key" }, std::time::Instant::now()));
         }
@@ -287,17 +288,17 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_sendCallFrame(
                 let _timing = Timing("prepare", std::time::Instant::now());
                 let normalized;
                 let encoded = if media == sigil_calls::MediaKind::Camera {
-                    if bytes.len() <= 7 || bytes[0] != 2 { return None; }
+                    let header = header.filter(|h| bytes.len() > *h)?;
                     let size: [u8; 4] = bytes[3..7].try_into().ok()?;
                     let mut camera = current.camera.lock().ok()?;
                     let (sequence, camera_size) = &mut *camera;
                     if *camera_size != Some(size) { sequence.clear(); *camera_size = Some(size); }
-                    let frame = sequence.frame(&bytes[7..], keyframe).map_err(|_| drop(Timing("send_refused_config", std::time::Instant::now()))).ok()?;
+                    let frame = sequence.frame(&bytes[header..], keyframe).map_err(|_| drop(Timing("send_refused_config", std::time::Instant::now()))).ok()?;
                     match frame {
                         std::borrow::Cow::Borrowed(_) => &bytes[..],
                         std::borrow::Cow::Owned(frame) => {
                             let frame = Zeroizing::new(frame);
-                            normalized = Zeroizing::new([&bytes[..7], &frame[..]].concat());
+                            normalized = Zeroizing::new([&bytes[..header], &frame[..]].concat());
                             &normalized[..]
                         }
                     }
@@ -346,7 +347,8 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
                 bytes.push(value.frame.kind as u8);
                 let data = &value.frame.data;
                 let random = value.frame.kind == sigil_calls::MediaKind::Audio
-                    || data.len() > 7 && data[0] == 2 && sigil_calls::av1::random_access(&data[7..]);
+                    || data.first().and_then(|c| sigil_calls::av1::camera_header(*c))
+                        .is_some_and(|h| data.len() > h && sigil_calls::av1::random_access(&data[h..]));
                 bytes.push(u8::from(value.frame.keyframe && random));
                 bytes.extend_from_slice(&value.frame.timestamp.to_be_bytes());
                 bytes.extend_from_slice(&(value.frame.data.len() as u32).to_be_bytes());
