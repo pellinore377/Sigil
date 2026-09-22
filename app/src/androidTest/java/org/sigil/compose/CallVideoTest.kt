@@ -125,6 +125,30 @@ class CallVideoTest {
     @Test fun surfaceAv1RoundTripRendersSyntheticFrames() {
         videoRoundTrip(false)
     }
+    @Test fun resolutionRampKeepsRenderingSyntheticFrames() {
+        val thread = HandlerThread("Resolution ramp acceptance").apply { start() }
+        val reader = ImageReader.newInstance(1920, 1080, ImageFormat.YUV_420_888, 4)
+        val decoded = AtomicInteger(); val failures = AtomicInteger()
+        val shapes = java.util.Collections.synchronizedSet(mutableSetOf<Pair<Int, Int>>())
+        reader.setOnImageAvailableListener({ source -> source.acquireLatestImage()?.use { image ->
+            shapes.add(image.width to image.height); decoded.incrementAndGet()
+        } }, Handler(thread.looper))
+        val decoder = CallVideoDecoder(reader.surface, false) { _, _, _ -> }
+        try {
+            var stamp = 0
+            for ((width, height) in listOf(640 to 360, 1280 to 720, 1920 to 1080, 640 to 360)) {
+                val before = decoded.get()
+                CallEncoder(width, height, 0, 30, { time, key, bytes -> decoder.offer(time, key, bytes) }, { failures.incrementAndGet() }).use { encoder ->
+                    DrawSurface(encoder.surface).use { draw -> repeat(36) { draw.frame(stamp++, 30); Thread.sleep(34) } }
+                    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                    while (decoded.get() < before + 25 && System.nanoTime() < deadline) Thread.sleep(10)
+                    assertTrue("Resolution $width x $height stalled: ${decoded.get() - before} frames", decoded.get() >= before + 25)
+                }
+            }
+            assertTrue(shapes.containsAll(listOf(640 to 360, 1280 to 720, 1920 to 1080)))
+            assertEquals(0, failures.get())
+        } finally { decoder.close(); Thread.sleep(100); reader.close(); thread.quitSafely() }
+    }
     @Test fun aSingleFrameRendersWithoutWaitingForAnotherInput() {
         val thread = HandlerThread("Single frame acceptance").apply { start() }
         val ready = CountDownLatch(1)

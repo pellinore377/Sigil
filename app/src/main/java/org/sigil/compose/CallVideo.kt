@@ -288,6 +288,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
     private val worker = Thread({
         var codec: MediaCodec? = null
         var dimensions: Size? = null
+        var adaptiveLimit: Size? = null
         var rendered: Triple<Int, Int, Int>? = null
         var lastTimestamp = Long.MIN_VALUE
         var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
@@ -297,7 +298,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
             if (codec != null) android.util.Log.i("SigilTiming", "video decoder reset=$reason queued=${queue.size} paced=$paced")
             anchorStamp = Long.MIN_VALUE
             lastTimestamp = Long.MIN_VALUE
-            val previous = codec; codec = null; dimensions = null
+            val previous = codec; codec = null; dimensions = null; adaptiveLimit = null
             try { previous?.stop() } catch (_: Exception) {}
             try { previous?.release() } catch (_: Exception) {}
         }
@@ -353,21 +354,32 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                     // keyframe flag and dimensions need no bitstream cross-check.
                     val keyframe = packet.keyframe
                     val size = Size(width, height)
-                    if (codec == null || size != dimensions || wire != decoding) {
+                    val limit = adaptiveLimit
+                    val resize = size != dimensions
+                    if (resize && !keyframe) continue
+                    if (codec == null || wire != decoding || (resize && (limit == null || width > limit.width || height > limit.height))) {
                         if (!keyframe) continue
                         reset()
                         val chosen = callVideoDecoder(mime)
-                        android.util.Log.i("SigilTiming", "codec decode ${chosen?.name} hardware=${chosen?.isHardwareAccelerated} ${width}x$height")
+                        val capabilities = chosen?.getCapabilitiesForType(mime)
+                        val maximum = if (width >= height) Size(maxOf(width, 1920), maxOf(height, 1080)) else Size(maxOf(width, 1080), maxOf(height, 1920))
+                        adaptiveLimit = maximum.takeIf {
+                            capabilities?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_AdaptivePlayback) == true &&
+                                capabilities.videoCapabilities.isSizeSupported(it.width, it.height)
+                        }
+                        android.util.Log.i("SigilTiming", "codec decode ${chosen?.name} hardware=${chosen?.isHardwareAccelerated} ${width}x$height adaptive=${adaptiveLimit != null}")
                         codec = chosen?.let { MediaCodec.createByCodecName(it.name) } ?: MediaCodec.createDecoderByType(mime)
                         val format = MediaFormat.createVideoFormat(mime, width, height).apply {
                             setInteger(MediaFormat.KEY_PRIORITY, 0)
                             setInteger(MediaFormat.KEY_OPERATING_RATE, 60)
+                            adaptiveLimit?.let { setInteger(MediaFormat.KEY_MAX_WIDTH, it.width); setInteger(MediaFormat.KEY_MAX_HEIGHT, it.height) }
                             if (Build.VERSION.SDK_INT >= 30 && chosen?.getCapabilitiesForType(mime)?.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency) == true) {
                                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                             }
                         }
                         codec!!.configure(format, surface, null, 0); codec!!.start(); dimensions = size; decoding = wire
                     }
+                    dimensions = size
                     val shape = Triple(width, height, rotation)
                     if (rendered != shape) { geometry(width, height, rotation); rendered = shape }
                     val active = requireNotNull(codec)
@@ -391,7 +403,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
             }
         } catch (_: InterruptedException) { }
         catch (_: Exception) { }
-        finally { synchronized(queue) { running.set(false); drain() }; reset(); surface.release() }
+        finally { synchronized(queue) { running.set(false); drain() }; reset("closed"); surface.release() }
     }, "Sigil video decoder").apply { start() }
     private var offered = 0L
     private var awaitingKey = false
