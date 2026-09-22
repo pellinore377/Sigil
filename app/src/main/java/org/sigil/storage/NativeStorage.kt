@@ -13,6 +13,9 @@ object NativeStorage {
     external fun sendCallFrame(token: Long, kind: Int, timestamp: Long, keyframe: Boolean, bytes: ByteArray): Boolean
     external fun requestCallVideoKeyframe(token: Long, sender: ByteArray, kind: Int)
     /** Blocks up to [waitMs] for media. */
+    /** Camera bitrate and frame rate now: bitrate shl 32 or fps, 0 without a call. */
+    external fun callVideoTarget(token: Long, ceiling: Int, fps: Int, thermal: Int, powerSave: Boolean): Long
+    /** Blocks up to [waitMs] for media. */
     external fun receiveCallFrames(token: Long, waitMs: Int): ByteArray?
     external fun mapResource(directory: String, key: ByteArray, path: String): ByteArray?
     external fun setWallpaper(directory: String, key: ByteArray, peer: String, bytes: ByteArray): Boolean

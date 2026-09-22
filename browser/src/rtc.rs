@@ -206,7 +206,7 @@ pub async fn browser_call_audio_stats() -> String {
                     let encoder = get(&entry,"encoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
                     let decoder = get(&entry,"decoderImplementation").ok().and_then(|v|v.as_string()).unwrap_or_default();
                     let hardware = get(&entry,"powerEfficientDecoder").ok().and_then(|v|v.as_bool());
-                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} decoder={decoder} efficient={hardware:?} decoded={} dropped={} freezes={} received={} lost={} encode_ms={:.0} buffer_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesDecoded"),n("framesDropped"),n("freezeCount"),n("framesReceived"),n("packetsLost"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
+                    video_sink.borrow_mut().push(format!("{direction} {}x{} fps={} encoded={} keys={} encoder={encoder} decoder={decoder} efficient={hardware:?} decoded={} dropped={} freezes={} received={} lost={} packets={} nacks={} repaired={} encode_ms={:.0} buffer_ms={:.0}",n("frameWidth"),n("frameHeight"),n("framesPerSecond"),n("framesEncoded"),n("keyFramesEncoded"),n("framesDecoded"),n("framesDropped"),n("freezeCount"),n("framesReceived"),n("packetsLost"),n("packetsReceived"),n("nackCount"),n("retransmittedPacketsReceived"), n("totalEncodeTime")*1000.0/n("framesEncoded").max(1.0), n("jitterBufferDelay")*1000.0/n("jitterBufferEmittedCount").max(1.0)));
                 }
             }
             if get(&entry, "kind").ok().and_then(|v| v.as_string()).as_deref() != Some("audio") {
@@ -382,8 +382,11 @@ pub async fn browser_call_connect(id: String, frames: Function) -> Result<(), Js
             if kind == MediaKind::Camera {
                 let caps = invoke(&get(&js_sys::global(), "RTCRtpSender")?, "getCapabilities", &["video".into()])?;
                 let codecs = Array::from(&get(&caps, "codecs")?);
-                let av1 = codecs.iter().filter(|c| get(c, "mimeType").ok().and_then(|v| v.as_string()).is_some_and(|v| v.eq_ignore_ascii_case("video/AV1"))).collect::<Array>();
-                if av1.length() == 0 { return Err(fail("This browser cannot send AV1 video")); }
+                let named = |c: &JsValue, name: &str| get(c, "mimeType").ok().and_then(|v| v.as_string()).is_some_and(|v| v.eq_ignore_ascii_case(name));
+                if !codecs.iter().any(|c| named(&c, "video/AV1")) { return Err(fail("This browser cannot send AV1 video")); }
+                // Keep RTX: the forwarder fixes each codec's payload types from the first section it
+                // negotiates, and without RTX here no lost video packet could be resent on any track.
+                let av1 = codecs.iter().filter(|c| named(c, "video/AV1") || named(c, "video/rtx")).collect::<Array>();
                 invoke(&transceiver, "setCodecPreferences", &[av1.into()])?;
                 attach_transform(&get(&transceiver, "sender")?, serde_json::json!({"operation":"seal","kind":"camera","call":id}))?;
             }

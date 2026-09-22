@@ -108,7 +108,9 @@ internal class NativeCalls(private val app: Application, private val update: (Li
                 if (capture == null || camera !== capture) return@launch
                 video = false; camera?.close(); camera = null; applyTracks(); issue("Camera capture stopped.")
             }
-        }, cameraTarget)
+        }, cameraTarget) { ceiling, fps, thermal, powerSave ->
+            token.takeIf { it != 0L }?.let { NativeStorage.callVideoTarget(it, ceiling, fps, thermal, powerSave) } ?: 0L
+        }
         camera = capture
     }
     private var lastMark: String? = null

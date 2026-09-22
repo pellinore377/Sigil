@@ -97,6 +97,52 @@ pub fn random_access(bytes: &[u8]) -> bool {
     }
     false
 }
+/// Restores sending order for numbered frames. A frame completed by a retransmitted packet
+/// arrives after its successors; a gap waits `WAIT_MS` for it before releasing what follows,
+/// so the decoder then sees a genuine loss. A keyframe always starts a fresh baseline.
+pub struct Reorder<T> {
+    next: Option<u32>,
+    held: std::collections::BTreeMap<u32, T>,
+    since: f64,
+    /// Holes filled late, the longest such wait in ms, holes given up, and frames arriving after that.
+    pub filled: u32,
+    pub filled_ms: f64,
+    pub given_up: u32,
+    pub stale: u32,
+}
+impl<T> Default for Reorder<T> {
+    fn default() -> Self { Self { next: None, held: Default::default(), since: 0.0, filled: 0, filled_ms: 0.0, given_up: 0, stale: 0 } }
+}
+impl<T> Reorder<T> {
+    pub const WAIT_MS: f64 = 80.0;
+    const HOLD: usize = 12;
+    /// `at` is a monotonic clock in milliseconds. Returns frames ready to decode, in order.
+    pub fn accept(&mut self, number: u32, key: bool, frame: T, at: f64) -> Vec<T> {
+        let mut ready = Vec::new();
+        match self.next {
+            _ if key => { self.held.clear(); ready.push(frame); self.next = Some(number.wrapping_add(1)); }
+            None => { ready.push(frame); self.next = Some(number.wrapping_add(1)); }
+            Some(next) if number == next => {
+                if !self.held.is_empty() { self.filled += 1; self.filled_ms = self.filled_ms.max(at - self.since); }
+                ready.push(frame); self.next = Some(next.wrapping_add(1));
+            }
+            Some(next) if number.wrapping_sub(next) < 1 << 31 => {
+                if self.held.is_empty() { self.since = at; }
+                self.held.insert(number, frame);
+            }
+            // Already released past, or a duplicate.
+            Some(_) => self.stale += 1,
+        }
+        while let Some(next) = self.next {
+            if let Some(frame) = self.held.remove(&next) { ready.push(frame); self.next = Some(next.wrapping_add(1)); continue; }
+            if self.held.is_empty() || (at - self.since < Self::WAIT_MS && self.held.len() <= Self::HOLD) { break; }
+            self.next = self.held.keys().next().copied();
+            self.since = at;
+            self.given_up += 1;
+        }
+        ready
+    }
+}
 fn length(mut n: usize, out: &mut Vec<u8>) {
     loop { let byte = (n & 127) as u8; n >>= 7; out.push(byte | if n == 0 { 0 } else { 128 }); if n == 0 { break; } }
 }
@@ -261,5 +307,26 @@ mod tests {
         for invalid in [&[][..], &[0x12, 0], &[0x32, 0], &[0x32, 5, 0x10], &[0x0a, 3, 1], &[0x33, 1, 0x10], &[0xb2, 1, 0x10]] {
             assert!(!random_access(invalid));
         }
+    }
+    #[test] fn reorder_waits_for_a_late_frame_then_gives_up_and_keyframes_reset() {
+        let mut order = Reorder::default();
+        assert_eq!(order.accept(1, true, 1, 0.0), [1]);
+        assert_eq!(order.accept(2, false, 2, 16.0), [2]);
+        // 3 completes late after a retransmission: 4 and 5 wait, then all release in order.
+        assert!(order.accept(4, false, 4, 33.0).is_empty());
+        assert!(order.accept(5, false, 5, 50.0).is_empty());
+        assert_eq!(order.accept(3, false, 3, 55.0), [3, 4, 5]);
+        // Late duplicates are dropped.
+        assert!(order.accept(3, false, 3, 60.0).is_empty());
+        // 6 never arrives: after the wait, 7 onward release and the decoder sees the gap.
+        assert!(order.accept(7, false, 7, 66.0).is_empty());
+        assert!(order.accept(8, false, 8, 100.0).is_empty());
+        assert_eq!(order.accept(9, false, 9, 150.0), [7, 8, 9]);
+        // A restarted sender's keyframe is accepted despite its lower number.
+        assert_eq!(order.accept(1, true, 101, 160.0), [101]);
+        assert_eq!(order.accept(2, false, 102, 176.0), [102]);
+        // A long hole releases once too many frames are held.
+        for n in 4..16 { assert!(order.accept(n, false, 100 + n, 180.0).is_empty()); }
+        assert_eq!(order.accept(16, false, 116, 181.0), (104..=116).collect::<Vec<_>>());
     }
 }

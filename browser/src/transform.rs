@@ -40,7 +40,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         .unwrap_or_default();
     let video = get(&options, "kind").ok().and_then(|v| v.as_string()).as_deref() == Some("camera");
     let call = get(&options, "call").ok().and_then(|v| v.as_string()).unwrap_or_default();
-    let software = (video && !sealing).then(|| crate::camera_decode::Decoder::new(call.clone(),sender.clone(),get(&options,"generation").ok().and_then(|v|v.as_f64()).unwrap_or(0.0) as u64));
+    let software = (video && !sealing).then(|| std::rc::Rc::new(crate::camera_decode::Decoder::new(call.clone(),sender.clone(),get(&options,"generation").ok().and_then(|v|v.as_f64()).unwrap_or(0.0) as u64)));
     let mut last_stamp = None::<u32>;
     let mut elapsed = 0u64;
     let reader = invoke(&get(&transformer, "readable")?, "getReader", &[])?;
@@ -119,18 +119,14 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                     "SigilTiming call transform dropped={dropped} sealing={sealing} reason={reason}"
                 ));
             }
+            if video && !sealing { release(&writer, &frame).await?; }
             continue;
         }
         let Ok(Some(payload)) = converted else { continue };
         if video && !sealing {
             let camera = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
             let (rotation, width, height) = (camera.rotation, camera.width, camera.height);
-            if let Some(decoder) = &software {
-                if !decoder.push(&payload).await.unwrap_or(false) && arrived - recovery_at >= 250.0 {
-                    recovery_at = arrived;
-                    request_keyframe(&call, &sender);
-                }
-            }
+            if let Some(decoder) = &software { decoder.receive(payload.clone()); }
             if shape != Some((rotation, width, height)) || payload[1] != 0 {
                 let message = crate::rtc::object(serde_json::json!({"video_shape":true,"call":call,"sender":sender,"rotation":rotation,"width":width,"height":height}))?;
                 let worker: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
@@ -148,6 +144,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                 video_since = at;
                 (video_count, video_gap, video_open, video_ack) = (0, 0.0, 0.0, 0.0);
             }
+            release(&writer, &frame).await?;
             continue;
         }
         let buffer = js_sys::Uint8Array::from(payload.as_slice()).buffer();
@@ -159,7 +156,16 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
 
 /// The forwarder ignores RTCP keyframe requests from browsers, which Chrome also sends for
 /// tracks it never decodes itself; this receiver's own requests go over the page's channel.
-fn request_keyframe(call: &str, sender: &str) {
+/// Hands Chrome an empty AV1 temporal unit in place of a camera frame we decode ourselves.
+/// Chrome frees a frame's packets only once its own pipeline receives the frame; withholding
+/// frames filled its 2,048-packet buffer every few seconds, and each overflow discarded a frame.
+async fn release(writer: &JsValue, frame: &JsValue) -> Result<(), JsValue> {
+    let placeholder = js_sys::Uint8Array::from(&[0x12u8, 0x00][..]).buffer();
+    set(frame, "data", &placeholder.into())?;
+    JsFuture::from(invoke(writer, "write", &[frame.clone()])?.unchecked_into::<js_sys::Promise>()).await.map(|_| ())
+}
+
+pub(crate) fn request_keyframe(call: &str, sender: &str) {
     let worker: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
     if let Ok(message) = crate::rtc::object(serde_json::json!({"video_key_request":true,"call":call,"sender":sender})) {
         let _ = worker.post_message(&message);

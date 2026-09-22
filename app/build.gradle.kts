@@ -10,8 +10,8 @@ android {
         applicationId = "org.sigil.compose"
         minSdk = 26
         targetSdk = 35
-        versionCode = 97
-        versionName = "0.1.0-alpha.96"
+        versionCode = 106
+        versionName = "0.1.0-alpha.105"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "app_name", "Sigil")
         ndk { abiFilters += "arm64-v8a" }

@@ -13,6 +13,7 @@ mod forwarding;
 mod frame;
 pub use frame::{Context, Frame, KeyShare, MediaKind, Receiver, Sender, SenderHandoff};
 pub mod av1;
+pub mod rate;
 mod packet;
 pub mod channel;
 pub use packet::{packetize, Assembly};

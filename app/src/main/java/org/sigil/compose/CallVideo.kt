@@ -79,7 +79,11 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
         ?: MediaCodec.createEncoderByType(mime)
     private val running = AtomicBoolean(true)
     private val keyframeRequested = AtomicBoolean(false)
+    /// At most one forced keyframe a second: they run to hundreds of kilobytes on this encoder.
+    private var lastSync = 0L
+    private val bitrate = java.util.concurrent.atomic.AtomicInteger(0)
     fun requestKeyframe() { keyframeRequested.set(true) }
+    fun setBitrate(value: Int) { bitrate.set(value) }
     val surface: Surface
     private val worker: Thread
     init {
@@ -89,9 +93,11 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
             format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             format.setInteger(MediaFormat.KEY_BIT_RATE, callVideoBitrate(width, height, fps))
+            // Not CBR: Pixel's AV1 encoder then emits every periodic sync frame as intra-only, which Chrome rejects.
             format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            // One-second keyframes bound how long a lost frame can hold the picture without spending the bitrate on them.
-            format.setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 1f)
+            // No periodic sync frames: Pixel's AV1 encoder emits some as intra-only frames that libaom
+            // and dav1d reject as corrupt. Receivers request keyframes when they need one.
+            format.setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 3600f)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             surface = codec.createInputSurface(); codec.start()
         } catch (error: Exception) { codec.release(); throw error }
@@ -101,7 +107,12 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
             var keys = 0; var configs = 0; var partials = 0; var largest = 0
             try {
                 while (running.get()) {
-                    if (keyframeRequested.getAndSet(false)) codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+                    val clock = android.os.SystemClock.elapsedRealtime()
+                    if (clock - lastSync >= 1000 && keyframeRequested.getAndSet(false)) {
+                        lastSync = clock
+                        codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+                    }
+                    bitrate.getAndSet(0).takeIf { it > 0 }?.let { value -> codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, value) }) }
                     val index = codec.dequeueOutputBuffer(info, 10000)
                     if (index < 0) continue
                     try {
@@ -129,17 +140,18 @@ internal class CallEncoder(val width: Int, val height: Int, private val rotation
     }
     override fun close() { running.set(false); worker.interrupt() }
 }
-// Six frames cover the existing 100 ms age limit at 60 fps; gaps require a fresh keyframe.
+// Half a second of 60 fps frames: a keyframe paced out over 150 ms is not overload. Tighter
+// limits dropped the frames queued behind it, which demanded another keyframe, in a loop.
 internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> Boolean, private val requestKeyframe: () -> Unit, private val failed: (Exception) -> Unit) : AutoCloseable {
     private data class Pending(val stamp: Long, val key: Boolean, val bytes: ByteArray, val added: Long)
-    private val queue = ArrayBlockingQueue<Pending>(6)
+    private val queue = ArrayBlockingQueue<Pending>(30)
     private val running = AtomicBoolean(true)
     private var waitingKey = true
     private var skipped = 0L
     private var repairAt = 0L
     private fun repair() {
         val now = System.nanoTime()
-        if (repairAt == 0L || now - repairAt >= 200_000_000L) { repairAt = now; requestKeyframe() }
+        if (repairAt == 0L || now - repairAt >= 1_000_000_000L) { repairAt = now; requestKeyframe() }
     }
     private fun clear() { while (true) (queue.poll() ?: break).bytes.fill(0) }
     @Synchronized fun offer(timestamp: Long, keyframe: Boolean, bytes: ByteArray) {
@@ -162,7 +174,7 @@ internal class CallVideoSender(private val send: (Long, Boolean, ByteArray) -> B
                     if (!running.get()) continue
                     val started = System.nanoTime()
                     ageMax = maxOf(ageMax, started - packet.added)
-                    if (started - packet.added > 100_000_000L) {
+                    if (started - packet.added > 500_000_000L) {
                         synchronized(this) { skipped += queue.size + 1; clear(); waitingKey = true; repair() }
                         continue
                     }
@@ -191,7 +203,9 @@ internal class CallCameraPreview(private val texture: android.graphics.SurfaceTe
     fun restoreSize() { size?.let { texture.setDefaultBufferSize(it.width, it.height) } }
     override fun close() = surface.release()
 }
-internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Boolean, private val failed: () -> Unit, private val preview: CallCameraPreview? = null) : AutoCloseable {
+/// Supplies bitrate shl 32 or fps for a capture mode's ceiling bitrate and frame rate, given thermal status and battery saver.
+internal typealias CallVideoTarget = (ceiling: Int, fps: Int, thermal: Int, powerSave: Boolean) -> Long
+internal class CallCamera(private val context: Context, front: Boolean, send: (Long, Boolean, ByteArray) -> Boolean, private val failed: () -> Unit, private val preview: CallCameraPreview? = null, private val target: CallVideoTarget? = null) : AutoCloseable {
     private val running = AtomicBoolean(true)
     private val thread = HandlerThread("Sigil camera").apply { start() }
     private val handler = Handler(thread.looper)
@@ -266,6 +280,7 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                                         range?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
                                     }
                                     value.setRepeatingRequest(request.build(), null, handler)
+                                    target?.let { adapt(it, value, video, callVideoBitrate(size.width, size.height, fps), fps) }
                                 } catch (_: Exception) { failed(); close() }
                             }
                             override fun onConfigureFailed(value: CameraCaptureSession) { value.close(); failed(); close() }
@@ -276,6 +291,24 @@ internal class CallCamera(context: Context, front: Boolean, send: (Long, Boolean
                 }, handler)
             } catch (_: Exception) { if (running.get()) failed(); close() }
         }
+    }
+    /// Re-reads the sender's bitrate twice a second. The capture rate stays fixed: changing the
+    /// camera's frame rate mid-call left Pixel's AV1 encoder emitting corrupt frames.
+    private fun adapt(target: CallVideoTarget, session: CameraCaptureSession, video: CallEncoder, ceiling: Int, fps: Int) {
+        val power = context.getSystemService(PowerManager::class.java)
+        var applied = ceiling
+        val tick = object : Runnable {
+            override fun run() {
+                if (!running.get() || session !== this@CallCamera.session) return
+                try {
+                    val value = target(ceiling, fps, power.currentThermalStatus, power.isPowerSaveMode)
+                    val bitrate = (value ushr 32).toInt()
+                    if (value != 0L && bitrate != applied) { video.setBitrate(bitrate); applied = bitrate }
+                } catch (_: Exception) {}
+                handler.postDelayed(this, 500)
+            }
+        }
+        handler.postDelayed(tick, 500)
     }
     override fun close() {
         if (!running.getAndSet(false)) return

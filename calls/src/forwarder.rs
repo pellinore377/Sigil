@@ -213,7 +213,8 @@ impl Forwarder {
             let stream = api
                 .stream_tx_by_mid(mid(&track.mid), None)
                 .ok_or(Error::Invalid)?;
-            stream.set_rtx_cache(128, Duration::from_secs(2), Some(0.15));
+            // About a second of 1080p60 video: a repair request after a loss burst must still find the packet.
+            stream.set_rtx_cache(1024, Duration::from_secs(1), Some(0.15));
             streams.push(crate::Downstream {
                 track: track.clone(),
                 ssrc: *stream.ssrc(),
