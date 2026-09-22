@@ -250,12 +250,16 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_receiveCallFrames(
     _: JObject,
     token: jlong,
 ) -> jbyteArray {
-    let _timing = Timing("receive", std::time::Instant::now());
+    let mut timing = Timing("receive", std::time::Instant::now());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || -> Option<Zeroizing<Vec<u8>>> {
             let handle = handle(token)?;
             let mut active = handle.state.lock().ok()?;
             let NativeMedia { store, call } = &mut *active;
+            if !call.has_pending_receive() {
+                timing.0 = "receive_idle";
+                return Some(Zeroizing::new(Vec::new()));
+            }
             let frames = store.rtc_receive(call, now()).ok()?;
             let mut bytes = Zeroizing::new(Vec::with_capacity(
                 frames.iter().map(|v| 46 + v.frame.data.len()).sum(),
