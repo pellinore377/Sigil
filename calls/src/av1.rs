@@ -62,6 +62,24 @@ impl Sequence {
 }
 impl Drop for Sequence { fn drop(&mut self) { self.clear(); } }
 
+/// Whether a decoder may start here: the first frame header is a shown KEY_FRAME.
+/// Encoders may flag intra-only frames as sync points; those still need prior state.
+pub fn random_access(bytes: &[u8]) -> bool {
+    let mut at = 0;
+    while at < bytes.len() {
+        let header = bytes[at]; at += 1;
+        if header & 0x81 != 0 || header & 2 == 0 { return false; }
+        if header & 4 != 0 { at += 1; }
+        let Ok(length) = read_length(bytes, &mut at) else { return false };
+        let Some(end) = at.checked_add(length).filter(|end| *end <= bytes.len()) else { return false };
+        if matches!((header >> 3) & 15, 3 | 6) {
+            // show_existing_frame, then frame_type; KEY_FRAME is zero.
+            return length > 0 && bytes[at] & 0xe0 == 0;
+        }
+        at = end;
+    }
+    false
+}
 fn length(mut n: usize, out: &mut Vec<u8>) {
     loop { let byte = (n & 127) as u8; n >>= 7; out.push(byte | if n == 0 { 0 } else { 128 }); if n == 0 { break; } }
 }
@@ -209,5 +227,16 @@ mod tests {
         for bytes in [&[][..], &[0x10], &[0x50, 0x30, 7], &[0x20, 0x30, 7], &[0, 255]] { assert!(a.push(5, 43, true, bytes).is_err()); }
         assert_eq!(a.push(6, 43, true, &[0x10, 0x30, 8]).unwrap(), Some(vec![8]));
         assert_eq!(a.push(7, 44, true, &[0, 2, 0x30, 9]).unwrap(), Some(vec![9]));
+    }
+    #[test] fn only_shown_key_frames_are_random_access_points() {
+        // Temporal delimiter, sequence header, then a frame OBU whose header byte carries
+        // show_existing_frame and frame_type; the observed encoder flagged intra-only (0x50) as sync.
+        for (first, key) in [(0x10, true), (0x18, true), (0x50, false), (0x30, false), (0x70, false), (0x90, false)] {
+            assert_eq!(random_access(&[0x12, 0, 0x0a, 1, 9, 0x32, 2, first, 1]), key, "{first:#x}");
+            assert_eq!(random_access(&[0x1a, 1, first]), key, "frame header {first:#x}");
+        }
+        for invalid in [&[][..], &[0x12, 0], &[0x32, 0], &[0x32, 5, 0x10], &[0x0a, 3, 1], &[0x33, 1, 0x10], &[0xb2, 1, 0x10]] {
+            assert!(!random_access(invalid));
+        }
     }
 }

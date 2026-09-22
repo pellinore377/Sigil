@@ -535,11 +535,11 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         // Deliver a complete burst before polling, as happens after a scheduling stall.
         // These are real sealed RTP payloads; only network arrival timing is synthetic.
         let (arrival, packets) = mpsc::channel(512);
-        b.transport.packets = packets;
-        b.incoming.clear();
-        b.ready = Default::default();
-        b.camera_assembly.clear();
-        b.video_gaps.clear();
+        b.receive.as_mut().unwrap().packets = packets;
+        b.receive.as_mut().unwrap().incoming.clear();
+        b.receive.as_mut().unwrap().ready = Default::default();
+        b.receive.as_mut().unwrap().camera_assembly.clear();
+        b.receive.as_mut().unwrap().video_gaps.clear();
         assert!(!b.has_pending_receive());
         let own = alice.call_transport_roster(id, now).unwrap().1;
         for index in 0..12 {
@@ -547,7 +547,7 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
                 if kind == MediaKind::Camera && index >= 8 { continue; }
                 let wire = alice.rtc_prepare_send(&mut a, kind, 20_000_000 + index * 33_333,
                     kind == MediaKind::Camera && index == 0, &[42; 8192], now).unwrap();
-                let ssrc = b.streams.iter().find(|s| s.track.sender == own && s.track.kind == kind).unwrap().ssrc;
+                let ssrc = b.receive.as_ref().unwrap().streams.iter().find(|s| s.track.sender == own && s.track.kind == kind).unwrap().ssrc;
                 for packet in wire.packets {
                     arrival.try_send(Packet { ssrc, sequence: packet.header.sequence_number,
                         timestamp: packet.header.timestamp, marker: packet.header.marker,
@@ -569,7 +569,7 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
         assert!(!b.has_pending_receive());
         // Losing a complete camera frame must request recovery immediately, and
         // an authenticated keyframe must clear it without delivering dependent frames.
-        let ssrc = b.streams.iter().find(|s| s.track.sender == own && s.track.kind == MediaKind::Camera).unwrap().ssrc;
+        let ssrc = b.receive.as_ref().unwrap().streams.iter().find(|s| s.track.sender == own && s.track.kind == MediaKind::Camera).unwrap().ssrc;
         alice.rtc_prepare_send(&mut a, MediaKind::Camera, 21_000_000, false, &[42; 100], now).unwrap();
         for (timestamp, keyframe) in [(21_033_333, false), (21_066_666, true)] {
             let wire = alice.rtc_prepare_send(&mut a, MediaKind::Camera, timestamp, keyframe, &[42; 100], now).unwrap();
@@ -583,16 +583,16 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
                 tokio::time::sleep(Duration::from_millis(130)).await;
                 delivered.extend(bob.rtc_receive(&mut b, now).unwrap());
                 assert!(delivered.is_empty());
-                assert!(b.transport.key_requests.lock().unwrap().contains(&ssrc));
+                assert!(b.receive.as_ref().unwrap().key_requests.lock().unwrap().contains(&ssrc));
             } else {
                 assert_eq!(delivered.len(), 1);
                 assert_eq!(delivered[0].frame.timestamp, timestamp);
-                assert!(!b.transport.key_requests.lock().unwrap().contains(&ssrc));
+                assert!(!b.receive.as_ref().unwrap().key_requests.lock().unwrap().contains(&ssrc));
             }
         }
         // A decoder attached after the original keyframe must recover without periodic PLI.
         b.request_video_keyframe(own, MediaKind::Camera);
-        assert!(b.transport.key_requests.lock().unwrap().contains(&ssrc));
+        assert!(b.receive.as_ref().unwrap().key_requests.lock().unwrap().contains(&ssrc));
         for (timestamp, keyframe) in [(22_000_000, false), (22_033_333, true)] {
             let wire = alice.rtc_prepare_send(&mut a, MediaKind::Camera, timestamp, keyframe, &[42; 100], now).unwrap();
             for packet in wire.packets {
@@ -602,7 +602,7 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
             }
             let delivered = bob.rtc_receive(&mut b, now).unwrap();
             assert_eq!(delivered.len(), usize::from(keyframe));
-            assert_eq!(b.transport.key_requests.lock().unwrap().contains(&ssrc), !keyframe);
+            assert_eq!(b.receive.as_ref().unwrap().key_requests.lock().unwrap().contains(&ssrc), !keyframe);
         }
         assert!(bob.rtc_receive(&mut a, now).is_err());
         alice.leave_call(id, now).unwrap();
@@ -611,5 +611,77 @@ fn adapter_transports_only_authenticated_frames_and_rejects_ended_handles() {
             .await
             .is_err());
         assert!(alice.rtc_receive(&mut a, now).is_err());
+    });
+}
+#[test]
+fn detached_frames_flow_only_under_published_authority() {
+    let (dir, fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    super::super::tests::configure(dir.path());
+    let port = fixture.port();
+    drop(fixture);
+    let (app, maintenance) = sigil_server::router_with_maintenance(
+        sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap(),
+        sigil_server::auth::AdminToken::load_or_create(&dir.path().join("admin.token")).unwrap(),
+    );
+    let _fixture = crate::network::tests::Fixture::maintained_at(app, maintenance, port);
+    let (_, peer) = crate::incoming::tests::trust(&mut alice, &mut bob);
+    let id = [97; 32];
+    alice.create_call(id, now, 3600).unwrap();
+    alice.invite_to_call(id, peer, now).unwrap();
+    super::super::tests::pump(&mut alice, &mut bob, now);
+    bob.answer_call(id, true, now).unwrap();
+    super::super::tests::pump(&mut bob, &mut alice, now);
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+    runtime.block_on(async {
+        let tracks = Tracks { audio: true, camera: true, screen: false };
+        let mut a = alice.connect_rtc_call(id, tracks, now).await.unwrap();
+        let mut b = bob.connect_rtc_call(id, tracks, now).await.unwrap();
+        let (ga, gb) = (std::sync::Mutex::new(MediaGate::default()), std::sync::Mutex::new(MediaGate::default()));
+        let lifetime = Duration::from_secs(2);
+        for _ in 0..150 {
+            super::super::tests::pump(&mut alice, &mut bob, now);
+            let states = (alice.rtc_publish(&mut a, &ga, lifetime, now), bob.rtc_publish(&mut b, &gb, lifetime, now));
+            if matches!(states, (Ok("connected"), Ok("connected"))) { break; }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let (mut sa, _) = a.detach().unwrap();
+        let (_, mut rb) = b.detach().unwrap();
+        // The store-backed path is gone once detached; frames only flow through the gates.
+        assert!(alice.rtc_prepare_send(&mut a, MediaKind::Audio, 1, false, b"x", now).is_err());
+        let own = alice.call_transport_roster(id, now).unwrap().1;
+        let mut ca = GateCrypto { gate: &ga, now };
+        let mut cb = GateCrypto { gate: &gb, now };
+        let mut delivered = Vec::new();
+        for index in 0..100u64 {
+            sa.prepare(&mut ca, MediaKind::Camera, index * 16_666, true, &[5; 4096]).unwrap().send().await.unwrap();
+            delivered.extend(rb.receive(&mut cb).unwrap().into_iter().map(|v| (v.sender, v.frame.kind, v.frame.data.to_vec())));
+            if !delivered.is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(delivered[0], (own, MediaKind::Camera, vec![5; 4096]));
+        // A revoked gate refuses without consuming, so authority returning loses nothing.
+        gb.lock().unwrap().revoke();
+        sa.prepare(&mut ca, MediaKind::Audio, 2_000_000, false, b"held").unwrap().send().await.unwrap();
+        for _ in 0..100 { if rb.has_pending() { break; } tokio::time::sleep(Duration::from_millis(10)).await; }
+        assert!(matches!(rb.receive(&mut cb), Err(Error::Unprepared)));
+        assert!(rb.has_pending());
+        assert_eq!(bob.rtc_publish(&mut b, &gb, lifetime, now).unwrap(), "connected");
+        let mut held = Vec::new();
+        for _ in 0..100 {
+            held.extend(rb.receive(&mut cb).unwrap().into_iter().filter(|v| v.frame.kind == MediaKind::Audio).map(|v| v.frame.data.to_vec()));
+            if !held.is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(held, vec![b"held".to_vec()]);
+        // An owner that stops publishing loses authority at the deadline.
+        assert_eq!(alice.rtc_publish(&mut a, &ga, Duration::from_millis(50), now).unwrap(), "connected");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(sa.prepare(&mut ca, MediaKind::Audio, 3_000_000, false, b"late").is_err());
+        // A block revokes at the next publish, not at the deadline.
+        assert_eq!(alice.rtc_publish(&mut a, &ga, lifetime, now).unwrap(), "connected");
+        sa.prepare(&mut ca, MediaKind::Audio, 4_000_000, false, b"ok").unwrap();
+        alice.block_peer(peer, true).unwrap();
+        assert!(alice.rtc_publish(&mut a, &ga, lifetime, now).is_err());
+        assert!(sa.prepare(&mut ca, MediaKind::Audio, 5_000_000, false, b"blocked").is_err());
     });
 }

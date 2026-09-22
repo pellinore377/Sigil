@@ -769,6 +769,20 @@ pub(crate) fn receive_video(message: &JsValue) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Sends this receiver's keyframe request for one member's camera over the channel.
+pub(crate) fn request_video_keyframe(message: &JsValue) -> Result<(), JsValue> {
+    let call = get(message, "call")?.as_string().ok_or_else(|| fail("Missing call"))?;
+    let sender = get(message, "sender")?.as_string().ok_or_else(|| fail("Missing sender"))?;
+    SESSION.with(|s| {
+        let s = s.borrow();
+        let Some(session) = s.as_ref().filter(|s| s.call == call) else { return Ok(()) };
+        let Some(member) = session.members.iter().find(|m| call::hex(**m) == sender) else { return Ok(()) };
+        if get(&session.channel, "readyState")?.as_string().as_deref() != Some("open") { return Ok(()); }
+        let bytes = sigil_calls::channel::key_request(*member, MediaKind::Camera).map_err(|_| fail("Invalid key request"))?;
+        invoke(&session.channel, "send", &[Uint8Array::from(bytes.as_slice()).into()]).map(|_| ())
+    })
+}
+
 pub(crate) fn receive_decoded_video(message:&JsValue)->Result<(),JsValue>{
     let call=get(message,"call")?.as_string().unwrap_or_default();let sender=get(message,"sender")?.as_string().unwrap_or_default();
     let generation=get(message,"generation")?.as_f64().unwrap_or(0.0) as u64;

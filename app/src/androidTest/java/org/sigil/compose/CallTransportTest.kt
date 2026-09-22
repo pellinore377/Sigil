@@ -59,7 +59,7 @@ class CallTransportTest {
                                 encoder.input(pcm, pcm.size)
                                 if (frame % 2 == 0) draw.frame(frame / 2)
                                 frame++
-                                NativeStorage.receiveCallFrames(handle)?.let { bytes ->
+                                NativeStorage.receiveCallFrames(handle, 20)?.let { bytes ->
                                     try {
                                         val buffer = ByteBuffer.wrap(bytes)
                                         while (buffer.hasRemaining()) {
@@ -91,7 +91,7 @@ class CallTransportTest {
                 if (sorted.isNotEmpty()) android.util.Log.i("SigilAcceptance", "Media kind=$kind frames=${sorted.size} p95=${sorted[(sorted.size - 1) * 95 / 100] / 1_000_000.0} ms")
             }
             NativeStorage.closeCall(handle)
-            assertEquals(-1, NativeStorage.callState(handle)); assertNull(NativeStorage.receiveCallFrames(handle))
+            assertEquals(-1, NativeStorage.callState(handle)); assertNull(NativeStorage.receiveCallFrames(handle, 20))
             assertFalse(NativeStorage.sendCallFrame(handle, 0, 0, false, byteArrayOf(1)))
         } finally { NativeStorage.closeCall(handle); key.fill(0); videos.forEach { it.close() }; Thread.sleep(100); readers.forEach { it.close() }; thread.quitSafely(); directory.deleteRecursively() }
     }

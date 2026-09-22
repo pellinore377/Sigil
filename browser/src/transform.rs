@@ -105,8 +105,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
             dropped += 1;
             if video && arrived - recovery_at >= 250.0 {
                 recovery_at = arrived;
-                let method = if sealing { "generateKeyFrame" } else { "sendKeyFrameRequest" };
-                if let Ok(request) = invoke(&transformer, method, &[]) {
+                if !sealing { request_keyframe(&call, &sender); }
+                else if let Ok(request) = invoke(&transformer, "generateKeyFrame", &[]) {
                     spawn_local(async move { if let Ok(promise) = request.dyn_into::<js_sys::Promise>() { let _ = JsFuture::from(promise).await; } });
                 }
             }
@@ -125,9 +125,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
             if let Some(decoder) = &software {
                 if !decoder.push(&payload).await.unwrap_or(false) && arrived - recovery_at >= 250.0 {
                     recovery_at = arrived;
-                    if let Ok(request) = invoke(&transformer,"sendKeyFrameRequest",&[]) {
-                        spawn_local(async move {if let Ok(p)=request.dyn_into::<js_sys::Promise>() {let _=JsFuture::from(p).await;}});
-                    }
+                    request_keyframe(&call, &sender);
                 }
             }
             if shape != Some((rotation, width, height)) || payload[1] != 0 {
@@ -153,6 +151,15 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         set(&frame, "data", &buffer.into())?;
         JsFuture::from(invoke(&writer, "write", &[frame])?.unchecked_into::<js_sys::Promise>())
             .await?;
+    }
+}
+
+/// The forwarder ignores RTCP keyframe requests from browsers, which Chrome also sends for
+/// tracks it never decodes itself; this receiver's own requests go over the page's channel.
+fn request_keyframe(call: &str, sender: &str) {
+    let worker: web_sys::DedicatedWorkerGlobalScope = js_sys::global().unchecked_into();
+    if let Ok(message) = crate::rtc::object(serde_json::json!({"video_key_request":true,"call":call,"sender":sender})) {
+        let _ = worker.post_message(&message);
     }
 }
 

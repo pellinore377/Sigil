@@ -86,6 +86,10 @@ pub async fn start_browser() -> Result<(), JsValue> {
             }
             return;
         }
+        if get(&data, "video_key_request").ok().and_then(|v| v.as_bool()) == Some(true) {
+            let _ = crate::rtc::request_video_keyframe(&data);
+            return;
+        }
         if get(&data, "video_shape").ok().and_then(|v| v.as_bool()) == Some(true) {
             let _ = crate::rtc::receive_video(&data);
             return;
