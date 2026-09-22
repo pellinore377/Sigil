@@ -54,6 +54,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
     let mut video_last = video_since;
     let (mut video_count, mut video_gap, mut video_open, mut video_ack) = (0u32, 0f64, 0f64, 0f64);
     loop {
+        #[cfg(feature = "video-acceptance")]
+        if video && !sealing { crate::video_acceptance::receive_burst(&options, fixture_frame).await?; }
         let read = JsFuture::from(invoke(&reader, "read", &[])?.unchecked_into::<js_sys::Promise>())
             .await?;
         if get(&read, "done")?.as_bool() == Some(true) {
@@ -109,7 +111,7 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         if video && !sealing {
             let (rotation, width, height, _encoded) = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
             if let Some(decoder) = &software {
-                if !decoder.push(&payload).unwrap_or(false) && arrived - recovery_at >= 250.0 {
+                if !decoder.push(&payload).await.unwrap_or(false) && arrived - recovery_at >= 250.0 {
                     recovery_at = arrived;
                     if let Ok(request) = invoke(&transformer,"sendKeyFrameRequest",&[]) {
                         spawn_local(async move {if let Ok(p)=request.dyn_into::<js_sys::Promise>() {let _=JsFuture::from(p).await;}});

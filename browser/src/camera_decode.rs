@@ -10,8 +10,8 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     rc::{Rc, Weak},
 };
-use wasm_bindgen::{prelude::*, JsCast};
-use wasm_bindgen_futures::{spawn_local, JsFuture};
+use wasm_bindgen::{JsCast, prelude::*};
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 #[path = "camera_pacing.rs"]
 mod pacing;
@@ -31,6 +31,13 @@ struct State {
     tick: Option<js_sys::Function>,
     submitted: BTreeMap<u64, (i32, u16)>,
     last_stamp: Option<u64>,
+    output_wait: Option<f64>,
+    produced_output: bool,
+    report_at: f64,
+    outputs: u32,
+    matched: u32,
+    posted: u32,
+    acknowledged: u32,
     call: String,
     sender: String,
     generation: u64,
@@ -58,6 +65,33 @@ fn now() -> f64 {
         .performance()
         .map(|p| p.now())
         .unwrap_or_else(js_sys::Date::now)
+}
+fn queued(s: &State) -> f64 {
+    s.decoder
+        .as_ref()
+        .and_then(|d| get(d, "decodeQueueSize").ok())
+        .and_then(|n| n.as_f64())
+        .unwrap_or(0.0)
+}
+async fn dequeue(decoder: &JsValue, timeout: i32) -> Result<(), JsValue> {
+    let mut timer = None;
+    let next = js_sys::Promise::new(&mut |resolve, reject| {
+        let installed = set(decoder, "ondequeue", &resolve).and_then(|_| {
+            worker().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, timeout)
+        });
+        match installed {
+            Ok(id) => timer = Some(id),
+            Err(error) => {
+                let _ = reject.call1(&JsValue::UNDEFINED, &error);
+            }
+        }
+    });
+    let result = JsFuture::from(next).await.map(|_| ());
+    let _ = set(decoder, "ondequeue", &JsValue::NULL);
+    if let Some(timer) = timer {
+        worker().clear_timeout_with_handle(timer);
+    }
+    result
 }
 fn unqueue(s: &mut State) {
     if let Some(timer) = s.timer.take() {
@@ -172,6 +206,9 @@ fn post(s: &mut State, id: u32, frame: Frame) {
                 .unchecked_into::<web_sys::DedicatedWorkerGlobalScope>()
                 .post_message_with_transfer(&message, &Array::of1(&pixels.buffer()))
         });
+        if sent.is_ok() {
+            s.posted += 1;
+        }
         if sent.is_err() {
             s.waiting = false;
             s.pixels = Some(pixels);
@@ -212,6 +249,13 @@ impl Decoder {
             tick: None,
             submitted: BTreeMap::new(),
             last_stamp: None,
+            output_wait: None,
+            produced_output: false,
+            report_at: now(),
+            outputs: 0,
+            matched: 0,
+            posted: 0,
+            acknowledged: 0,
             call,
             sender,
             generation,
@@ -221,13 +265,17 @@ impl Decoder {
         let output = Closure::<dyn FnMut(JsValue)>::new(move |frame| {
             if let Some(s) = weak.upgrade() {
                 let mut s = s.borrow_mut();
+                s.output_wait = None;
+                s.produced_output = true;
+                s.outputs += 1;
                 let timestamp = get(&frame, "timestamp")
                     .ok()
                     .and_then(|v| v.as_f64())
                     .unwrap_or(-1.0) as u64;
                 if let Some((revision, rotation)) = s.submitted.remove(&timestamp) {
+                    s.matched += 1;
                     let due = s.clock.due(timestamp, now());
-                    while s.ready.len() >= 6 {
+                    while s.ready.len() >= pacing::READY_FRAMES {
                         if let Some((_, old)) = s.ready.pop_front() {
                             close(&old.value);
                         }
@@ -250,7 +298,16 @@ impl Decoder {
             }
         });
         let weak = Rc::downgrade(&state);
-        let error = Closure::<dyn FnMut(JsValue)>::new(move |_| {
+        let error = Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
+            let name = get(&error, "name")
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            let message = get(&error, "message")
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            crate::transform::timing(format!("SigilTiming video decoder error={name}: {message}"));
             if let Some(s) = weak.upgrade() {
                 s.borrow_mut().failed = true;
             }
@@ -284,9 +341,41 @@ impl Decoder {
         }
         s.submitted.clear();
         s.last_stamp = None;
+        s.output_wait = None;
+        s.produced_output = false;
     }
     /// Returns false when a fresh keyframe is needed. Decoding never waits on the page.
-    pub(crate) fn push(&self, payload: &[u8]) -> Result<bool, JsValue> {
+    pub(crate) async fn push(&self, payload: &[u8]) -> Result<bool, JsValue> {
+        let revision = crate::media_worker::revision().unwrap_or(-1);
+        // Preserve reference frames during receive bursts. Wait for decoder capacity,
+        // not a larger playback buffer; abort sustained overload after the stall budget.
+        // Initial codec configuration is asynchronous and can outlast a frame stall.
+        let budget = if self.state.borrow().produced_output {
+            250.0
+        } else {
+            1000.0
+        };
+        let until = now() + budget;
+        loop {
+            let decoder = {
+                let s = self.state.borrow();
+                if s.failed || queued(&s) <= 3.0 {
+                    None
+                } else {
+                    s.decoder.clone()
+                }
+            };
+            let Some(decoder) = decoder else { break };
+            let remaining = until - now();
+            if remaining <= 0.0 {
+                break;
+            }
+            dequeue(&decoder, remaining.ceil() as i32).await?;
+        }
+        // The input was authenticated before yielding; never relabel it with newer authority.
+        if !crate::media_worker::valid_revision(revision) {
+            return Ok(false);
+        }
         let (rotation, _, _, encoded) = sigil_calls::av1::camera_payload(payload)
             .map_err(|_| crate::fail("Invalid camera frame"))?;
         let key = payload[1] != 0;
@@ -300,20 +389,42 @@ impl Decoder {
             self.discontinuity();
         }
         let mut s = self.state.borrow_mut();
-        if s.failed
-            || s.decoder.as_ref().is_some_and(|d| {
-                get(d, "decodeQueueSize")
-                    .ok()
-                    .and_then(|n| n.as_f64())
-                    .unwrap_or(0.0)
-                    > 3.0
-            })
-        {
+        if now() - s.report_at >= 5000.0 {
+            crate::transform::timing(format!(
+                "SigilTiming video decode outputs={} matched={} posted={} ack={} waiting={} ready={} pending={}",
+                s.outputs,
+                s.matched,
+                s.posted,
+                s.acknowledged,
+                s.waiting,
+                s.ready.len(),
+                s.pending.is_some()
+            ));
+            s.outputs = 0;
+            s.matched = 0;
+            s.posted = 0;
+            s.acknowledged = 0;
+            s.report_at = now();
+        }
+        let stalled = s.output_wait.is_some_and(|since| now() - since >= budget);
+        if stalled {
+            crate::transform::timing("SigilTiming video decoder recovery=stalled output".into());
+        }
+        let queued = queued(&s);
+        if queued > 3.0 || s.failed {
+            crate::transform::timing(format!(
+                "SigilTiming video decoder recovery=reset queued={queued} failed={}",
+                s.failed
+            ));
+        }
+        if stalled || s.failed || queued > 3.0 {
             if let Some(d) = s.decoder.take() {
                 close(&d);
             }
             s.submitted.clear();
             s.failed = false;
+            s.output_wait = None;
+            s.produced_output = false;
         }
         if s.decoder.is_none() {
             if !key {
@@ -347,11 +458,9 @@ impl Decoder {
             };
             s.decoder = Some(d);
         }
+        s.output_wait.get_or_insert_with(now);
         s.last_stamp = Some(timestamp);
-        s.submitted.insert(
-            timestamp,
-            (crate::media_worker::revision().unwrap_or(-1), rotation),
-        );
+        s.submitted.insert(timestamp, (revision, rotation));
         while s.submitted.len() > 8 {
             s.submitted.pop_first();
         }
@@ -379,6 +488,7 @@ impl Decoder {
         LIVE.with(|live| {
             if let Some(state) = live.borrow().get(&id).and_then(Weak::upgrade) {
                 let mut s = state.borrow_mut();
+                s.acknowledged += 1;
                 s.waiting = false;
                 s.pixels = get(data, "frame")
                     .and_then(|image| get(&image, "pixels"))
