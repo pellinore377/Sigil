@@ -8,15 +8,32 @@ pub fn camera_size(width: u16, height: u16) -> bool {
         && u32::from(width) * u32::from(height) <= 3840 * 2160
 }
 
-/// Authenticated renderer envelope: media marker, key flag, timestamp, then camera header.
-pub fn camera_payload(bytes: &[u8]) -> Result<(u16, u16, u16, &[u8]), Error> {
-    if bytes.len() <= 17 || bytes[0] != 1 || bytes[1] > 1 || bytes[10] != 2 { return Err(Error::Invalid); }
+/// Camera plaintext: codec, rotation, width and height; codec 3 adds a per-track frame number
+/// so a receiver that cannot see RTP sequencing still notices a lost reference.
+pub const AV1: u8 = 2;
+pub const AV1_NUMBERED: u8 = 3;
+pub fn camera_header(codec: u8) -> Option<usize> {
+    match codec { AV1 => Some(7), AV1_NUMBERED => Some(11), _ => None }
+}
+pub struct Camera<'a> {
+    pub rotation: u16,
+    pub width: u16,
+    pub height: u16,
+    pub number: Option<u32>,
+    pub encoded: &'a [u8],
+}
+/// Authenticated renderer envelope: media marker, key flag, timestamp, then camera plaintext.
+pub fn camera_payload(bytes: &[u8]) -> Result<Camera<'_>, Error> {
+    if bytes.len() <= 11 || bytes[0] != 1 || bytes[1] > 1 { return Err(Error::Invalid); }
+    let header = camera_header(bytes[10]).ok_or(Error::Invalid)?;
+    if bytes.len() <= 10 + header { return Err(Error::Invalid); }
     let field = |at| u16::from_be_bytes([bytes[at], bytes[at + 1]]);
     let (rotation, width, height) = (field(11), field(13), field(15));
     if !matches!(rotation, 0 | 90 | 180 | 270) || !camera_size(width, height) {
         return Err(Error::Invalid);
     }
-    Ok((rotation, width, height, &bytes[17..]))
+    let number = (header == 11).then(|| u32::from_be_bytes(bytes[17..21].try_into().unwrap_or_default()));
+    Ok(Camera { rotation, width, height, number, encoded: &bytes[10 + header..] })
 }
 
 /// Retain codec configuration so a later keyframe can initialize a fresh decoder.
@@ -155,18 +172,24 @@ mod tests {
         let mut bytes = vec![1, 1]; bytes.extend_from_slice(&123u64.to_be_bytes()); bytes.push(2);
         bytes.extend_from_slice(&90u16.to_be_bytes()); bytes.extend_from_slice(&1920u16.to_be_bytes()); bytes.extend_from_slice(&1080u16.to_be_bytes());
         bytes.extend_from_slice(&[0x12, 0, 0x32, 7]);
-        assert_eq!(camera_payload(&bytes).unwrap(), (90, 1920, 1080, &[0x12, 0, 0x32, 7][..]));
+        let shape = |b: &[u8]| camera_payload(b).map(|c| (c.rotation, c.width, c.height, c.number, c.encoded.to_vec()));
+        assert_eq!(shape(&bytes).unwrap(), (90, 1920, 1080, None, vec![0x12, 0, 0x32, 7]));
         for end in 0..=17 { assert!(camera_payload(&bytes[..end]).is_err()); }
         bytes[12] = 91; assert!(camera_payload(&bytes).is_err()); bytes[12] = 90;
         bytes[10] = 1; assert!(camera_payload(&bytes).is_err()); bytes[10] = 2;
         for (width, height) in [(3840u16, 2160u16), (2160, 3840)] {
             bytes[13..15].copy_from_slice(&width.to_be_bytes()); bytes[15..17].copy_from_slice(&height.to_be_bytes());
-            assert_eq!(camera_payload(&bytes).unwrap(), (90, width, height, &[0x12, 0, 0x32, 7][..]));
+            assert_eq!(shape(&bytes).unwrap(), (90, width, height, None, vec![0x12, 0, 0x32, 7]));
         }
         for (width, height) in [(3840u16, 2161u16), (3841, 2160), (4096, 2048), (16, 65535), (15, 16)] {
             bytes[13..15].copy_from_slice(&width.to_be_bytes()); bytes[15..17].copy_from_slice(&height.to_be_bytes());
             assert!(camera_payload(&bytes).is_err());
         }
+        bytes[13..15].copy_from_slice(&1920u16.to_be_bytes()); bytes[15..17].copy_from_slice(&1080u16.to_be_bytes());
+        let mut numbered = bytes[..17].to_vec(); numbered[10] = 3;
+        numbered.extend_from_slice(&7u32.to_be_bytes()); numbered.extend_from_slice(&[0x32, 7]);
+        assert_eq!(shape(&numbered).unwrap(), (90, 1920, 1080, Some(7), vec![0x32, 7]));
+        for end in 0..=21 { assert!(camera_payload(&numbered[..end]).is_err()); }
     }
     #[test] fn recovery_keyframes_repeat_configuration_after_the_delimiter() {
         let mut sequence = Sequence::default();

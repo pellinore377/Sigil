@@ -111,6 +111,9 @@ impl PeerConnectionEventHandler for Handler {
                             .is_err()
                         {
                             refused += 1;
+                            if refused.is_power_of_two() {
+                                crate::perf::note(format!("call rx channel_full={refused} seen={seen}"));
+                            }
                         }
                     }
                 }
@@ -293,6 +296,10 @@ impl RtcTransmission {
         .await
     }
 }
+/// About 26 Mbit/s: a keyframe spreads over a frame interval or so instead of leaving as one
+/// burst, which shallow queues on tunnels and home routers drop wholesale.
+const BURST: usize = 6;
+const BURST_GAP: Duration = Duration::from_millis(2);
 async fn send_packets<F, U>(
     packets: Vec<rtc::rtp::packet::Packet>,
     mut write: F,
@@ -301,7 +308,10 @@ where
     F: FnMut(rtc::rtp::packet::Packet) -> U,
     U: std::future::Future<Output = Result<(), Error>>,
 {
-    for packet in packets {
+    for (index, packet) in packets.into_iter().enumerate() {
+        if index > 0 && index % BURST == 0 {
+            tokio::time::sleep(BURST_GAP).await;
+        }
         write(packet).await?;
     }
     Ok(())

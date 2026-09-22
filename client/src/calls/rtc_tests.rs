@@ -685,3 +685,23 @@ fn detached_frames_flow_only_under_published_authority() {
         assert!(sa.prepare(&mut ca, MediaKind::Audio, 5_000_000, false, b"blocked").is_err());
     });
 }
+#[test]
+fn video_packets_leave_in_paced_bursts_and_in_order() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let packets: Vec<_> = (0..13u16).map(|sequence_number| rtc::rtp::packet::Packet {
+            header: rtc::rtp::header::Header { sequence_number, ..Default::default() },
+            payload: vec![0; 1100].into(),
+        }).collect();
+        let sent = std::sync::Mutex::new(Vec::new());
+        let started = std::time::Instant::now();
+        send_packets(packets, |packet| {
+            sent.lock().unwrap().push((packet.header.sequence_number, started.elapsed()));
+            async { Ok(()) }
+        }).await.unwrap();
+        let sent = sent.into_inner().unwrap();
+        assert_eq!(sent.iter().map(|v| v.0).collect::<Vec<_>>(), (0..13).collect::<Vec<_>>());
+        assert!(sent[5].1 < BURST_GAP, "a burst leaves together");
+        assert!(sent[6].1 >= BURST_GAP && sent[12].1 >= BURST_GAP * 2);
+    });
+}

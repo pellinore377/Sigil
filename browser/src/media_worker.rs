@@ -276,14 +276,16 @@ pub(crate) fn seal_video(
     keyframe: bool,
     width: u16,
     height: u16,
+    number: u32,
 ) -> Result<Vec<u8>, JsValue> {
     if !sigil_calls::av1::camera_size(width, height) {
         return Err(fail("Invalid video dimensions"));
     }
     let call = crate::call::id(call)?;
-    let mut body = zeroize::Zeroizing::new(vec![2, 0, 0]);
+    let mut body = zeroize::Zeroizing::new(vec![sigil_calls::av1::AV1_NUMBERED, 0, 0]);
     body.extend_from_slice(&width.to_be_bytes());
     body.extend_from_slice(&height.to_be_bytes());
+    body.extend_from_slice(&number.to_be_bytes());
     body.extend_from_slice(bytes);
     process(Some(call), true, |p, call, now| {
         let sealed = p
