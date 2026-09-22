@@ -426,8 +426,9 @@ pub extern "system" fn Java_org_sigil_storage_NativeStorage_callVideoTarget(
         let worst = conditions.loss.map_or(0, |l| (l * 256.0) as u8).max(state.logged.3);
         state.logged.3 = worst;
         if now.duration_since(state.logged.0) >= std::time::Duration::from_secs(5) {
-            let line = format!("video uplink reports={} loss_max={:.3} key_requests={} bitrate={} fps={}",
-                reports.wrapping_sub(state.logged.1), f32::from(worst) / 256.0, keys.wrapping_sub(state.logged.2), target.bitrate, target.fps);
+            let line = format!("video uplink reports={} loss_max={:.3} key_requests={} nacks={} bitrate={} fps={}",
+                reports.wrapping_sub(state.logged.1), f32::from(worst) / 256.0, keys.wrapping_sub(state.logged.2),
+                handle.uplink.nacks.swap(0, Ordering::Relaxed), target.bitrate, target.fps);
             if let (Ok(tag), Ok(line)) = (std::ffi::CString::new("SigilTiming"), std::ffi::CString::new(line)) {
                 unsafe { super::__android_log_write(4, tag.as_ptr(), line.as_ptr()); }
             }
