@@ -126,6 +126,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
         if video && !sealing {
             let camera = sigil_calls::av1::camera_payload(&payload).map_err(|_| fail("Invalid camera frame"))?;
             let (rotation, width, height) = (camera.rotation, camera.width, camera.height);
+            let key_frame = payload[1] != 0 && sigil_calls::av1::random_access(camera.encoded);
+            let camera_encoded = camera.encoded.to_vec();
             if let Some(decoder) = &software { decoder.receive(payload.clone()); }
             if shape != Some((rotation, width, height)) || payload[1] != 0 {
                 let message = crate::rtc::object(serde_json::json!({"video_shape":true,"call":call,"sender":sender,"rotation":rotation,"width":width,"height":height}))?;
@@ -144,7 +146,8 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
                 video_since = at;
                 (video_count, video_gap, video_open, video_ack) = (0, 0.0, 0.0, 0.0);
             }
-            release(&writer, &frame).await?;
+            // Chrome resumes freeing packets after a loss only once it decodes a real keyframe.
+            if key_frame { restore(&writer, &frame, camera_encoded).await?; } else { release(&writer, &frame).await?; }
             continue;
         }
         let buffer = js_sys::Uint8Array::from(payload.as_slice()).buffer();
@@ -162,6 +165,13 @@ async fn pump(event: JsValue) -> Result<(), JsValue> {
 async fn release(writer: &JsValue, frame: &JsValue) -> Result<(), JsValue> {
     let placeholder = js_sys::Uint8Array::from(&[0x12u8, 0x00][..]).buffer();
     set(frame, "data", &placeholder.into())?;
+    JsFuture::from(invoke(writer, "write", &[frame.clone()])?.unchecked_into::<js_sys::Promise>()).await.map(|_| ())
+}
+
+/// Hands Chrome the decrypted keyframe itself.
+async fn restore(writer: &JsValue, frame: &JsValue, encoded: Vec<u8>) -> Result<(), JsValue> {
+    let data = js_sys::Uint8Array::from(encoded.as_slice()).buffer();
+    set(frame, "data", &data.into())?;
     JsFuture::from(invoke(writer, "write", &[frame.clone()])?.unchecked_into::<js_sys::Promise>()).await.map(|_| ())
 }
 

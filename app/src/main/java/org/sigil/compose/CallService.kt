@@ -8,6 +8,8 @@ import android.os.*
 class CallService : Service() {
     companion object { internal var owner: NativeCalls? = null }
     private var wake: PowerManager.WakeLock? = null
+    /// Without it Android pauses Wi-Fi for scans and power saving; calls lost ~300 ms every 40 s.
+    private var wifi: android.net.wifi.WifiManager.WifiLock? = null
     override fun onBind(intent: Intent?) = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val calls = owner
@@ -20,9 +22,11 @@ class CallService : Service() {
         if (Build.VERSION.SDK_INT >= 30) startForeground(7, notification, calls.foregroundTypes())
         else startForeground(7, notification)
         if (wake == null) wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sigil:call").apply { acquire(86400000) }
+        if (wifi == null && Build.VERSION.SDK_INT >= 29) wifi = getSystemService(android.net.wifi.WifiManager::class.java)
+            .createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Sigil:call").apply { setReferenceCounted(false); acquire() }
         calls.ready()
         return START_NOT_STICKY
     }
     override fun onTaskRemoved(rootIntent: Intent?) { if (owner != null) owner?.end() else stopSelf() }
-    override fun onDestroy() { owner?.end(); wake?.let { if (it.isHeld) it.release() }; wake = null; super.onDestroy() }
+    override fun onDestroy() { owner?.end(); wake?.let { if (it.isHeld) it.release() }; wake = null; wifi?.let { if (it.isHeld) it.release() }; wifi = null; super.onDestroy() }
 }
