@@ -292,6 +292,7 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
         var lastTimestamp = Long.MIN_VALUE
         var shown = 0L; var shownSince = android.os.SystemClock.elapsedRealtime(); var decoding: Byte = 0
         var resynced = 0L; var anchor = 0L; var anchorStamp = Long.MIN_VALUE
+        var late = 0L; var lateMax = 0L; var outputGap = 0L; var lastOutput = 0L
         fun reset(reason: String = "reconfigure") {
             if (codec != null) android.util.Log.i("SigilTiming", "video decoder reset=$reason queued=${queue.size} paced=$paced")
             anchorStamp = Long.MIN_VALUE
@@ -319,15 +320,19 @@ internal class CallVideoDecoder(private val surface: Surface, private val paced:
                 // journey into judder however steady the frame rate itself is. The lead is the
                 // whole of the smoothing: frames wait that long and no longer.
                 val now = System.nanoTime()
+                if (lastOutput != 0L) outputGap = maxOf(outputGap, now - lastOutput)
+                lastOutput = now
                 if (anchorStamp == Long.MIN_VALUE) { anchorStamp = info.presentationTimeUs; anchor = now + LEAD }
                 var due = anchor + (info.presentationTimeUs - anchorStamp) * 1000
-                if (due < now - SLIP || due > now + LEAD + SLIP) {
+                if (due < now) { late++; lateMax = maxOf(lateMax, now - due) }
+                // A late burst must regain spacing; past deadlines render together immediately.
+                if (due < now || due > now + LEAD + SLIP) {
                     anchorStamp = info.presentationTimeUs; anchor = now + LEAD; due = anchor; resynced++
                 }
                 active.releaseOutputBuffer(output, due)
                 shown++
                 val at = android.os.SystemClock.elapsedRealtime()
-                if (at - shownSince >= 5000) { android.util.Log.i("SigilTiming", "video in ${dimensions?.width}x${dimensions?.height} fps=${shown * 1000 / (at - shownSince)} resynced=$resynced"); shown = 0; resynced = 0; shownSince = at }
+                if (at - shownSince >= 5000) { android.util.Log.i("SigilTiming", "video in ${dimensions?.width}x${dimensions?.height} fps=${shown * 1000 / (at - shownSince)} resynced=$resynced late=$late late_max_ms=${lateMax / 1_000_000} output_gap_ms=${outputGap / 1_000_000}"); shown = 0; resynced = 0; late = 0; lateMax = 0; outputGap = 0; shownSince = at }
             }
         }
         try {

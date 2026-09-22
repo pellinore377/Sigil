@@ -1,6 +1,6 @@
 use super::*;
 use rtc::{
-    interceptor::Registry,
+    interceptor::{Registry, NackGeneratorBuilder, NackResponderBuilder},
     media_stream::MediaStreamTrack,
     peer_connection::{
         configuration::{
@@ -258,10 +258,14 @@ impl ClientStore {
             .map_err(|_| Error::Unprepared)?;
         // A lost fragment discards its whole frame, so video asks for retransmission of
         // the packets it misses and answers the same request from the forwarder.
-        let interceptors = rtc::peer_connection::configuration::interceptor_registry::configure_nack(
-            Registry::new(),
-            &mut engine,
-        );
+        for parameter in ["", "pli"] {
+            engine.register_feedback(rtc::rtp_transceiver::rtp_sender::RTCPFeedback {
+                typ: "nack".into(), parameter: parameter.into(),
+            }, RtpCodecKind::Video);
+        }
+        let interceptors = Registry::new()
+            .with(NackGeneratorBuilder::new().with_interval(Duration::from_millis(10)).build())
+            .with(NackResponderBuilder::new().build());
         let mut settings = SettingEngine::default();
         settings.set_multicast_dns_mode(rtc::ice::mdns::MulticastDnsMode::Disabled);
         let (gathered, gather_rx) = mpsc::channel(1);
@@ -600,7 +604,9 @@ impl ClientStore {
                     continue;
                 }
                 let ssrc = stream.ssrc;
-                if let Some(packet) = call.incoming.get_mut(&ssrc).and_then(|q| q.pop(clock)) {
+                // Give video retransmission one bounded round trip before discarding references.
+                let repair_wait = Duration::from_millis(if stream.track.kind == MediaKind::Audio { 40 } else { 120 });
+                if let Some(packet) = call.incoming.get_mut(&ssrc).and_then(|q| q.pop(clock, repair_wait)) {
                     candidate = Some(packet);
                     break;
                 }

@@ -87,6 +87,7 @@ class CallVideoTest {
         instrument.uiAutomation.grantRuntimePermission(instrument.targetContext.packageName, android.Manifest.permission.CAMERA)
         val ready = CountDownLatch(1); val seen = CountDownLatch(60); val encoded = AtomicInteger(); val failures = AtomicInteger()
         var preview: CallCameraPreview? = null
+        var dimensions = ""
         ui.setContent {
             androidx.compose.ui.viewinterop.AndroidView(factory = { context ->
                 android.view.TextureView(context).apply {
@@ -95,11 +96,14 @@ class CallVideoTest {
                             preview = CallCameraPreview(texture) { width, height, rotation ->
                                 assertTrue(width > 0 && height > 0)
                                 assertTrue(rotation in listOf(0, 90, 180, 270))
+                                dimensions = "Dims: $width x $height,"
+                                // Layout used to replace the selected camera buffer with widget pixels.
+                                ui.runOnUiThread { layout(0, 0, 352, 288) }
                             }
                             ready.countDown()
                         }
                         override fun onSurfaceTextureUpdated(texture: android.graphics.SurfaceTexture) { seen.countDown() }
-                        override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, w: Int, h: Int) {}
+                        override fun onSurfaceTextureSizeChanged(texture: android.graphics.SurfaceTexture, w: Int, h: Int) { preview?.restoreSize() }
                         override fun onSurfaceTextureDestroyed(texture: android.graphics.SurfaceTexture) = true
                     }
                 }
@@ -111,6 +115,11 @@ class CallVideoTest {
             assertTrue("Direct camera preview did not update", seen.await(10, TimeUnit.SECONDS))
             assertTrue("Encoding stopped while preview ran", encoded.get() >= 30)
             assertEquals(0, failures.get())
+            val dump = android.os.ParcelFileDescriptor.AutoCloseInputStream(
+                instrument.uiAutomation.executeShellCommand("dumpsys media.camera")
+            ).bufferedReader().use { it.readText() }
+            val previewStream = Regex("Consumer name: SurfaceTexture[^\\n]*[\\s\\S]*?Dims: [^\\n]*").find(dump)?.value
+            assertTrue("Camera preview buffer changed after layout", previewStream?.contains(dimensions) == true)
         } finally { camera.close(); Thread.sleep(400); preview?.close() }
     }
     @Test fun surfaceAv1RoundTripRendersSyntheticFrames() {
