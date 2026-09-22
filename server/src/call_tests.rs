@@ -144,6 +144,34 @@ fn join(roster: &Roster, owner: &IdentityKey, sequence: u64) -> SignedConnect {
     .unwrap()
 }
 #[test]
+fn connected_calls_outlive_abandonment_but_idle_and_revoked_calls_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, alice, _) = setup(&dir.path().join("calls.db"));
+    let owner = IdentityKey::generate().unwrap();
+    let mut value = roster(&owner, 1).roster;
+    value.expires = 5000;
+    let value = value.sign(&owner).unwrap();
+    store.publish_call(&alice, value.clone(), 1000).unwrap();
+    store.admit_call(&join(&value.roster, &owner, 1), 1000).unwrap();
+    for now in (1030..=2200).step_by(30) {
+        assert_eq!(store.call_snapshot_with_activity(now, &[[1; 32]]).unwrap().rosters.len(), 1);
+    }
+    let admitted: i64 = store.0.query_row("SELECT updated FROM call_connections WHERE call=?1", [[1u8; 32].as_slice()], |r| r.get(0)).unwrap();
+    assert_eq!(admitted, 1000);
+    assert_eq!(store.call_snapshot(2799).unwrap().rosters.len(), 1);
+    assert!(store.call_snapshot(2800).unwrap().rosters.is_empty());
+    assert!(store.call_snapshot_with_activity(2801, &[[1; 32]]).unwrap().rosters.is_empty());
+
+    let mut value = roster(&owner, 2).roster;
+    value.created = 2801;
+    value.expires = 5000;
+    store.publish_call(&alice, value.sign(&owner).unwrap(), 2801).unwrap();
+    let device = authorize(&store.0, &alice, 2801).unwrap();
+    store.0.execute("UPDATE devices SET revoked=1 WHERE id=?1", [device]).unwrap();
+    assert!(store.call_snapshot_with_activity(2802, &[[2; 32]]).unwrap().rosters.is_empty());
+}
+
+#[test]
 fn ownership_membership_reconnect_and_closure_survive_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sigil.db");

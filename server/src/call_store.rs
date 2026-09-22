@@ -56,9 +56,8 @@ fn clock_for_snapshot(db: &Connection, now: u64) -> Result<u64, StoreError> {
 fn cleanup(db: &Connection, now: u64) -> Result<(), StoreError> {
     db.execute("DELETE FROM calls WHERE id IN (SELECT id FROM calls WHERE expires<=?1 ORDER BY expires LIMIT 64)",[sql(now)?])?;
     db.execute("UPDATE calls SET closed=1 WHERE closed=0 AND NOT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE d.id=calls.device AND d.revoked=0 AND d.expires_at>?1 AND a.disabled=0)",[sql(now)?])?;
-    // A call only closes when its owner says so, and an owner that crashed or walked away never
-    // does, so the slot was held until the roster expired hours later. One nobody has connected
-    // to for this long is over: the ring gave up long before.
+    // Reclaim abandoned rooms after neither admission nor established transport activity
+    // has advanced the watermark. Roster expiry and owner revocation remain unconditional.
     db.execute("UPDATE calls SET closed=1 WHERE closed=0 AND started<=?1 AND coalesce((SELECT max(updated) FROM call_connections c WHERE c.call=calls.id),0)<=?1",[sql(now.saturating_sub(ABANDONED))?])?;
     db.execute(
         "DELETE FROM call_connections WHERE call IN (SELECT id FROM calls WHERE closed=1)",
@@ -260,10 +259,18 @@ impl Store {
         Ok(value)
     }
     pub(crate) fn call_snapshot(&mut self, now: u64) -> Result<Snapshot, StoreError> {
+        self.call_snapshot_with_activity(now, &[])
+    }
+    pub(crate) fn call_snapshot_with_activity(&mut self, now: u64, active: &[Id]) -> Result<Snapshot, StoreError> {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = clock_for_snapshot(&tx, now)?;
+        // `started` is the abandonment watermark: creation until an authenticated
+        // transport is connected. Do not rewrite admission timestamps or replay state.
+        for id in active.iter().take(8) {
+            tx.execute("UPDATE calls SET started=?2 WHERE id=?1 AND closed=0 AND expires>?2 AND started<=?3", (id.as_slice(), sql(now)?, sql(now.saturating_sub(30))?))?;
+        }
         cleanup(&tx, now)?;
         let value = snapshot(&tx, now)?;
         tx.commit()?;

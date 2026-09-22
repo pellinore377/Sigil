@@ -134,6 +134,11 @@ impl Forwarder {
             .get(&call)
             .is_some_and(|room| room.peers.contains_key(&participant))
     }
+    /// Established ICE, DTLS and SRTP transports keep a call from being abandoned.
+    pub fn active_calls(&self) -> Vec<Id> {
+        self.rooms.iter().filter(|(_, room)| room.peers.values().any(|peer| peer.rtc.is_connected()))
+            .map(|(id, _)| *id).collect()
+    }
     pub fn connect(
         &mut self,
         request: &SignedConnect,

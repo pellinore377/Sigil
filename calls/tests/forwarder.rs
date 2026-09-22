@@ -40,6 +40,7 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
     let address = socket.local_addr().unwrap();
     let mut forwarder = Forwarder::new(address, 1).unwrap();
     forwarder.install(roster.clone(), 1000).unwrap();
+    assert!(forwarder.active_calls().is_empty());
     let forwarder = Arc::new(Mutex::new(forwarder));
     let running = forwarder.clone();
     let task = tokio::spawn(async move {
@@ -201,6 +202,7 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
         assert_eq!(seen[i].len(), 3 * (count - 1), "recipient {i}");
         assert!(first[i].unwrap() < Duration::from_secs(2));
     }
+    assert_eq!(forwarder.lock().unwrap().active_calls(), vec![roster.roster.call]);
     let mut replacement = Peer::new(false, false).await;
     let mut tracks = Vec::new();
     let mut uploads = Vec::new();
@@ -303,6 +305,7 @@ async fn encrypted_forwarding_authenticates_tracks_and_removal_revokes_all_old_t
         .install(next.clone().sign(&owners[0]).unwrap(), 1000)
         .unwrap();
     assert_eq!(forwarder.lock().unwrap().counts(), (1, 0));
+    assert!(forwarder.lock().unwrap().active_calls().is_empty());
     assert!(matches!(
         forwarder
             .lock()
