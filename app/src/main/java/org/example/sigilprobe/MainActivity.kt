@@ -76,6 +76,14 @@ class MainActivity : ComponentActivity() {
                     finally { messenger.browserOpened() }
                 }
             }
+            // A recreated Activity reruns a ceremony its predecessor left unfinished.
+            LaunchedEffect(messenger.passkeyPrompt) {
+                messenger.passkeyPrompt?.let { prompt ->
+                    try { prompt.result.complete(prompt.run(this@MainActivity)) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) { prompt.result.completeExceptionally(error) }
+                }
+            }
             LaunchedEffect(messenger.picker) {
                 messenger.picker?.let { (peer, kind) ->
                     run {
@@ -104,9 +112,7 @@ class MainActivity : ComponentActivity() {
                     if (messenger.signOutStage.isNotEmpty()) SignOutDialog(messenger.signOutStage, messenger.signOutBusy, messenger.signOutIssue, messenger::signOut)
                     messenger.contactQr?.let { flow -> ContactQrDialog(flow, messenger.state.busy, messenger.state.issue) { action, qr -> messenger.command("contact_qr", mapOf("action" to action, "qr" to qr)) } }
                     messenger.deviceLink?.let { flow -> DeviceLinkDialog(flow, messenger.deviceLinkBusy, messenger.deviceLinkIssue) { action, input -> messenger.command("device_link", mapOf("action" to action, (if(action=="confirm")"choice" else "qr") to input)) } }
-                    messenger.recoveryKey?.let { secret -> RecoveryDialog(secret, messenger.state.busy, messenger::dismissRecovery) { messenger.command("recovery_enable", mapOf("secret" to secret)) } }
-                    if (messenger.restoringRecovery) RestoreRecoveryDialog(messenger.state.busy, messenger.state.issue, messenger::dismissRestoreRecovery) { secret -> messenger.command("recovery_restore", mapOf("secret" to secret, "accept_unanchored" to true)) }
-                    if (messenger.recoveringAccount) AccountRecoveryDialog(messenger.state.loginMethods?.sso == true || messenger.state.phase == "oidc", messenger.state.busy, messenger.state.issue, messenger::dismissAccountRecovery) { method, invitation -> messenger.command("recover_account", mapOf("server" to (messenger.state.loginMethods?.server ?: messenger.state.loginAddress), "method" to method, "invitation" to invitation, "confirm_replacement" to true)) }
+                    messenger.recoveryCode?.let { code -> RecoveryCodeDialog(code, messenger::dismissRecoveryCode) }
                 })
             }
         }

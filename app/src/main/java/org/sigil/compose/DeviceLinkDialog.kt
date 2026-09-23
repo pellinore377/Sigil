@@ -33,9 +33,32 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 internal fun DeviceLinkDialog(flow: JSONObject, busy: Boolean, issue: String?, command: (String, String?) -> Unit) {
     val stage=flow.getString("stage")
-    val close={if(!busy)command(if(stage=="done")"close" else if(flow.optBoolean("can_cancel",true))"cancel" else "pause",null)}
+    val joining=stage==Messenger.JOIN_SCAN
+    val close={if(!busy)command(if(joining)"pause" else if(stage=="done")"close" else if(flow.optBoolean("can_cancel",true))"cancel" else "pause",null)}
     Dialog(close,DialogProperties(usePlatformDefaultWidth=false,securePolicy=SecureFlagPolicy.SecureOn)) {
-        org.sigil.LinkPanel(flow.toString(),busy,issue,command) {found->QrScanner(found)}
+        if(joining)JoinScanPanel(busy,issue,close) {command("join_scan",it)}
+        else org.sigil.LinkPanel(flow.toString(),busy,issue,command) {found->QrScanner(found)}
+    }
+}
+
+// The new device reads the code its sponsor shows; no server address is needed first.
+@Composable
+private fun JoinScanPanel(busy: Boolean, issue: String?, close: () -> Unit, scanned: (String) -> Unit) {
+    var attempt by remember { mutableStateOf(0) }
+    Surface(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                org.sigil.SigilIconButton(close, enabled = !busy) { org.sigil.Glyph("close", 24, "Cancel device linking") }
+                Text("Link this device", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            }
+            Text("On your other device, open Settings, then Devices, then Link a new device, and choose Show a code. Scan that code here.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (busy) CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp))
+            else key(attempt) { QrScanner(scanned) }
+            issue?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                SigilButton({ attempt++ }, enabled = !busy) { Text("Scan again") }
+            }
+        }
     }
 }
 
