@@ -44,6 +44,7 @@ internal fun SettingsPage(state: MessengerState, navigate: (String) -> Unit) {
                 SettingsLink("person", "Profile", "Display name and photo") { navigate("profile") }
                 SettingsLink("lock", "Privacy", "Receipts, typing, and contact requests") { navigate("privacy") }
                 SettingsLink("devices", "Devices", "Linked devices and verification") { navigate("device") }
+                if (LocalClientFeatures.current.recovery) SettingsLink("passkey", "Account recovery", "Passkeys and recovery code") { navigate("recovery") }
                 if (LocalClientFeatures.current.notifications) SettingsLink("notifications", "Notifications", "Messages, calls, and sounds") { navigate("notifications") }
             }
             SettingsSection("Personalize") { SettingsLink("palette", "Appearance", "Theme, typography, and layout") { navigate("appearance") } }

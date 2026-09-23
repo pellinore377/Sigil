@@ -107,8 +107,18 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
         text = { Text("${nameOf(device)} will lose access to the server. Messages already stored there remain on that device.") },
         confirmButton = { SigilTextButton({ command("revoke_device", mapOf("device" to device.id)); revoking = null }) { Text("Sign out device") } },
         dismissButton = { SigilTextButton({ revoking = null }) { Text("Cancel") } }) }
-    SettingsDetailLayout(when(page) { "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"; "storage" -> "Data and storage"; else -> "About" }, back, continuous = page == "privacy") {
+    // Two ways to link: this device shows a code, or scans the new one's. A device that signs in by scanning offers scanning first.
+    var linking by remember { mutableStateOf(false) }
+    if (linking) AlertDialog(onDismissRequest = { linking = false }, title = { Text("Link a new device") }, text = {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            val show = @Composable { OnboardingOption("qr_code_2", "Show a code", "Your new device scans it", !state.busy) { linking = false; command("device_link", mapOf("action" to "sponsor_show")) } }
+            val scan = @Composable { OnboardingOption("qr_code_scanner", "Scan its code", "Scan the code on your new device", !state.busy) { linking = false; command("device_link", mapOf("action" to "sponsor")) } }
+            if (LocalQrScanner.current != null) { scan(); show() } else { show(); scan() }
+        }
+    }, confirmButton = {}, dismissButton = { SigilTextButton({ linking = false }) { Text("Cancel") } })
+    SettingsDetailLayout(when(page) { "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"; "storage" -> "Data and storage"; "recovery" -> "Account recovery"; else -> "About" }, back, continuous = page == "privacy") {
             when(page) {
+                "recovery" -> AccountRecoverySettings(state, command)
                 "device" -> {
                     state.devices.filter { state.ui["device_hidden.${it.id}"] != "true" }.forEach { device ->
                         var details by remember(device.id) { mutableStateOf(false) }
@@ -143,7 +153,7 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                     }
                     state.devicesNext?.let { cursor -> SigilTextButton({ command("devices", mapOf("cursor" to cursor)) }, enabled = !state.busy) { Text("Load more devices") } }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SigilButton({ command("device_link", mapOf("action" to "sponsor")) }, enabled = !state.busy) { Text("Link a new device") }
+                        SigilButton({ linking = true }, enabled = !state.busy) { Text("Link a new device") }
                         SigilTextButton({ command("devices", emptyMap()) }, enabled = !state.busy) { Text("Refresh") }
                     }
                 }
@@ -216,17 +226,11 @@ internal fun PersonalPage(page: String, state: MessengerState, command: Command,
                             SettingsValue("Cache limit", storageBytes(storage.budget))
                         }
                         Text("${storageBytes(storage.media)} allocated for media", Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        SettingsSectionLabel("Encrypted history recovery")
+                        SettingsSectionLabel("Encrypted history backup")
                         SettingsNote(if (storage.restoring) "Restoring encrypted history…" else if (!storage.recovery) "Not enabled" else storage.checkpoint?.let { "Last backup · $it" } ?: "Waiting for the first backup")
                         if (storage.restoring) { LinearProgressIndicator(Modifier.fillMaxWidth()); SettingsNote("You can leave this page. The import resumes after interruptions.") }
                         if (storage.recovery && storage.unprotected > 0) SettingsNote("${storage.unprotected} records waiting for backup")
-                        if (!storage.recovery) {
-                            SettingsNote("Keep a recovery key to restore your encrypted history after signing in on a replacement device.")
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                SigilButton({ command("recovery_generate", emptyMap()) }, enabled = !state.busy) { Text("Set up recovery") }
-                                SigilTextButton({ command("recovery_restore_open", emptyMap()) }, enabled = !state.busy) { Text("Restore with a recovery key") }
-                            }
-                        } else {
+                        if (storage.recovery) {
                             SettingsNote("This controls your encrypted backup. It does not delete messages on this device.")
                             SettingsChoice("Keep backed-up history", listOf("" to "Until I delete it", "30" to "30 days", "90" to "90 days", "365" to "One year"),
                                 storage.historyDays?.toString().orEmpty(), enabled = !state.busy && !storage.restoring) { command("recovery_policy", mapOf("days" to it.toIntOrNull())) }

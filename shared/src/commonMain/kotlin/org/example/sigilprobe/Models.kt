@@ -61,7 +61,9 @@ data class MessengerState(val phase: String = "loading", val address: String = "
     val invitations: List<GroupInvitation> = emptyList(), val transfers: List<Transfer> = emptyList(), val voice: VoiceState = VoiceState(), val searchMore: Boolean = false, val historical: Boolean = false,
     val calls: List<CallSummary> = emptyList(), val call: ActiveCall? = null, val threadTarget: ThreadTarget? = null, val people: Map<String, String> = emptyMap(),
     val allowRequests: Boolean? = null, val devices: List<AccountDevice> = emptyList(), val devicesNext: String? = null, val storage: StorageDetails? = null, val notifications: NotificationSettings? = null, val accountAccess: AccountAccess? = null, val push: PushSettings? = null,
-    val timelineBuffer: TimelineBufferDepth? = null)
+    val timelineBuffer: TimelineBufferDepth? = null, val recoverAddress: String = "", val recoverPasskeys: Int = 0, val accountRecovery: AccountRecovery? = null)
+data class RecoveryPasskey(val id: String, val label: String, val created: Long)
+data class AccountRecovery(val passkeys: List<RecoveryPasskey>, val ready: Boolean)
 /// Screens the list keeps composed either side of the viewport, as the core reports them.
 data class TimelineBufferDepth(val ahead: Float, val behind: Float)
 data class LoginMethods(val server: String, val sso: Boolean, val password: Boolean, val invitation: Boolean)
