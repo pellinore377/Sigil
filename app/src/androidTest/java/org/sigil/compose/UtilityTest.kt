@@ -45,14 +45,10 @@ class UtilityTest {
     @Test fun inline_utilities_preserve_exact_values_and_math_disables_active_content() {
         show(UtilityContent("calculation",display="0.333333",copy="0.3333333333333333",rich=RichText("1 / 3")))
         ui.onNodeWithText("Open calculation").assertDoesNotExist()
-        ui.onNodeWithContentDescription("Copy calculation").performClick()
-        val clipboard=ui.activity.getSystemService(android.content.ClipboardManager::class.java)
-        ui.runOnIdle { assertEquals("0.3333333333333333",clipboard.primaryClip!!.getItemAt(0).text.toString()) }
+        ui.onNodeWithContentDescription("Calculation. 1 / 3 equals 0.333333").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Copy calculation").assertDoesNotExist()
         ui.runOnIdle { utility=UtilityContent("conversion",display="5 km",alternate="3.1069 mi",copy="3.1068559611866697 mi") }
-        ui.onNodeWithText("Swap display").performClick()
-        val input=ui.onNodeWithText("5 km", useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
-        val output=ui.onNodeWithText("3.1069 mi", useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
-        assertTrue(output.top<input.top)
+        ui.onNodeWithContentDescription("Conversion. 5 km is 3.11 mi").assertIsDisplayed()
         ui.runOnIdle { utility=UtilityContent("math",display="\\frac{1}{2}",copy="\\frac{1}{2}",mathml="<math xmlns='http://www.w3.org/1998/Math/MathML'><mfrac><mn>1</mn><mn>2</mn></mfrac></math>") }
         ui.onNodeWithText("Open formula").performClick()
         fun views(view: View): List<WebView> = if(view is WebView) listOf(view) else if(view is ViewGroup) (0 until view.childCount).flatMap { views(view.getChildAt(it)) } else emptyList()

@@ -18,20 +18,119 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
 
+private val TableGap = 12.dp
+private val TableMinColumn = 56.dp
+private val TableWordCap = 120.dp
+private const val TableRows = 5
+
+// Columns take their natural width; when the card is too narrow the widest give way first, and what cannot fit is counted, never scrolled.
+internal fun tableWidths(natural: List<Float>, floor: List<Float>, available: Float, gap: Float, numeric: List<Boolean> = emptyList()): List<Float> {
+    var count = natural.size
+    while (count > 1 && floor.take(count).sum() + gap * (count - 1) > available) count--
+    val want = natural.take(count)
+    val least = floor.take(count).zip(want) { f, n -> minOf(f, n) }
+    val space = available - gap * (count - 1)
+    // Slack goes to the text columns, so figures stay packed against the end edge.
+    if (want.sum() <= space) {
+        val takes = want.indices.map { numeric.getOrElse(it) { false } }.let { flags -> if (flags.all { it }) flags.map { true } else flags.map { !it } }
+        val total = want.indices.filter { takes[it] }.sumOf { want[it].toDouble() }.toFloat().coerceAtLeast(1f)
+        return want.indices.map { want[it] + if (takes[it]) (space - want.sum()) * want[it] / total else 0f }
+    }
+    var low = 0f; var high = want.maxOrNull() ?: 0f
+    repeat(24) { val cap = (low + high) / 2; if (want.indices.sumOf { maxOf(least[it], minOf(want[it], cap)).toDouble() } > space) high = cap else low = cap }
+    return want.indices.map { maxOf(least[it], minOf(want[it], low)) }
+}
+
+// Rows fade and rise in one stagger apart, the header first; the fifth step holds the rest.
+internal const val TableMotionMillis = MotionStagger * 4 + MotionSettle
+
+private fun tableArrival(elapsed: Float?, row: Int) =
+    if (elapsed == null) 1f else MotionStandardEasing.transform(((elapsed - MotionStagger * minOf(row, 4)) / MotionSettle).coerceIn(0f, 1f))
+
 @Composable
 internal fun TableCard(table: TableContent) {
-    val width = (table.columns.size * 160).dp
-    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).animateContentSize(LocalMotion.current.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { Glyph("table", 20); Text("Table", style = MaterialTheme.typography.labelMedium) }
-        Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-            TableHeader(table, width, false, null) {}
-            table.rows.indices.take(3).forEach { TableRow(table, it, width, false, null) }
+    val ink = LocalContentColor.current
+    val quiet = ink.copy(alpha = .68f)
+    val body = MaterialTheme.typography.bodyMedium
+    val head = MaterialTheme.typography.labelMedium
+    val motion = LocalMotion.current
+    val playback = LocalTextMotion.current?.clock.takeIf { !motion.reduced && LocalAppearance.current.messageEffects }
+    val numeric = table.columns.indices.map { table.numericOrder.getOrNull(it) != null }
+    val shown = table.rows.take(TableRows)
+    val rules = remember { FloatArray(TableRows) }
+    val line = ink.copy(alpha = .08f)
+    // The foot is composed in the same pass as the cells, so the fitted column count never lands a frame late.
+    SubcomposeLayout(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).fillMaxWidth().padding(vertical = 4.dp)
+        .animateContentSize(motion.tween(MotionMillis))
+        .semantics { contentDescription = "Table, ${table.rows.size} ${if (table.rows.size == 1) "row" else "rows"}, ${table.columns.size} ${if (table.columns.size == 1) "column" else "columns"}" }
+        .drawBehind { val t = playback?.elapsed; for (i in shown.indices) drawRect(line.copy(alpha = line.alpha * tableArrival(t, i + 1)), Offset(0f, rules[i]), Size(size.width, 1.dp.toPx())) }) { constraints ->
+        val cells = subcompose(0) {
+            CompositionLocalProvider(LocalContentColor provides quiet) {
+                table.columns.forEachIndexed { column, label -> TableCell(label, head, numeric[column], 2) }
+            }
+            shown.forEach { row ->
+                table.columns.indices.forEach { column ->
+                    val cell = row.getOrNull(column)
+                    if (cell == null || cell.text.isBlank()) Text("—", Modifier.clearAndSetSemantics {}, style = body, color = quiet, textAlign = if (numeric[column]) TextAlign.End else TextAlign.Start)
+                    else TableCell(cell, body, numeric[column], 3)
+                }
+            }
         }
-        Text("${table.rows.size} ${if (table.rows.size == 1) "row" else "rows"} · ${table.columns.size} ${if (table.columns.size == 1) "column" else "columns"}", style = MaterialTheme.typography.labelSmall)
+        val count = table.columns.size
+        val lines = shown.size + 1
+        val natural = (0 until count).map { c -> (0 until lines).maxOf { cells[it * count + c].maxIntrinsicWidth(Constraints.Infinity) }.toFloat() }
+        val words = (0 until count).map { c -> (0 until lines).maxOf { cells[it * count + c].minIntrinsicWidth(Constraints.Infinity) }.toFloat().coerceIn(TableMinColumn.toPx(), TableWordCap.toPx()) }
+        val widths = tableWidths(natural, words, constraints.maxWidth.toFloat(), TableGap.toPx(), numeric).map { it.toInt() }
+        val gap = TableGap.roundToPx()
+        val placed = List(lines) { r -> List(widths.size) { c -> cells[r * count + c].measure(Constraints.fixedWidth(widths[c])) } }
+        val tops = IntArray(lines)
+        var y = 0
+        placed.forEachIndexed { r, row ->
+            if (r > 0) { rules[r - 1] = y.toFloat(); y += 1.dp.roundToPx() + 10.dp.roundToPx() }
+            tops[r] = y
+            y += (row.maxOfOrNull { it.height } ?: 0) + when { r == 0 -> 8.dp.roundToPx(); r < lines - 1 -> 10.dp.roundToPx(); else -> 0 }
+        }
+        val meta = listOfNotNull(
+            if (table.rows.size > shown.size) "${shown.size} of ${table.rows.size} rows" else null,
+            if (widths.size < count) "${widths.size} of $count columns" else null,
+        )
+        val foot = if (meta.isEmpty()) null else subcompose(1) { Text(meta.joinToString(" · "), style = head, color = quiet, maxLines = 2) }
+            .first().measure(Constraints(maxWidth = constraints.maxWidth))
+        val footTop = y + 8.dp.roundToPx()
+        val rise = 6.dp.toPx()
+        layout(constraints.maxWidth, if (foot == null) y else footTop + foot.height) {
+            placed.forEachIndexed { r, row ->
+                var x = 0
+                row.forEachIndexed { c, cell ->
+                    cell.placeRelativeWithLayer(x, tops[r]) { val shown = tableArrival(playback?.elapsed, r); alpha = shown; translationY = (1f - shown) * rise }
+                    x += widths[c] + gap
+                }
+            }
+            foot?.placeRelativeWithLayer(0, footTop) { val shown = tableArrival(playback?.elapsed, lines); alpha = shown; translationY = (1f - shown) * rise }
+        }
+    }
+}
+
+// Plain cells ellipsize; rich cells keep their spans and clip on a line boundary.
+@Composable
+private fun TableCell(cell: RichText, style: TextStyle, numeric: Boolean, lines: Int, modifier: Modifier = Modifier) {
+    val shaped = if (numeric) style.copy(fontFeatureSettings = "tnum, lnum", textAlign = TextAlign.End) else style
+    if (cell.spans.isEmpty() && cell.blocks.isEmpty() && cell.motion.isEmpty()) Text(cell.text, modifier, style = shaped, maxLines = lines, overflow = TextOverflow.Ellipsis)
+    else {
+        val line = with(LocalDensity.current) { style.lineHeight.toDp() }
+        RichMessageText(cell, modifier.heightIn(max = line * lines).clipToBounds(), shaped)
     }
 }
 

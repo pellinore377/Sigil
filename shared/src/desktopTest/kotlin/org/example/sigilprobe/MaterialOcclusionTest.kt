@@ -34,9 +34,16 @@ class MaterialOcclusionTest {
     assertEquals(Rect(40f, 108f, 360f, 700f), bounds.launch(viewport, Rect(40f, 0f, 360f, 800f)))
     assertTrue(materialClipRegions(viewport, bounds.launch(viewport, Rect(40f, 0f, 360f, 800f)), bounds.covered(viewport))
         .none { it.overlaps(bounds.header) }, "the corridor is still hidden behind the header")
+    val corridor = bounds.launch(viewport, Rect(40f, 530f, 360f, 680f))
+    assertTrue(materialClipRegions(viewport, corridor, bounds.covered(viewport)).any { it.contains(androidx.compose.ui.geometry.Offset(200f, 600f)) },
+        "objects lifting off the preview draw over the footer that hosts it")
+    val rising = bounds.launch(viewport, Rect(40f, 420f, 360f, 680f))
+    assertTrue(materialClipRegions(viewport, rising, bounds.covered(viewport)).any { it.contains(androidx.compose.ui.geometry.Offset(200f, 640f)) },
+        "an object rising past the footer's top keeps drawing over the preview it left")
     assertNull(bounds.launch(viewport, null))
     bounds.input = Rect.Zero
-    assertNull(bounds.launch(viewport, Rect(40f, 530f, 360f, 680f)))
+    assertEquals(Rect(40f, 500f, 360f, 680f), bounds.launch(viewport, Rect(40f, 530f, 360f, 680f)), "without a known field the preview edge bounds it")
+    assertNull(bounds.launch(viewport, Rect(40f, 900f, 360f, 980f)))
 }
     @Test fun offscreen_chrome_does_not_hide_timeline_and_empty_viewport_stays_hidden() {
         val bounds = MaterialOcclusion()

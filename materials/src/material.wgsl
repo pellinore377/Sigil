@@ -73,13 +73,21 @@ fn pip_mask(p:vec3f)->f32 {
     for(var i=0u;i<u32(u.options.x);i++){let f=u.faces[i];let d=dot(p,f.plane.xyz)-f.plane.w;if d>distance{distance=d;face=i;}}
     return number_mask(p,face);
 }
-fn coin_mark(p:vec3f)->f32 {
-    let r=length(p.xy);let ring=(1.0-smoothstep(.010,.018,abs(r-.82)));
-    var emblem=logo(p.xy*vec2f(.64,-.64)+.5);
-    if p.z<0 {
-        emblem=textureSampleLevel(orbit,linear_sampler,clamp(p.xy*vec2f(-.64,-.64)+.5,vec2f(0),vec2f(1)),0).r;
-    }
-    return max(ring,emblem)* (1.0-smoothstep(.90,.92,r));
+fn coin_emblem(p:vec3f)->f32 {
+    if p.z<0 {return textureSampleLevel(orbit,linear_sampler,clamp(p.xy*vec2f(-.64,-.64)+.5,vec2f(0),vec2f(1)),0).r;}
+    return logo(p.xy*vec2f(.64,-.64)+.5);
+}
+// Raised lip and inlaid mark over a shallow ten-facet field.
+fn coin_relief(p:vec3f)->f32 {
+    let r=length(p.xy);let lip=smoothstep(.812,.846,r);
+    let step=2.*PI/10.;let mid=(floor((atan2(p.y,p.x)+.2)/step)+.5)*step-.2;
+    let facet=max(.815-dot(p.xy,vec2f(cos(mid),sin(mid))),0.)*.04;
+    let groove=exp(-pow((r-.806)/.011,2.))*.004;
+    return lip*.017+(facet-groove+coin_emblem(p)*u.details.y*.016)*(1.-lip);
+}
+fn coin_metal(p:vec3f)->f32 {
+    let r=length(p.xy);
+    return max(max(smoothstep(.824,.836,r),1.-smoothstep(.06,.08,abs(p.z))),coin_emblem(p)*(1.-smoothstep(.80,.83,r)));
 }
 fn shape(p:vec3f)->f32 {
     let kind=i32(u.viewport.z);
@@ -100,8 +108,7 @@ fn shape(p:vec3f)->f32 {
     let r=length(p.xy);let edge=.017*(.5+.5*cos(atan2(p.y,p.x)*100.0))*(1.0-smoothstep(.05,.08,abs(p.z)));
     let d=vec2f(r-(.96-edge),abs(p.z)-.092);
     let base=min(max(d.x,d.y),0.0)+length(max(d,vec2f(0)))-.012;
-    let rim=-.016*(1.0-smoothstep(.01,.035,abs(r-.90)));
-    return base+(coin_mark(p)*u.details.y*.014+rim)*smoothstep(.06,.08,abs(p.z));
+    return base-coin_relief(p)*smoothstep(.06,.08,abs(p.z));
 }
 fn normal(p:vec3f)->vec3f {
     let e=select(.0015,max(.0015,8.0/u.viewport.y/u.position.w),u.options.w>.5);
@@ -240,9 +247,17 @@ fn surface_color(p:vec3f)->vec3f {
         return mix(base,u.ink.rgb,pip_mask(p));
     }
     if kind==2 {
+        let r=length(p.xy);let a=atan2(p.y,p.x);let face=smoothstep(.06,.08,abs(p.z));
         base*=1.+material_grain(p)*.18;
+        if u.details.w<.5 {let sector=floor((a+.2)/(2.*PI/10.));base*=(1.+(noise(vec3f(r*260.,a*2.,0.))-.5)*.16)*(1.+(hash(vec3f(sector,3.,p.z))-.5)*.8);}
         if u.details.w>2.5 {let patina=smoothstep(.43,.72,noise(p*7.)*.65+noise(p*31.)*.35);base=mix(base,vec3f(.025,.11,.095),patina*.65);}
-        return mix(base,u.ink.rgb,coin_mark(p)*.25);
+        let reed=smoothstep(.862,.87,r)*(1.-smoothstep(.912,.92,r))*pow(.5+.5*cos(a*150.),3.);
+        let hairline=exp(-pow((r-.842)/.008,2.))+exp(-pow((r-.926)/.007,2.));
+        // Metal albedo lifted toward a target luminance so the rim reads champagne, not bronze.
+        let ink_luma=dot(u.ink.rgb,vec3f(.2126,.7152,.0722));
+        let champagne=mix(u.ink.rgb,vec3f(ink_luma),-.04)*clamp(2.5/max(ink_luma,.01),1.3,3.8);
+        let metal=champagne*(1.-(reed*.7+hairline*.45)*face);
+        return mix(base,metal,coin_metal(p));
     }
     let uv=p.xy/vec2f(1.44,-1.44)+.5;
     let border=card_border(p.xy);
@@ -253,9 +268,15 @@ fn surface_color(p:vec3f)->vec3f {
         base*=1.+material_grain(p)*.20;
         return mix(base,u.ink.rgb,max(border,logo(vec2f(1.0-uv.x,uv.y))*.85));
     }
-    base=mix(vec3f(.85,.82,.74),u.body.rgb,.035)*(1.+material_grain(p)*.14);
-    let text=textureSampleLevel(label,linear_sampler,uv,0).r;
-    return mix(base,mix(vec3f(.05,.04,.035),u.body.rgb,.35),max(text,border*.75));
+    // Laid paper: off-white stock lifted past the tonemap, coarse fibres, faint deckle.
+    let fibre=noise(vec3f(p.x*14.,p.y*70.,3.));
+    let deckle=smoothstep(.40,.72,max(abs(p.x)/.72,abs(p.y)/1.04));
+    base=mix(vec3f(1.,.94,.84),u.body.rgb,.03)*3.4*(1.+material_grain(p)*.08)*(1.+(fibre-.5)*.06)*(1.-deckle*.03);
+    // Label ink is near-black and its strokes are firmed so the word clears 4.5:1 on the paper.
+    let o=vec2f(.9/512.,.9/512.);let q=vec2f(o.x,-o.y);
+    let raw=max(max(textureSampleLevel(label,linear_sampler,uv+o,0).r,textureSampleLevel(label,linear_sampler,uv-o,0).r),max(textureSampleLevel(label,linear_sampler,uv+q,0).r,textureSampleLevel(label,linear_sampler,uv-q,0).r));
+    let text=smoothstep(.05,.6,raw);
+    return mix(mix(base,mix(vec3f(.05,.04,.035),u.body.rgb,.35),border*.9),vec3f(.03,.025,.02),text);
 }
 fn shade(ro:vec3f,rd:vec3f,t:f32)->vec3f {
     let p=ro+rd*t;var nl=normal(p);
@@ -263,10 +284,10 @@ fn shade(ro:vec3f,rd:vec3f,t:f32)->vec3f {
         let e=.006;let grain=material_grain(p);
         let bump=vec3f(material_grain(p+vec3f(e,0,0))-grain,material_grain(p+vec3f(0,e,0))-grain,0);
         let strength=select(.08,.50,i32(u.viewport.z)==2 && u.details.w>1.5 && u.details.w<2.5);
-        nl=normalize(nl-bump*strength*(1.-select(0.,coin_mark(p),i32(u.viewport.z)==2)));
+        nl=normalize(nl-bump*strength*(1.-select(0.,coin_metal(p),i32(u.viewport.z)==2)));
     }
     let n=world_dir(nl);let v=-world_dir(rd);
-    let rough=clamp(u.material.x+material_grain(p)*.12,.045,.9);let metal=select(0.0,1.0,i32(u.viewport.z)==2);
+    let rough=clamp((u.material.x+material_grain(p)*.12)*select(1.,mix(1.3,.3,coin_metal(p)),i32(u.viewport.z)==2),.045,.9);let metal=select(0.0,1.0,i32(u.viewport.z)==2);
     let base=surface_color(p);let reflected=environment(reflect(-v,n),rough);
     let a=u.lighting.x;let light=normalize(vec3f(-.8*cos(a),1.6,1.8+.8*sin(a)));
     var col=brdf(n,v,light,base,metal,rough)*vec3f(3.1,2.8,2.5);

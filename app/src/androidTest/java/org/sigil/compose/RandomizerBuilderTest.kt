@@ -33,7 +33,7 @@ class RandomizerBuilderTest {
             assertEquals(true,commands.last {it.first=="post"}.second["rich"])
             val id="synthetic-${commands.count {it.first=="post"}}"
             ui.runOnIdle {
-                val part=MessagePart(id,"Utility",motion.result,utility=UtilityContent(if(motion.kind=="dice")"dice" else "pick",display=motion.result,motion=motion))
+                val part=MessagePart(id,"Utility",motion.result,utility=UtilityContent(if(motion.kind=="dice")"dice" else "pick",display=if(motion.kind=="choice")"Choice" else motion.result,motion=motion))
                 val message=ChatMessage(id,"sam",source,true,"9:30 AM","sent",false,emptyList(),emptyList(),null,true,peer="self",parts=listOf(part))
                 state.value=state.value.copy(sent=state.value.sent+1,sentText=source,sentMessage=id,messages=listOf(message)+state.value.messages)
             }
@@ -63,7 +63,7 @@ class RandomizerBuilderTest {
             ui.mainClock.autoAdvance=true
             ui.onAllNodesWithTag("material-flight-recorded",useUnmergedTree=true).assertCountEquals(0)
             ui.onNodeWithContentDescription("Edit $name").assertDoesNotExist()
-            ui.onNodeWithContentDescription(when(motion.kind){"coin"->"Coin: ${motion.result}";"choice"->"Chosen: ${motion.result}";else->"Dice: "+motion.dice.joinToString {"d${it.sides} · ${it.face}"}}).assertExists()
+            ui.onNodeWithContentDescription(when(motion.kind){"coin"->"Coin flip";"choice"->"Card pick. ${motion.result}";else->"Dice roll"}).assertExists()
             assertEquals(id,state.value.messages.first().id)
             assertEquals(motion.result,state.value.messages.first().parts.first().utility?.motion?.result)
         }

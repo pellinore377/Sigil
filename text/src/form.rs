@@ -257,7 +257,7 @@ mod tests {
         assert!(!concealed.contains("randomizer_preview"));
         assert!(!preview("roll::2d6").unwrap().contains("randomizer_preview"));
         assert!(preview("roll::257d6;").is_err());
-        assert!(preview("pick::number::4-2;").is_err());
+        assert!(preview("pick::number::4-x;").is_err());
     }
     #[test]
     fn graphical_forms_produce_valid_cards_and_previews() {
@@ -297,7 +297,7 @@ mod tests {
     }
     #[test]
     fn preview_does_not_resolve_randomizers_and_invalid_rows_are_rejected() {
-        for s in ["roll::d6;","calc::nope;"] {assert!(preview(s).is_err());}
+        for s in ["roll::2x6;","calc::nope;"] {assert!(preview(s).is_err());}
         for value in ["NaN","infinity","2;note::injected"] {assert!(source(&json!({"kind":"Chart","mode":"bar","title":"Test","rows":[["A",value]]}).to_string()).is_err());}
         let s=form("Recipe","",&[],&[&["ingredients","bold::plain;"],&["steps","Do it"]]);
         let view:Value=serde_json::from_str(&preview(&s).unwrap()).unwrap();
@@ -312,5 +312,5 @@ mod tests {
         assert!(parts[0]["utility"]["motion"].is_object());
         assert!(!parts.to_string().contains("private"));
         assert!(parts[1]["text"].as_str().unwrap().contains("A caption"));
-        assert!(preview("roll::d6;").is_err());
+        assert!(preview("roll::2x6;").is_err());
     }

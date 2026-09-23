@@ -19,12 +19,16 @@ class TableTest {
         ui.runOnUiThread { ui.activity.setSigilContent { SigilApp(NativeCore::palette, NativeCore::analyze,
             MessengerState(phase = "connected", chats = listOf(chat), selected = "self", messages = listOf(message)), { _, _ -> }) } }
     }
+    private fun openDetails(card: String) {
+        ui.onNodeWithContentDescription(card).performTouchInput { longClick() }
+        ui.onNodeWithText("Details").performClick()
+    }
     @Test fun expanded_table_sorts_numerically_keeps_headers_and_copies_original_cells() {
         val numbers = listOf(10, 2) + (20..77).toList()
         val rows = numbers.mapIndexed { i, n -> listOf(RichText("Person ${i + 1}"), RichText(n.toString())) }
         val copies = rows.map { it.joinToString("\t") { cell -> cell.text } }
         show(TableContent(listOf(RichText("Name"), RichText("Count")), rows, listOf(null, numbers.indices.sortedBy { numbers[it] }), copies, "Name\tCount\n" + copies.joinToString("\n")))
-        ui.onNodeWithText("Open table · 60 rows").performClick()
+        openDetails("Table, 60 rows, 2 columns")
         val sort = ui.onNodeWithContentDescription("Sort column 2")
         val top = sort.fetchSemanticsNode().boundsInRoot.top
         sort.performClick().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ascending"))
@@ -48,7 +52,7 @@ class TableTest {
     @Test fun concealed_cells_do_not_leak_through_details_or_copy() {
         val hidden = RichText("Hidden number", listOf(RichSpan(0, 13, reveal = "spoiler")))
         show(TableContent(listOf(RichText("Private")), listOf(listOf(hidden)), listOf(null), listOf(null), null))
-        ui.onNodeWithText("Open table · 1 row").performClick()
+        openDetails("Table, 1 row, 1 column")
         ui.onNodeWithContentDescription("Copy table").assertIsNotEnabled()
         ui.onNodeWithText("Hidden number").assertDoesNotExist()
         ui.onNode(hasContentDescription("Row 1, column 1") and hasAnyAncestor(isDialog())).performSemanticsAction(SemanticsActions.OnLongClick) { it() }

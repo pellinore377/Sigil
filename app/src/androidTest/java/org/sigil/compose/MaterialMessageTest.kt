@@ -84,27 +84,27 @@ class MaterialMessageTest {
         android.os.SystemClock.sleep(300)
         val before=signature()
         val objectBounds=ui.onNodeWithTag("material-object-0",useUnmergedTree=true).fetchSemanticsNode().boundsInWindow
-        val row=ui.onNodeWithContentDescription("Dice: d8 · 7").fetchSemanticsNode().boundsInWindow
+        val row=ui.onNodeWithContentDescription("Dice roll").fetchSemanticsNode().boundsInWindow
         ui.onNodeWithTag("timeline").performScrollToIndex(20)
         ui.onNodeWithTag("material-object-0",useUnmergedTree=true).assertDoesNotExist()
         ui.onNodeWithTag("timeline").performScrollToIndex(0)
         ui.waitUntil(15_000){signature()!=null}
         android.os.SystemClock.sleep(300)
         val after=ui.onNodeWithTag("material-object-0",useUnmergedTree=true).fetchSemanticsNode().boundsInWindow
-        val afterRow=ui.onNodeWithContentDescription("Dice: d8 · 7").fetchSemanticsNode().boundsInWindow
+        val afterRow=ui.onNodeWithContentDescription("Dice roll").fetchSemanticsNode().boundsInWindow
         assertEquals(objectBounds.left-row.left,after.left-afterRow.left,1f)
         assertEquals(objectBounds.top-row.top,after.top-afterRow.top,1f)
         assertEquals("Scrolling must not rotate or redraw a different result",before,signature())
     }
     @Test fun replay_from_the_message_menu_runs_the_timeline_animation() = replay(
-        RandomizerMotion("dice",dice=listOf(DieFace(6,5)),result="5"),"Dice: d6 · 5")
+        RandomizerMotion("dice",dice=listOf(DieFace(6,5)),result="5"),"Dice roll")
     @Test fun card_menu_replay_has_a_fan_mist_and_animated_placement() = replay(
-        RandomizerMotion("choice",frames=listOf("Museum","Bookstore","Cafe"),selected=1,result="Bookstore"),"Chosen: Bookstore")
+        RandomizerMotion("choice",frames=listOf("Museum","Bookstore","Cafe"),selected=1,result="Bookstore"),"Card pick. Bookstore")
     @Test fun coin_menu_replay_visibly_flips() = replay(
-        RandomizerMotion("coin",frames=listOf("Heads","Tails"),selected=1,result="Tails"),"Coin: Tails")
+        RandomizerMotion("coin",frames=listOf("Heads","Tails"),selected=1,result="Tails"),"Coin flip")
     private fun replay(motion:RandomizerMotion,description:String) {
         val chat=ChatSummary("self","Sample","","",true,emptyList())
-        val part=MessagePart("card",if(motion.kind=="dice")"dice" else "pick","Result",utility=UtilityContent(if(motion.kind=="dice")"dice" else "pick",display=motion.result,motion=motion))
+        val part=MessagePart("card",if(motion.kind=="dice")"dice" else "pick","Result",utility=UtilityContent(if(motion.kind=="dice")"dice" else "pick",display=if(motion.kind=="choice")"Choice" else motion.result,motion=motion))
         val message=ChatMessage("replay","sam","",true,"9:33","sent",false,emptyList(),emptyList(),null,true,parts=listOf(part))
         val state=MessengerState(phase="connected",chats=listOf(chat),selected="self",timelineLoaded=true,messages=listOf(message))
         ui.runOnUiThread {ui.activity.setSigilContent {SigilApp(NativeCore::palette,NativeCore::analyze,state,{_,_->})}}
@@ -181,11 +181,11 @@ class MaterialMessageTest {
             ready
         }
         screenshot("material-dice.png")
-        ui.onNodeWithContentDescription("Dice: d4 · 3, d6 · 5, d8 · 7, d10 · 9, d12 · 11, d20 · 19").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Dice roll").assertIsDisplayed()
         ui.onNodeWithText("Open dice").assertDoesNotExist()
         val coin=part.copy(utility=UtilityContent("pick",display="Tails",motion=RandomizerMotion("coin",frames=listOf("Heads","Tails"),selected=1,result="Tails")))
         ui.runOnUiThread {state=state.copy(messages=listOf(message.copy(parts=listOf(coin))))}
-        ui.onNodeWithContentDescription("Coin: Tails").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Coin flip").assertIsDisplayed()
         ui.onNodeWithText("Open coin flip").assertDoesNotExist()
         ui.waitUntil(10_000) {var count=0;ui.runOnUiThread {count=textures(ui.activity.window.decorView).count {it.alpha==1f}};count==1}
     }

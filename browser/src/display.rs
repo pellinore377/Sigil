@@ -63,6 +63,8 @@ fn validate(element: &Element, depth: u32, remaining: &mut usize) -> Result<(), 
     {
         return Err(fail("Unsupported formula element"));
     }
+    // The converter tags environments with a class; it is styling only, so drop it rather than reject the formula.
+    element.remove_attribute("class")?;
     let attributes = element.attributes();
     for i in 0..attributes.length() {
         let attribute = attributes

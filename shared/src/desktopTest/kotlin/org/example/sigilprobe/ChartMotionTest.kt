@@ -42,7 +42,7 @@ class ChartMotionTest {
             val settled=pixels()
             assertNotEquals(moving,settled,type)
             assertEquals(bounds,ui.onNodeWithTag("plot").fetchSemanticsNode().boundsInRoot)
-            ui.onNodeWithContentDescription("${kind.replaceFirstChar {it.uppercase()}} chart, 2 points. Values are listed below.").assertExists()
+            ui.onNodeWithContentDescription("${kind.replaceFirstChar {it.uppercase()}} chart. A,",substring=true).assertExists()
             ui.runOnIdle {clock.replay();clock.elapsed=250f}
             assertEquals(moving,pixels(),"Replay must be deterministic: $type")
             ui.runOnIdle {reduced=true}

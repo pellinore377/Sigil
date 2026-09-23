@@ -65,7 +65,7 @@ private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(
             "call_start","call_prepare"->error="Calls are unavailable in the design workbench."
         }
     }
-    CompositionLocalProvider(LocalMaterialPlatform provides WebMaterials, LocalSolidMaterial provides (if (materialsReady) { value, progress, modifier -> MaterialMessages(value, progress, modifier) } else null), LocalMaterialOverlay provides (if (materialsReady) { timeline, modifier -> MaterialTimelineOverlay(timeline, modifier) } else null), LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides ::preview,LocalBuilderTimezone provides "UTC",LocalCodePreview provides ::rustCode,
+    CompositionLocalProvider(LocalMaterialPlatform provides WebMaterials, LocalSolidMaterial provides (if (materialsReady) { value, progress, modifier -> MaterialMessages(value, progress, modifier) } else null), LocalMaterialOverlay provides (if (materialsReady) { timeline, modifier -> MaterialTimelineOverlay(timeline, modifier) } else null), LocalBuilderSource provides ::rustBuilder,LocalMathContent provides {mathml,expression,modifier->WebMath(mathml,expression,modifier)},LocalStructuredPreview provides ::preview,LocalBuilderTimezone provides "UTC",LocalCodePreview provides ::rustCode,
         LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds,
         LocalTemporalPreview provides {kind,input->
             val result=rustTemporal("$kind\n${(WebDate.now()/1000).toLong()}\nUTC\nday\n$input").split('\n')

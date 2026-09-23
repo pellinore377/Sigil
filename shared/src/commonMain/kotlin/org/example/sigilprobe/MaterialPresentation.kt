@@ -31,7 +31,9 @@ internal val MaterialCardWidth=148.dp
 internal const val MaterialCardAspect=1.47f
 internal val MaterialCardHeight=MaterialCardWidth*MaterialCardAspect
 internal const val MaterialObjectScale=1.89f
-internal val LocalMaterialOpacity=staticCompositionLocalOf {1f}
+val LocalMaterialOpacity=staticCompositionLocalOf {1f}
+// Platforms report an object's first drawn frame so a hand-off never shows a blank gap.
+val LocalMaterialDrawn=staticCompositionLocalOf<(()->Unit)?> {null}
 
 interface MaterialPlatform {
     val available:Boolean
@@ -86,6 +88,10 @@ private suspend fun awaitLayout(anchor:MaterialAnchor,timeline:MaterialTimeline)
         val extent=minOf((width-cardWidth)/2-4,cardWidth*1.65f).coerceAtLeast(0f);val step=extent/3
         val visible=if(p>=.83f || launch!=null && p<.025f)listOf(3)else(0..6).toList()
         val mistColor=Color(LocalAppearance.current.cardStyle.second or 0xff000000.toInt())
+        // The preview card is released only once the flying card has a frame on screen.
+        var shown by remember {mutableStateOf(departure==null)}
+        val report=remember {{shown=true}}
+        if(departure!=null && !shown)LaunchedEffect(Unit) {kotlinx.coroutines.delay(400);shown=true}
         for(front in listOf(false,true))Canvas(Modifier.matchParentSize().zIndex(if(front)11f else -1f).testTag(if(front)"card-mist-front" else "card-mist-back")) {
             val life=(1-(1-(p/.13f).coerceIn(0f,1f)).pow(3))*(1-ease((p-.75f)/.17f))
             if(life>0f)repeat(if(front)23 else 50) {i->
@@ -131,11 +137,11 @@ private suspend fun awaitLayout(anchor:MaterialAnchor,timeline:MaterialTimeline)
             val q=floatArrayOf(-sin(tilt)*sin(flipAngle),cos(tilt)*sin(flipAngle),sin(tilt)*cos(flipAngle),cos(tilt)*cos(flipAngle))
             val sizeScale=1-.045f*distance.coerceAtMost(3f)
             val objectWidth=cardWidth*sizeScale;val objectHeight=cardHeight*sizeScale
-            CompositionLocalProvider(LocalMaterialOpacity provides opacity) {
+            CompositionLocalProvider(LocalMaterialOpacity provides opacity,LocalMaterialDrawn provides report.takeIf {chosen}) {
                 MaterialObject(2,0,0,q,if(chosen)value.result else "",Modifier.offset {IntOffset((x-objectWidth/2).roundToInt(),(y-objectHeight/2).roundToInt())}.size(with(density){objectWidth.toDp()},with(density){objectHeight.toDp()}).graphicsLayer {alpha=opacity}.testTag("picker-card-$i").then(if(press!=null)Modifier.pointerInput(press){detectTapGestures(onLongPress={haptic.performHapticFeedback(HapticFeedbackType.LongPress);press()})}.semantics{onLongClick("Message actions"){press();true}}else Modifier).zIndex(if(chosen&&p>.54f)10f else 4-distance),progress=raw)
             }
         }
-        SideEffect {departure?.invoke()}
+        SideEffect {if(shown)departure?.invoke()}
     }
 }
 data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:Rect,val anchor:Rect,val fromPreview:Boolean=false) {
@@ -192,15 +198,22 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
     val unit=minOf(with(density){if(coin)MaterialCoinUnit.toPx()else MaterialDiceUnit.toPx()},rect.width/(columns*1.85f),rect.height/(rows*2.1f))
     if(unit<1)return
     val targets=objectTargets(rect,viewport,items.size,unit,anchor.outgoing)
+    // The preview draws its objects at their own size; a launch starts there and eases to the flight's.
+    val previewSide=anchor.launchOrigin?.let {origin->
+        val gap=with(density){4.dp.toPx()};val columns=minOf(3,items.size)
+        minOf(with(density){(if(coin)MaterialCoinUnit else MaterialDiceUnit).toPx()}*MaterialObjectScale,(origin.width-gap*(columns-1))/columns).takeIf {it>0f}
+    }
     var flight by remember(anchor) {mutableStateOf<Flight?>(null)}
     var attempted by remember(anchor) {mutableStateOf(false)}
+    var live by remember(anchor) {mutableStateOf(false)}
+    val drawn=remember(anchor) {mutableStateMapOf<Int,Unit>()}
     // Snapshot geometry once per message presentation; scrolling never rerolls or restarts it.
     LaunchedEffect(anchor) {
-        if(progress>=1f || !platform.available) {attempted=true;anchor.ready(0);return@LaunchedEffect}
-        if(anchor.launchOrigin==null && !awaitLayout(anchor,timeline)) {attempted=true;anchor.settle();anchor.ready(0);return@LaunchedEffect}
+        if(progress>=1f || !platform.available) {attempted=true;live=true;anchor.ready(0);return@LaunchedEffect}
+        if(anchor.launchOrigin==null && !awaitLayout(anchor,timeline)) {attempted=true;live=true;anchor.settle();anchor.ready(0);return@LaunchedEffect}
         val viewport=timeline.viewport;val rect=anchor.bounds
         val targets=objectTargets(rect,viewport,items.size,unit,anchor.outgoing)
-        val starts=anchor.launchOrigin?.let {previewObjectOrigins(viewport,it,items.size,unit*MaterialObjectScale,with(density){4.dp.toPx()})}
+        val starts=anchor.launchOrigin?.let {previewObjectOrigins(viewport,it,items.size,previewSide ?: (unit*MaterialObjectScale),with(density){4.dp.toPx()})}
         val obstacles=timeline.bubbles.values.filter {r->r.overlaps(viewport)&&!r.contains(anchor.bounds.center)}.take(64).map {r->Rect(maxOf(r.left,viewport.left),maxOf(r.top,viewport.top),minOf(r.right,viewport.right),minOf(r.bottom,viewport.bottom))}
         val input=buildList<Float> {
             add(viewport.width/unit);add(viewport.height/unit);add(items.size.toFloat());add(obstacles.size.toFloat());add(if(anchor.outgoing)1f else 0f);add((value.hashCode()and 0x7fffff).toFloat())
@@ -214,6 +227,9 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
             if(plan.duration<=12000) {flight=plan;anchor.retainPose?.invoke(items.indices.map {plan.pose(it,1f).copyOfRange(3,7)})}
         }
         attempted=true
+        // Hold the clock at the first pose until every object has a frame on screen.
+        if(flight!=null)withTimeoutOrNull(250) {snapshotFlow {drawn.size>=items.size}.first {it}}
+        live=true
         anchor.ready(flight?.duration ?: 0)
     }
     var returning by remember(anchor) {mutableStateOf<List<FloatArray>?>(null)}
@@ -250,19 +266,12 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
             FloatArray(4) {j->source[j+3]+(end[j+3]*sign-source[j+3])*dock.value}.also {r->
                 val length=sqrt(r.sumOf {it.toDouble()*it}.toFloat());for(j in r.indices)r[j]/=length
             }
-        } else pose?.copyOfRange(3,7)?.let {rotation->
-            if(anchor.launchOrigin==null || progress>=.14f)rotation else {
-                val fraction=ease(progress/.14f)
-                val sign=if(rotation[3]<0)-1f else 1f
-                FloatArray(4){j->rotation[j]*sign*fraction+(if(j==3)1-fraction else 0f)}.also {q->
-                    val length=sqrt(q.sumOf {it.toDouble()*it}.toFloat());for(j in q.indices)q[j]/=length
-                }
-            }
-        }
+        } else pose?.copyOfRange(3,7)
         val size=(plan?.unit ?: unit)*MaterialObjectScale
         val altitude=if(pose!=null && plan!=null && geometryStable)maxOf(0f,pose[1]-plan.pose(i,1f)[1])else 0f
         val lift=altitude.coerceAtMost(2.5f)*unit*.42f
-        val scale=1+(altitude*.08f).coerceAtMost(.2f)
+        val launchSize=if(plan?.fromPreview==true && previewSide!=null && progress<1f)previewSide/size+(1-previewSide/size)*ease(progress*(plan.frames-1)/18f)else 1f
+        val scale=(1+(altitude*.08f).coerceAtMost(.2f))*launchSize
         val clearance=LocalMaterialOcclusion.current?.footer?.top ?: anchor.launchOrigin?.top ?: viewport.bottom
         if(y-lift+size*scale/2>clearance-viewport.top)allDeparted=false
         val window=LocalMaterialLaunchWindow.current?.let {origin->
@@ -274,11 +283,13 @@ data class Flight(val data:FloatArray,val count:Int,val unit:Float,val viewport:
                 drawCircle(Brush.radialGradient(listOf(Color.Black.copy(alpha=.15f/(1+altitude)),Color.Transparent),center=this.center,radius=radius),radius,this.center)
             }
         }
-        CompositionLocalProvider(LocalMaterialLaunchWindow provides window) {
+        val report=remember(i) {{drawn[i]=Unit}}
+        CompositionLocalProvider(LocalMaterialLaunchWindow provides window,LocalMaterialDrawn provides report,LocalMaterialOpacity provides if(live)1f else 0f) {
             MaterialObject(if(coin)1 else 0,items[i].first,items[i].second,q,if(coin)value.result else value.dice.getOrNull(i)?.marking?.takeIf {it.isNotEmpty()},Modifier.offset {IntOffset((x-size*scale/2).roundToInt(),(y-lift-size*scale/2).roundToInt())}.size(with(density){(size*scale).toDp()}).testTag("material-object-$i").then(if(interactive)Modifier.pointerInput(anchor){detectTapGestures(onLongPress={haptic.performHapticFeedback(HapticFeedbackType.LongPress);anchor.press?.invoke()})}.semantics{onLongClick("Message actions"){anchor.press?.invoke();true}}else Modifier),if(progress<1f || source!=null && dock.value<1f).5f else 1f)
         }
     }
     SideEffect {
+        if(!live)return@SideEffect
         anchor.launchHost?.started(anchor.message,anchor.ordinal)
         if(allDeparted || flight==null || progress>=1f)anchor.launchHost?.departed(anchor.message,anchor.ordinal)
     }

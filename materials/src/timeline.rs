@@ -594,9 +594,22 @@ fn simulate(
         .zip(&last)
         .map(|(item, p)| symmetry(*item, p.rotation))
         .collect::<Option<Vec<_>>>()?;
-    for frame in &mut frames {
+    // A launch starts in the preview's exact pose, so the face remap turns in during the first tumble.
+    let (hold_from, blend_to) = if starts.is_some() {
+        (6, 36.min(frames.len() / 2).max(7))
+    } else {
+        (0, 0)
+    };
+    for (k, frame) in frames.iter_mut().enumerate() {
+        let s =
+            ((k as f32 - hold_from as f32) / (blend_to - hold_from).max(1) as f32).clamp(0., 1.);
+        let s = if blend_to == 0 {
+            1.
+        } else {
+            s * s * (3. - 2. * s)
+        };
         for (p, q) in frame.iter_mut().zip(&adjustments) {
-            p.rotation *= *q;
+            p.rotation = (p.rotation * Quat::IDENTITY.slerp(*q, s)).normalize();
         }
     }
     let rest = frames.last()?.clone();
@@ -886,6 +899,20 @@ mod tests {
             let scene = record_packed(&packed).expect("source-aware launch");
             assert_eq!(scene[1], 7.);
             assert_eq!(scene[3], 20.);
+            let object = if sides == 0. {
+                Object::Coin
+            } else {
+                Object::Die
+            };
+            let preview =
+                crate::presentation::result_pose(object, Die::D6, (sides != 0.) as u32, 1.)
+                    .unwrap()
+                    .rotation;
+            let first = Quat::from_slice(&scene[4..8]);
+            assert!(
+                first.dot(preview).abs() > 0.999,
+                "the launch begins in the preview's pose"
+            );
             let last = &scene[scene.len() - 7..];
             assert!((last[0] - 11.).abs() < 0.01);
             assert!((last[2] - 10.).abs() < 0.01);

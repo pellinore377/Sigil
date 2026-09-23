@@ -10,6 +10,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
@@ -25,7 +26,9 @@ import kotlin.math.*
 val LocalSolidMaterial = staticCompositionLocalOf<(@Composable (RandomizerMotion, Float, Modifier) -> Unit)?> { null }
 val LocalCardBack = staticCompositionLocalOf { false }
 internal const val RandomizerMotionMillis=6500
-internal fun randomizerDuration(value:RandomizerMotion)=when(value.kind){"dice","coin"->RandomizerMotionMillis;"choice"->3200;else->1500}
+// The settled card draws centred at ~.76 of its slot, leaving ~30dp above and below; the row keeps only its shadow of that.
+private val ChoiceSlotTrim=27.dp
+internal fun randomizerDuration(value:RandomizerMotion)=when(value.kind){"dice","coin"->RandomizerMotionMillis;"choice"->3200;"number"->NumberPickMillis;else->1500}
 private val supportedDice=setOf(4,6,8,10,12,20)
 private val nativeDice=supportedDice+setOf(16,24,30)
 private fun coinGeometry():List<DiePolygon> {
@@ -42,7 +45,7 @@ private fun pips(number:Int):List<Pair<Int,Int>> = when(number) {
 }
 
 @Composable
-internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:RichText?=null) {
+internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:RichText?=null,description:String?=null) {
     val context=LocalTextMotion.current
     val motion=LocalMotion.current
     val enabled=!full && !motion.reduced && LocalAppearance.current.messageEffects
@@ -53,13 +56,14 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
     val coin=value.kind=="coin" && value.frames.size==2 && value.selected in 0..1
     val solid=value.kind=="dice" && dice.isNotEmpty() || coin
     if(!solid) {
-        if(value.kind=="choice" && LocalSolidMaterial.current!=null) {MaterialSlot(value,{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().heightIn(min=MaterialCardHeight+8.dp).clipToBounds().clearAndSetSemantics {contentDescription="Chosen: ${value.result}"});return}
+        if(value.kind=="number") {Box(Modifier.fillMaxWidth().clearAndSetSemantics {contentDescription="Number pick. ${numberFigure(value.result)}"},contentAlignment=androidx.compose.ui.Alignment.Center) {NumberDrum(value,!full)};return}
+        if(value.kind=="choice" && LocalSolidMaterial.current!=null) {MaterialSlot(value,{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},(if(LocalObjectMenu.current)Modifier else Modifier.layout {m,c->val trim=ChoiceSlotTrim.roundToPx();val p=m.measure(c.copy(minHeight=0,maxHeight=Constraints.Infinity));layout(p.width,(p.height-2*trim).coerceAtLeast(0)) {p.place(0,-trim)}}).fillMaxWidth().height(MaterialCardHeight+8.dp).clipToBounds().clearAndSetSemantics {contentDescription=description ?: "Chosen: ${value.result}"});return}
         ChoiceReveal(value,rich,context,enabled);return
     }
     val material=LocalSolidMaterial.current
     if(material!=null && (coin || dice.all {it.sides in nativeDice})) {
         val rows=if(coin)1 else (dice.size+2)/3
-        val description=if(coin)"Coin: ${value.result}" else "Dice: "+dice.joinToString {"d${it.sides} · ${it.face}"}
+        val description=stageDescription(coin,value.result,dice,LocalObjectMenu.current)
         MaterialSlot(value.copy(dice=dice),{if(enabled)((context?.clock?.elapsed ?: 12000f)/(context?.clock?.duration(randomizerDuration(value)) ?: randomizerDuration(value))).coerceIn(0f,1f)else 1f},Modifier.fillMaxWidth().height((if(LocalObjectMenu.current || LocalAppearance.current.compact) {if(coin)164 else rows*116} else if(coin)184 else rows*132).dp).then(if(LocalObjectMenu.current)Modifier.clipToBounds() else Modifier).clearAndSetSemantics {contentDescription=description})
         return
     }
@@ -73,7 +77,7 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
     val surface=Color(objectMaterial.color or 0xff000000.toInt())
     val edge=LocalContentColor.current.copy(alpha=.28f)
     val density=androidx.compose.ui.platform.LocalDensity.current
-    val description=if(coin)"Coin: ${value.result}" else if(solid)"Dice: "+dice.joinToString {"d${it.sides} · ${it.face}"} else "Chosen: ${value.result}"
+    val description=stageDescription(coin,value.result,dice,LocalObjectMenu.current)
     val columns=if(coin)1 else minOf(3,dice.size).coerceAtLeast(1)
     val rows=if(coin)1 else (dice.size+columns-1)/columns
     val layouts=remember(value,style,density) {
@@ -152,7 +156,7 @@ internal fun RandomizerStage(value:RandomizerMotion,full:Boolean=false,rich:Rich
 private fun ChoiceReveal(value:RandomizerMotion,rich:RichText?,context:TextMotionContext?,enabled:Boolean) {
     val moving by remember(context,enabled) {derivedStateOf {enabled && (context?.clock?.elapsed ?: 12000f)<randomizerDuration(value)}}
     val measure=rememberTextMeasurer()
-    val style=if(value.kind=="number")MaterialTheme.typography.headlineSmall else MaterialTheme.typography.bodyLarge
+    val style=MaterialTheme.typography.bodyLarge
     val ink=LocalContentColor.current
     val surface=ink.copy(alpha=.09f)
     val reveal by animateFloatAsState(if(moving)0f else 1f,LocalMotion.current.tween(MotionMillis),label="Choice reveal")
@@ -168,4 +172,11 @@ private fun ChoiceReveal(value:RandomizerMotion,rich:RichText?,context:TextMotio
             clipRect {drawText(frame,ink,topLeft=Offset((size.width-frame.size.width)/2,(size.height-frame.size.height)/2+offset))}
         }
     }
+}
+
+// The caption below owns the result; a menu shows the stage alone, so there it says the result too.
+internal fun stageDescription(coin:Boolean,result:String,dice:List<DieFace>,menu:Boolean):String {
+    val type=if(coin)"Coin flip" else "Dice roll"
+    if(!menu)return type
+    return if(coin)"$type. Result: $result" else "$type. "+dice.joinToString("; ") {"d${it.sides}, ${it.face}"}
 }

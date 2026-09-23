@@ -67,7 +67,7 @@ impl Appearance {
                 [0.95, 0.82, 0.51],
             ),
             Object::Card => ([0.19, 0.16, 0.28], [0.37, 0.22, 0.46], [0.89, 0.78, 0.53]),
-            Object::Coin => ([0.83, 0.62, 0.28], [0.83, 0.62, 0.28], [0.72, 0.50, 0.19]),
+            Object::Coin => ([0.27, 0.27, 0.26], [0.27, 0.27, 0.26], [1.0, 0.8, 0.5]),
         };
         Self {
             color,
@@ -167,6 +167,11 @@ impl Scene {
             Mode::Global => self.global,
             Mode::Conversation => self.conversation.unwrap_or(self.global),
         };
+        if self.object == Object::Coin {
+            // An accent only tints the dark field; the metal stays the coin's own.
+            let field = [0, 1, 2].map(|i| 0.27 + (accent[i] - 0.27) * 0.14);
+            return (field, field);
+        }
         (accent, accent.map(|v| (v * 0.6 + 0.22).clamp(0., 1.)))
     }
     pub fn duration(&self) -> f32 {

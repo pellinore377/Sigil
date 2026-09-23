@@ -16,12 +16,13 @@ internal class MaterialOcclusion {
     var input by mutableStateOf(Rect.Zero)
     var notice by mutableStateOf(Rect.Zero)
     fun launch(viewport: Rect, source: Rect?): Rect? {
-        if (source == null || !input.overlaps(viewport)) return null
+        if (source == null || !source.overlaps(viewport)) return null
         val normal = band(viewport)
         val left = maxOf(viewport.left, source.left)
         val right = minOf(viewport.right, source.right)
         val top = maxOf(normal.top, minOf(normal.bottom, source.top))
-        val bottom = minOf(source.bottom, input.top, viewport.bottom)
+        // The composer's field bounds the corridor when known; the preview's own edge does otherwise.
+        val bottom = minOf(source.bottom, if (input.overlaps(viewport)) input.top else source.bottom, viewport.bottom)
         return if (left < right && top < bottom) Rect(left, top, right, bottom) else null
     }
     fun visible(viewport: Rect): Rect = viewport
@@ -84,8 +85,11 @@ private fun subtract(bounds: Rect, exclusion: Rect): List<Rect> {
     return listOf(Rect(bounds.left,bounds.top,bounds.right,hole.top),Rect(bounds.left,hole.bottom,bounds.right,bounds.bottom),
         Rect(bounds.left,hole.top,hole.left,hole.bottom),Rect(hole.right,hole.top,bounds.right,hole.bottom))
 }
+/// The corridor rises out of the chrome that hosts the preview (the one holding its foot), so only other chrome hides it.
 internal fun materialClipRegions(visible: Rect, launch: Rect?, exclusions: List<Rect>): List<Rect> =
-    exclusions.fold(listOfNotNull(visible,launch)) { regions,exclusion -> regions.flatMap {subtract(it,exclusion)} }
+    (exclusions.fold(listOf(visible)) { regions,exclusion -> regions.flatMap {subtract(it,exclusion)} } +
+        (launch?.let {corridor -> exclusions.filterNot {it.contains(Offset(corridor.center.x,corridor.bottom-.01f))}
+            .fold(listOf(corridor)) { regions,exclusion -> regions.flatMap {subtract(it,exclusion)} }}.orEmpty()))
         .filter {it.width>0 && it.height>0}
 internal fun materialClipRegions(visible: Rect, launch: Rect?, exclusion: Rect?): List<Rect> =
     materialClipRegions(visible,launch,listOfNotNull(exclusion))

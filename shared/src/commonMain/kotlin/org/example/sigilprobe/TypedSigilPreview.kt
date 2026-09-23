@@ -55,16 +55,21 @@ private fun MessagePart.previewEffects(): List<String> = buildList {
 
 @Composable private fun DraftPreviewContent(resolved:MessagePart?,source:String,current:Boolean,modifier:Modifier,open:((PreviewIntent,String)->Unit)?,onVisible:((Boolean)->Unit)?=null) {
     val parts = resolved?.previewLeaves().orEmpty()
-    val cards = parts.filter { it.kind != "text" }
-    val effects = parts.flatMap { it.previewEffects() }.distinct()
+    val present = parts.any { it.kind != "text" } || parts.any { it.previewEffects().isNotEmpty() }
+    // The panel keeps its last content while it collapses, so sending never snaps it shut.
+    val last = remember { arrayOf(parts) }
+    if (present) last[0] = parts
+    val shown = last[0]
+    val cards = shown.filter { it.kind != "text" }
+    val effects = shown.flatMap { it.previewEffects() }.distinct()
     // The bar below drops its top inset while something sits here, so the footer's padding stays even.
-    SideEffect { onVisible?.invoke(cards.isNotEmpty() || effects.isNotEmpty()) }
+    SideEffect { onVisible?.invoke(present) }
     DisposableEffect(onVisible) { onDispose { onVisible?.invoke(false) } }
     val motion = LocalMotion.current
     val launch = LocalPreviewLaunch.current
     DisposableEffect(launch) { onDispose { launch?.source = ""; launch?.bounds = Rect.Zero; launch?.panel = Rect.Zero; launch?.visibleOrigins?.clear() } }
     SideEffect { launch?.source = source.takeIf {current}.orEmpty() }
-    AnimatedVisibility(cards.isNotEmpty() || effects.isNotEmpty(), modifier,
+    AnimatedVisibility(present, modifier,
         enter = expandVertically(motion.enter(MotionMillis)) + fadeIn(motion.enter(MotionMillis)),
         exit = shrinkVertically(motion.exit(MotionMillis)) + fadeOut(motion.exit(MotionExit)), label = "Draft preview") {
         Column(Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState())
