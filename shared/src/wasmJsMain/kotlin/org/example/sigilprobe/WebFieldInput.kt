@@ -14,26 +14,16 @@ import kotlin.js.JsArray
 import kotlin.js.JsString
 
 @Composable
-internal fun WebFieldInput(label: String, secret: Boolean, done: Boolean, onEnter: () -> Unit, onMenu: () -> Unit, menuKey: ((String) -> Boolean)?) {
+internal fun WebFieldInput(label: String, secret: Boolean, done: Boolean, onEnter: () -> Unit) {
     val enter = rememberUpdatedState(onEnter)
-    val menu = rememberUpdatedState(onMenu)
-    val menuKeys = rememberUpdatedState(menuKey)
     DisposableEffect(label, secret, done) {
         val root = checkNotNull(document.body!!.shadowRoot)
         val keydown: (Event) -> Unit = { event ->
-            val original = event as? KeyboardEvent
-            if (original != null && !original.isComposing && menuKeys.value != null &&
-                ((original.repeat && original.key == "Enter") || menuKeys.value?.invoke(original.key) == true)) {
-                event.preventDefault(); event.stopPropagation()
-            }
             val input = root.querySelector("input")
-            val key = original?.takeIf { (input == null || it.target == input) && menuKeys.value == null }
+            val key = (event as? KeyboardEvent)?.takeIf { input == null || it.target == input }
             if (key?.key == "Enter" && !key.isComposing && !key.shiftKey && !key.ctrlKey && !key.altKey && !key.metaKey) {
                 event.preventDefault(); event.stopPropagation()
                 if (!key.repeat) enter.value()
-            } else if (key?.key == "ContextMenu" || (key?.key == "F10" && key.shiftKey)) {
-                event.preventDefault(); event.stopPropagation()
-                if (!key.repeat) menu.value()
             }
         }
         root.addEventListener("keydown", keydown, true)
