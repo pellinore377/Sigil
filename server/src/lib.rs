@@ -266,16 +266,22 @@ fn application_with_log(
 
 async fn security_headers(request: Request, next: Next) -> Response {
     let messaging = matches!(request.uri().path(), "/" | "/messenger");
+    // Passkey providers inject their prompts; the passkey window runs without isolation.
+    let passkey = request.uri().path() == "/passkey";
     let immutable = request.uri().path().strip_prefix("/web/").and_then(|v|v.strip_suffix(".wasm"))
         .is_some_and(|v|v.len()==20 && v.bytes().all(|b|b.is_ascii_hexdigit()));
     let mut response = next.run(request).await;
     let immutable = immutable && response.status().is_success();
     let headers = response.headers_mut();
-    headers.insert("cross-origin-opener-policy", header::HeaderValue::from_static("same-origin"));
-    headers.insert("cross-origin-embedder-policy", header::HeaderValue::from_static("require-corp"));
+    if !passkey {
+        headers.insert("cross-origin-opener-policy", header::HeaderValue::from_static("same-origin"));
+        headers.insert("cross-origin-embedder-policy", header::HeaderValue::from_static("require-corp"));
+    }
     headers.insert(header::CACHE_CONTROL, header::HeaderValue::from_static(if immutable {"public, max-age=31536000, immutable"} else {"no-store"}));
     headers.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
-    let policy = if messaging {
+    let policy = if passkey {
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; frame-src 'self' moz-extension: chrome-extension:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+    } else if messaging {
         "default-src 'self'; script-src 'self' blob: 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' https:; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
     } else {
         "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"

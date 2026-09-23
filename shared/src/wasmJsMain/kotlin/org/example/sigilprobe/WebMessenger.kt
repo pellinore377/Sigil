@@ -479,17 +479,18 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
             "oidc_reopen"->{authorization?.let {browserSsoNavigate(it)};return@command}
             "passkey_recover","passkey_create"->{
                 if(!ready || state.busy)return@command
+                if(!browserPasskeyWindowOpen()){state=state.copy(issue="Allow pop-ups for Sigil to use passkeys.");return@command}
                 state=state.copy(busy=true,issue=null)
                 scope.launch {
                     try {
                         // The ceremony runs outside the lock so sync keeps going while the passkey sheet is open.
                         if(name=="passkey_recover") {
                             val request=mutex.withLock{execute("passkey_request")}
-                            val proof=Json.parseToJsonElement(browserPasskeyGet(request.toString()).awaitBrowser<JsString>().toString()).jsonObject
+                            val proof=Json.parseToJsonElement(browserPasskeyWindowRun("get",request.toString()).awaitBrowser<JsString>().toString()).jsonObject
                             mutex.withLock{execute("recover",mapOf("credential" to proof.string("credential"),"prf" to proof.string("prf")));refresh()};fileNext=0;fileWake.trySend(Unit)
                         } else {
                             val options=mutex.withLock{execute("passkey_create_options")}
-                            val made=Json.parseToJsonElement(browserPasskeyCreate(options.toString()).awaitBrowser<JsString>().toString()).jsonObject
+                            val made=Json.parseToJsonElement(browserPasskeyWindowRun("create",options.toString()).awaitBrowser<JsString>().toString()).jsonObject
                             mutex.withLock{execute("passkey_add",mapOf("credential" to made.string("credential"),"salt" to made.string("salt"),"prf" to made.string("prf"),"label" to "Web browser"));refresh()}
                         }
                     }catch(cancelled:CancellationException){throw cancelled}

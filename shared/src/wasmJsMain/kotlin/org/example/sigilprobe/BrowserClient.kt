@@ -7,8 +7,6 @@ import kotlin.js.*
 @JsName("browser_command") external fun browserCommand(request:String):Promise<JsString>
 @JsName("request_id") external fun browserRequestId():String
 @JsName("passkey_supported") external fun browserPasskeySupported():Boolean
-@JsName("passkey_get") external fun browserPasskeyGet(request:String):Promise<JsString>
-@JsName("passkey_create") external fun browserPasskeyCreate(options:String):Promise<JsString>
 @JsName("mailbox_watch") external fun browserMailboxWatch():Promise<JsBoolean>
 @JsName("camera_start") external fun browserCameraStart(video:org.w3c.dom.HTMLVideoElement):Promise<JsAny>
 @JsName("camera_stop") external fun browserCameraStop()
@@ -17,6 +15,8 @@ import kotlin.js.*
 @JsName("file_metadata") external fun browserFileMetadata(file:JsAny):String
 @JsName("file_slice") external fun browserFileSlice(file:JsAny,index:Int):Promise<JsAny>
 @JsName("file_stage") external fun browserFileStage(request:String,index:Int,bytes:JsAny):Promise<JsAny>
+@JsName("passkey_window_open") external fun browserPasskeyWindowOpen():Boolean
+@JsName("passkey_window_run") external fun browserPasskeyWindowRun(kind:String,request:String):Promise<JsString>
 @JsName("sso_open") external fun browserSsoOpen():Boolean
 @JsName("sso_navigate") external fun browserSsoNavigate(url:String):Boolean
 @JsName("sso_close") external fun browserSsoClose()

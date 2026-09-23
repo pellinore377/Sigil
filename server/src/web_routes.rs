@@ -51,6 +51,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/messenger", get(index))
         .route("/auth/browser",get(browser_callback))
         .route("/inactive",get(inactive))
+        .route("/passkey",get(passkey_page))
         .nest_service("/web", ServeDir::new(directory).precompressed_gzip())
         .route("/setup/v0/status", get(status))
         .route("/setup/v0/claim", post(claim))
@@ -431,6 +432,11 @@ async fn oidc_unlink(
     }
 }
 
+async fn passkey_page()->Html<&'static str> {
+    Html(r#"<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sigil passkey</title><style>
+body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:#f4f4f4;color:#222;font-family:Georgia,serif}main{max-width:26rem;text-align:center}h1{font-size:2.2rem;font-weight:400;margin:12px 0}p{font-size:1.1rem;line-height:1.5}button{font:inherit;font-size:1.05rem;padding:12px 22px;border:0;border-radius:16px;background:#222;color:#fff;cursor:pointer}@media(prefers-color-scheme:dark){body{background:#141414;color:#eee}button{background:#eee;color:#141414}}
+</style></head><body><main><h1>Sigil</h1><p id="passkey-status" role="status">Preparing…</p><button id="passkey-continue" hidden>Continue</button></main><script type="module" src="/web/sigil-passkey.mjs"></script></body></html>"#)
+}
 async fn inactive()->Html<&'static str> {
     Html(r#"<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sigil</title><style>
 body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:#f4f4f4;color:#222;font-family:Georgia,serif}main{max-width:28rem;text-align:center}h1{font-size:2.5rem;font-weight:400;margin:16px 0}p{font-size:1.15rem;line-height:1.5}a{display:inline-block;padding:12px 20px;border-radius:16px;background:#dedede;color:inherit;text-decoration:none}@media(prefers-color-scheme:dark){body{background:#141414;color:#eee}a{background:#333}}
