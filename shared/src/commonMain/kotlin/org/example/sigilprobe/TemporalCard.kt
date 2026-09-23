@@ -39,7 +39,7 @@ internal fun temporalDigits(seconds:Long):String {
     return if(span>=3600L)"${span/3600}".padStart(2,'0')+":"+body else body
 }
 // Gregorian civil date (days since 1970-01-01); commonMain carries no date library.
-private fun civilFromDays(days:Long):Triple<Long,Int,Int> {
+internal fun civilFromDays(days:Long):Triple<Long,Int,Int> {
     val shifted=days+719468
     val era=(if(shifted>=0)shifted else shifted-146096)/146097
     val dayOfEra=shifted-era*146097

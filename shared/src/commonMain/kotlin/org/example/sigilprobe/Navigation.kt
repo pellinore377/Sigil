@@ -31,9 +31,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-internal data class ClientFeatures(val calls:Boolean=true,val files:Boolean=true,val voice:Boolean=true,val locations:Boolean=true,val notifications:Boolean=true,val recovery:Boolean=true,val videoCalls:Boolean=true)
+data class ClientFeatures(val calls:Boolean=true,val files:Boolean=true,val voice:Boolean=true,val locations:Boolean=true,val notifications:Boolean=true,val recovery:Boolean=true,val videoCalls:Boolean=true,val passkeys:Boolean=false)
 internal val LocalWideLayout=staticCompositionLocalOf {false}
-internal val LocalClientFeatures=staticCompositionLocalOf {ClientFeatures()}
+val LocalClientFeatures=staticCompositionLocalOf {ClientFeatures()}
 internal val MainTabs = listOf("inbox", "calls", "notes", "settings")
 internal fun tabGoesBack(from: String, to: String) = from in MainTabs && to in MainTabs && MainTabs.indexOf(to) < MainTabs.indexOf(from)
 private data class Screen(val destination: String, val page: String, val chat: ChatSummary?, val detail: String, val state: MessengerState, val title: String = "", val thread: String? = null)
@@ -154,7 +154,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
             selected.isNotEmpty() -> selected = emptySet()
             conversationPage.isNotEmpty() -> conversationPage = ""
             page.startsWith("appearance-") -> navigate("appearance")
-            page in listOf("appearance", "device", "profile", "privacy", "notifications", "storage", "about") -> navigate("settings")
+            page in listOf("appearance", "device", "profile", "privacy", "notifications", "storage", "recovery", "about") -> navigate("settings")
             chat != null -> { command("close", emptyMap()); conversationPage = "" }
             page == "history" -> navigate("storage")
             page != "inbox" -> navigate("inbox")
@@ -198,6 +198,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
             }) {
                 var welcomed by remember { mutableStateOf(read("welcomed") == "true") }
                 var sawSignIn by remember { mutableStateOf(false) }
+                var offeredPasskey by remember { mutableStateOf(read("passkey_offered") == "true") }
+                val offerPasskey = !offeredPasskey && sawSignIn && LocalClientFeatures.current.passkeys && state.accountRecovery?.passkeys?.isEmpty() == true
+                LaunchedEffect(state.accountRecovery?.passkeys?.isNotEmpty()) { if (!offeredPasskey && state.accountRecovery?.passkeys?.isNotEmpty() == true) { write("passkey_offered", "true"); offeredPasskey = true } }
                 when {
                     state.phase == "loading" -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     state.phase == "unavailable" -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Text("Connected messaging is currently available in the Android development build.") }
@@ -206,7 +209,8 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                         SignIn(state, command)
                         state.issue?.let { issue -> Box(Modifier.align(Alignment.BottomCenter).padding(16.dp).widthIn(max = 620.dp)) { SyncNotice(issue) { command("dismiss", emptyMap()) } } }
                     }
-                    // Straight after a sign-in, once: what contacts may see, before the inbox.
+                    // Straight after a sign-in, once: a passkey for a new account, then what contacts may see, before the inbox.
+                    offerPasskey -> Box(Modifier.imePadding()) { ProtectAccount(state, command) { write("passkey_offered", "true"); offeredPasskey = true } }
                     !welcomed && sawSignIn -> Box(Modifier.imePadding()) { WelcomePermissions(state, command) { write("welcomed", "true"); welcomed = true } }
                     else -> {
                         val accessNotice = state.accountAccess?.let { it.linked && it.retiring && !it.acknowledged } == true && page != "profile" && state.call == null
@@ -249,7 +253,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                 val chat = screen.chat
                                 val state = screen.state
                                 val detail = screen.detail
-                                val scrollingDetail = target.startsWith("appearance") || target in listOf("chat-settings", "device", "profile", "privacy", "notifications", "storage", "about")
+                                val scrollingDetail = target.startsWith("appearance") || target in listOf("chat-settings", "device", "profile", "privacy", "notifications", "storage", "recovery", "about")
                                 CompositionLocalProvider(LocalPageHeader provides true, LocalPageMotion provides this, LocalNavigationBack provides goingBack, LocalHomeContentPadding provides PaddingValues(top = headerTop + headerHeight + 12.dp, bottom = if (scrollingDetail) navigationInset + 24.dp else if (!wide) 88.dp + navigationInset else 24.dp), LocalHeaderInset provides if (target == "conversation") pageHeaderHeight() + statusInset + 32.dp else 0.dp) {
                                 Box(Modifier.fillMaxSize().then(if (target != "conversation" && !scrollingDetail && !(target == "home" && page in MainTabs)) Modifier.padding(top = headerTop + headerHeight + 12.dp, bottom = navigationInset).imePadding() else Modifier)) {
                             when (target) {
@@ -262,7 +266,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                     { enabled -> command("organize", mapOf("peer" to null, "value" to mapOf("CollectionsEnabled" to enabled))) },
                                     sharedRead("collection_labels") != "false", { sharedWrite("collection_labels", it.toString()) }, followAccount,
                                     { if (!it) write("device_appearance", appearance.encode()); followAccount = it; write("follow_account_theme", it.toString()) }, target, navigate) { appearance = it; if (followAccount) { pendingAppearance = it.encode(); sharedWrite("appearance", it.encode()) } else write("device_appearance", it.encode()) }
-                                "device", "profile", "privacy", "notifications", "storage", "about" -> PersonalPage(target, state, dispatch, back)
+                                "device", "profile", "privacy", "notifications", "storage", "recovery", "about" -> PersonalPage(target, state, dispatch, back)
                                 "history" -> SavedHistoryPage(state, command, back, open)
                                 "saved-conversation" -> SavedConversationPage(state, analyze, command, back)
                                 "new" -> NewConversation(state, command, back, open) { newTitle = it }
@@ -313,7 +317,7 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
                                                 MainHeaderTitle(when (screen.destination) {
                                                     "appearance", "appearance-colors", "appearance-type", "appearance-layout", "appearance-media", "appearance-objects" -> appearanceTitle(screen.destination); "theme" -> "Conversation appearance"; "chat-settings" -> "Conversation settings"
                                                     "device" -> "Devices"; "profile" -> "Profile"; "privacy" -> "Privacy"; "notifications" -> "Notifications"
-                                                    "storage" -> "Data and storage"; "history" -> "Saved history"; "saved-conversation" -> "Saved conversation"
+                                                    "storage" -> "Data and storage"; "recovery" -> "Account recovery"; "history" -> "Saved history"; "saved-conversation" -> "Saved conversation"
                                                     "new" -> screen.title; else -> "About"
                                                 }, Modifier.weight(1f).padding(start = 8.dp))
                                             }
