@@ -74,6 +74,8 @@ fn directory_error(error: network::Error) -> Error {
         other => other.into(),
     }
 }
+/// Requests and replies are seen within this many seconds of a sync.
+const POLL: u64 = 10;
 fn waiting() -> u64 {
     i64::MAX as u64
 }
@@ -510,7 +512,7 @@ impl ClientStore {
     }
     fn contact_work_inner(&mut self, mut contact: Contact, now: u64) -> Result<(), Error> {
         // Persist the retry delay before any network side effect.
-        contact.work_at = now.saturating_add(60).min(waiting());
+        contact.work_at = now.saturating_add(POLL).min(waiting());
         self.save_contact(&contact)?;
         let network = self.connected_client()?;
         let own = self.connection_session()?.ok_or(Error::Unprepared)?;
@@ -746,7 +748,7 @@ impl ClientStore {
             contact.decision = None;
         }
         if incoming.receipt.state == RequestState::Pending {
-            contact.work_at = contact.work_at.min(now.saturating_add(60));
+            contact.work_at = contact.work_at.min(now.saturating_add(POLL));
         }
         if self.contact_invite_matches(&incoming, now)? {
             contact.decision = Some(RequestState::Accepted);
@@ -767,7 +769,7 @@ impl ClientStore {
         }
         self.db.execute(
             "UPDATE mobile_contact_poll SET next_at=?1 WHERE id=1",
-            [now.saturating_add(60).min(waiting()) as i64],
+            [now.saturating_add(POLL).min(waiting()) as i64],
         )?;
         let network = self.connected_client()?;
         let mut after = None;
