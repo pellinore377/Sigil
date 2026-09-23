@@ -44,7 +44,7 @@ class RecoveryFlowTest {
         ui.onNodeWithText("Continue sign-in").assertDoesNotExist()
         ui.onNodeWithText("Open sign-in again").performClick()
         ui.onNodeWithText("Cancel").performClick()
-        ui.runOnIdle { assertEquals(listOf("resume", "cancel_login"), commands.map { it.first }.filter { it in setOf("resume", "cancel_login") }) }
+        ui.runOnIdle { assertEquals(listOf("oidc_reopen", "cancel_login"), commands.map { it.first }.filter { it in setOf("oidc_reopen", "cancel_login") }) }
     }
 
     @Test fun recover_card_sends_passkey_code_link_and_confirmed_reset() {

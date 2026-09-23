@@ -217,8 +217,8 @@ class ContentTest {
         } finally { scope.cancel() }
     }
     @Test fun enabledRecoveryPublishesThroughTheAndroidWorker() = runBlocking {
-        val secret = native("recovery_generate").getString("secret")
-        native("recovery_enable", mapOf("secret" to secret))
+        // Signing in starts backups under the account's recovery secret.
+        val secret = native("recovery_code").getString("code").replace("-", "").lowercase()
         native("post", mapOf("peer" to "self", "request" to "64".repeat(32), "timestamp" to System.currentTimeMillis() / 1000, "text" to "Synthetic backup acceptance"))
         withTimeout(60_000) {
             while (true) {

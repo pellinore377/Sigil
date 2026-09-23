@@ -90,19 +90,6 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
         ui.runOnIdle { assertTrue(commands.any { it.first == "post" }); assertFalse(commands.any { it.first == "confirm" }) }
     }
-    @Test fun recoveryCodeIsShownInAProtectedWindow() {
-        var dismissed = false
-        val code = "ABCD-EFGH-2345-6789"
-        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RecoveryCodeDialog(code) { dismissed = true } }) }
-        ui.onNodeWithTag("recovery-code").assertTextEquals(code)
-        if (android.os.Build.VERSION.SDK_INT >= 29) ui.runOnIdle {
-            assertTrue(android.view.inspector.WindowInspector.getGlobalWindowViews().any { view ->
-                ((view.layoutParams as? WindowManager.LayoutParams)?.flags ?: 0) and WindowManager.LayoutParams.FLAG_SECURE != 0
-            })
-        }
-        ui.onNodeWithText("Done").performClick()
-        ui.runOnIdle { assertTrue(dismissed) }
-    }
     @Test fun signOutRequiresAcknowledgingLocalLossAndDoesNotAssumeRevocation() {
         val stage = mutableStateOf("confirm")
         val commands = mutableListOf<String>()

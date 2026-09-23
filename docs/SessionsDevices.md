@@ -9,7 +9,8 @@ Identity verification, account authorization and group membership are separate. 
 - Missing prekey/session evidence may produce a recovery offer. Explicit caller approval rechecks trust and commits one signed request. Invalid traffic, capacity/storage failures and identity changes do not authorize recovery. Response chains allow at most three hops.
 - Sync uses bounded work with durable cursors. The scheduled entry point reserves one minute before I/O, normally waits five seconds, backs off to 300 seconds and honors Retry-After from completion. Platforms own serialized workers, trusted clocks and wakeups.
 - Automatic session/prekey retirement requires a fresh empty mailbox check from sequence zero and seven-day observed inactivity grace. Active selections and pending packets remain protected. Offline maintenance cannot infer absence of delayed traffic.
-- Replacement requires explicit old/new fingerprint approval for distinct devices of the same account. Server inventory, unblock and reauthorization cannot revive superseded trust.
+- Devices of an account are trusted exactly when its pinned account key endorsed them; a new account key requires explicit approval of its review digest. Server inventory, unblock and sign-in cannot revive superseded trust.
+- A recovery request whose peer stays unreachable (untrusted or refusing) for five minutes backs off exponentially to an hour instead of claiming prekeys every pass.
 
 ## Contact requests
 

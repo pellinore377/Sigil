@@ -4,7 +4,7 @@
 
 Linking needs one physical scan and approval on the existing device:
 
-1. The joining installation displays a QR containing its offer, canonical server, relay ID, phone capability and a fresh 32-byte secret. The existing device scans it directly.
+1. The joining installation displays a QR containing its offer, canonical server, relay ID, phone capability and a fresh 32-byte secret. The existing device scans it directly. A device without a server (a fresh phone) instead scans a code the existing device shows (`sigil:link:v1:join:` with the server, a bootstrap relay and its secret) and posts its own QR text through that relay; linking then proceeds identically.
 2. The devices exchange their existing encrypted proposal and signed response through HTTPS relay slots, additionally authenticated with the QR secret. The joining device displays one emoji; the existing device displays six choices.
 3. The user selects the matching emoji on the existing device. It submits the complete signed proof; the joining installation retrieves and verifies it, installs its connection, and signs in automatically. The computer needs no camera.
 
@@ -12,7 +12,7 @@ The QR uses `sigil:link:v1:relay:` followed by bounded JSON. The secret never re
 
 The displayed emoji is the first symbol from `emoji_confirmation`; the five distinct alternatives and their order are transcript-derived. This is supplementary user confirmation, not a six-choice cryptographic authentication mechanism. Trust requires the QR secret, authenticated full transcript and signed proof. Joining consent is generated only after verifying the QR-secret-authenticated proposal; sponsor consent requires selecting the matching emoji.
 
-Existing accepted contacts bootstrap through same-account encrypted conversation synchronization. A dedicated private scope carries bounded, hashed contact snapshots in existing `UiSetting` fragments, preserving compatibility with older clients. Only complete snapshots import signed trust anchors; independent-verification status is preserved, not inferred. Existing contact decisions and conflicting/blocked peer records are not overwritten. Catalog state is excluded from recovery archives and forwarded only by its authoring device; imported contacts can publish fresh snapshots from their own live trust store.
+Existing accepted contacts bootstrap through same-account encrypted conversation synchronization and the recovery archive. A dedicated private scope carries bounded, hashed contact snapshots (address and pinned account key) in `UiSetting` fragments. Complete snapshots add a pin only where none exists; existing decisions and blocked records are not overwritten.
 
 ## Encodings and cryptography
 
@@ -38,7 +38,7 @@ Confirmation is SHA-256 of `Sigil/device-link-confirmation/v0` followed by the t
 
 Provisioning uses separate ephemeral X25519 keys, HKDF-SHA-256 with the confirmation digest as salt and `Sigil/link-provisioning/v0` as info, and the existing AES-256-GCM-SIV storage codec. AEAD associated data binds `Sigil/link-frame/v0`, the confirmation digest and frame role (0 proposal, 1 response). A frame contains `SGLF 00 01 00 00`, sender provisioning public key, digest and ciphertext. Maximum plaintext is 2,048 bytes; maximum frame is 2,156 bytes. Invalid/low-order public keys, wrong keys, role/context changes and damaged ciphertext fail closed.
 
-This provisioning channel is classical. It carries public bindings and consent signatures, **not identity private keys, live ratchets, history keys or transport credentials**. Linked devices establish fresh PQXDH/Triple Ratchet messaging sessions after authorization. History transfer and general multi-device event synchronization remain separate milestones.
+This provisioning channel is classical. It carries public bindings and consent signatures, never device identity keys, live ratchets or transport credentials. After approval the sponsor seals the account key and recovery secret to the joining provisioning key (frame role 2) and submits them with its account-key endorsement of the joining binding; the server releases the frame only to the joining device's committed credential. Linked devices establish fresh PQXDH/Triple Ratchet messaging sessions after authorization. History transfer and general multi-device event synchronization remain separate milestones.
 
 A complete proof has an exact bounded encoding: `SGLP 00 01 00 00`, transcript, two u16-length-prefixed signed bindings and two 64-byte signatures, at most 1,380 bytes. Parsing rejects truncation, malformed fields and trailing bytes.
 
@@ -59,4 +59,4 @@ The sponsor persists its proof before HTTPS; receipt and verified peer commit at
 
 Link/cancellation proofs remain within storage quota; 256 active devices per account is not a lifetime link limit. Restore retains proofs while revoking credentials. Sponsor cancellation blocks local work before retrying remote revocation; joining cancellation cannot retract a signature already sent.
 
-A contact may accept an endorsement only from its already verified exact sponsor. Server inventory never transfers trust. Completion/cancellation removes provisioning secrets from live storage; [physical erasure limits](Security.md#erasure) still apply.
+Contacts trust the joining device because the account key endorsed it. Server inventory never transfers trust. Completion/cancellation removes provisioning secrets from live storage; [physical erasure limits](Security.md#erasure) still apply.
