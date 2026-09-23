@@ -111,10 +111,11 @@ fn load_contact(db: &rusqlite::Connection, key: &StorageKey, id: Id) -> Result<C
     if bytes.len() > 16384 {
         return Err(Error::InvalidStore);
     }
-    let value: Contact =
+    let mut value: Contact =
         serde_json::from_slice(&key.open(&bytes, &aad(&id))?).map_err(|_| Error::InvalidStore)?;
+    // The column is only a schedule; a server signal may move it earlier.
+    value.work_at = value.work_at.min(u64::try_from(at).map_err(|_| Error::InvalidStore)?);
     if value.id() != id
-        || i64::try_from(value.work_at).ok() != Some(at)
         || !sigil_protocol::valid_server_name(&value.server)
         || !sigil_protocol::accounts::valid_username(&value.username)
     {
