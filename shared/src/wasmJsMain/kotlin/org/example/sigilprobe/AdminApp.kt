@@ -432,6 +432,8 @@ private fun ServerSettings(busy: Boolean, run: (suspend () -> Unit) -> Unit) {
         CallingSettings(busy, run)
         HorizontalDivider()
         AdminPush()
+        HorizontalDivider()
+        AdminServices()
     }
 }
 

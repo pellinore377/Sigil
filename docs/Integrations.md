@@ -14,6 +14,8 @@ Native location cards support a one-time position, dropped pin or live share for
 
 ## Configured providers
 
+Administrators enable providers from Admin → Server → Reference services; `Services.md` covers each provider, its keys and terms.
+
 `GET/PUT /admin/v0/services` uses `expected_revision`, `per_account_daily`, `total_daily` and up to eight `providers`. Each entry has `provider`, `secret` and an egress `exceptions` array (empty for public HTTPS). A provider has `id`, `kind`, HTTPS `endpoint`, canonical SigilText `attribution`, optional `version` and `source_url`. Secret updates are `{"action":"keep"}`, `{"action":"clear"}` or `{"action":"set","value":"…"}`; readback exposes only `has_secret`. Endpoint changes cannot retain a secret implicitly. Exceptions explicitly bind a host/port to permitted CIDRs and an optional DER CA certificate. Redirects and ambient proxies are disabled.
 
 Kinds: `google_translate` (Basic v2), `libre_translate`, `wiktionary` (REST definition base), `dictionary_index`, `open_meteo` (forecast endpoint) and `geocoder` (Open-Meteo-compatible search). A self-hosted dictionary index accepts JSON `{"word":"…","language":"en"}` and returns canonical `sigil_protocol::text::service::ResultData::Definition`. Deploy that index separately with its dataset attribution/version. No dataset is bundled.

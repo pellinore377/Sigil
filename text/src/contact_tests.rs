@@ -133,3 +133,18 @@ fn contact_and_contact_qr_authoring_require_an_unambiguous_local_resolution() {
         crate::composition::Composition::from_bytes(&value.to_bytes().unwrap()).unwrap() == value
     );
 }
+
+#[test]
+fn contact_cards_accept_the_address_without_a_second_at_sign() {
+    let origin = crate::Origin {
+        message: [1; 32],
+        creator: [2; 32],
+        created_at: 1800000000,
+        timezone: None,
+    };
+    let known = [contact(1, "@user:one.example")];
+    for source in ["@::user:one.example;", "@::@user:one.example;", "qr::contact::user:one.example;"] {
+        let draft = contact::parse_card(source, origin, Default::default(), &known).unwrap().unwrap();
+        assert!(matches!(draft.content, crate::Parsed::Card(_)), "{source}");
+    }
+}

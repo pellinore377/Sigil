@@ -41,7 +41,7 @@ class RecipeTest {
         ui.onNodeWithText("Couldn't adjust servings. The previous amounts are still shown.").assertIsDisplayed()
         ui.onNodeWithContentDescription("More servings").performClick()
         ui.onNode(hasText("250g flour") and hasAnyAncestor(isDialog())).assertIsOn()
-        ui.onNodeWithText("Serves 5 · 25 min").assertIsDisplayed()
+        ui.onNode(hasText("5 servings · 25 min") and hasAnyAncestor(isDialog())).assertIsDisplayed()
         ui.onNodeWithText("Keep screen awake").performClick().assertIsOn()
         fun awake(view: android.view.View): Boolean = view.keepScreenOn || view is android.view.ViewGroup && (0 until view.childCount).any { awake(view.getChildAt(it)) }
         ui.runOnIdle { assertTrue(android.view.inspector.WindowInspector.getGlobalWindowViews().any(::awake)) }

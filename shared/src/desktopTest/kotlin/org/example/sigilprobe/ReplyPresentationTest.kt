@@ -67,6 +67,8 @@ class ReplyPresentationTest {
         assertEquals("Random number · 42 · Between 1 and 100",cardQuote(card(UtilityContent("random",display="42",alternate="Between 1 and 100")))?.line)
         assertEquals("Pick · A quiet café",cardQuote(card(UtilityContent("pick",display="Choice",rich=rich("A quiet café"))))?.line)
         assertEquals("Keyboard shortcut · Ctrl + Shift + P",cardQuote(card(UtilityContent("keys",details=listOf(rich("Ctrl"),rich("Shift"),rich("P")))))?.line)
+        assertEquals("Keyboard shortcut · Cmd + Up arrow",cardQuote(card(UtilityContent("keys",details=listOf(rich("cmd"),rich("up")))))?.line)
+        assertEquals("Color swatch · #6E84D2",cardQuote(card(UtilityContent("swatch",display="#6e84d280",rgba=0x6e84d280L)))?.line)
         assertEquals("Quote · “Leave room.” · Studio notes",cardQuote(card(UtilityContent("quote",rich=rich("Leave room."),secondary=rich("Studio notes"))))?.line)
         assertEquals("QR code · Synthetic network",cardQuote(card(UtilityContent("qr",rich=rich("Synthetic network"),qr=QrContent("wifi",1,"1","WIFI:S:x;P:secret;;"))))?.line)
         assertNull(cardQuote(listOf(MessagePart("t","text","hi"))))

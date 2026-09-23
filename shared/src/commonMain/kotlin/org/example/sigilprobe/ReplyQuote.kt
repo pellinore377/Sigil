@@ -108,22 +108,22 @@ fun cardQuote(parts: List<MessagePart>): CardQuote? {
         service != null -> when (service.kind.lowercase()) {
             "translation" -> CardQuote("Translation", "translate", service.title.quotePlain())
             "definition" -> CardQuote("Definition", "dictionary", service.title.quotePlain())
-            else -> CardQuote("Weather", "partly_cloudy_day", details(service.title.quotePlain(), service.current?.temperature?.firstOrNull()))
+            else -> CardQuote("Weather", "partly_cloudy_day", details(service.title.quotePlain(), service.current?.temperature?.getOrNull(if (WeatherUnits.imperial) 1 else 0)?.let(::degrees)))
         }
         utility != null -> when (utility.kind) {
             "calculation" -> CardQuote("Calculation", "calculate", listOfNotNull(utility.rich?.let { r -> (if (r.spans.isEmpty()) arithPlain(r.text) else null) ?: r.quotePlain() }?.takeIf { it.isNotBlank() },
                 readableNumber(utility.display).takeIf { it.isNotBlank() }).joinToString(" = "))
             "conversion" -> CardQuote("Conversion", "swap_horiz", listOf(utility.display, utility.alternate).filter { it.isNotBlank() }.joinToString(" = "))
             "math", "formula" -> CardQuote("Math", "functions", utility.display, math = utility)
-            "qr" -> CardQuote("QR code", "qr_code", if (utility.qr?.concealed == true) "•••" else utility.rich?.quotePlain().orEmpty())
+            "qr" -> CardQuote("QR code", "qr_code", if (utility.qr?.concealed == true) "•••" else if (utility.qr?.kind == "text") utility.qr.payload else utility.rich?.quotePlain().orEmpty())
             "dice" -> CardQuote("Dice", "casino", diceLine(utility))
             "coin" -> CardQuote("Coin", "toll", utility.motion?.result.orEmpty())
             "pick" -> if (utility.motion?.kind == "coin") CardQuote("Coin", "toll", utility.motion.result.ifBlank { utility.motion.frames.getOrNull(utility.motion.selected).orEmpty() })
                 else CardQuote(utility.display.takeIf { it.isNotBlank() && it != "Choice" }?.replaceFirstChar { it.uppercase() } ?: "Pick", "playing_cards",
                     utility.rich?.quotePlain()?.takeIf { it.isNotBlank() } ?: utility.motion?.result.orEmpty())
             "random" -> CardQuote("Random number", "numbers", details(utility.motion?.result?.takeIf { it.isNotBlank() } ?: utility.display, utility.alternate))
-            "swatch" -> CardQuote("Color swatch", "palette", utility.display, rgba = utility.rgba)
-            "keys" -> CardQuote("Keyboard shortcut", "keyboard", utility.details.joinToString(" + ") { it.quotePlain() })
+            "swatch" -> CardQuote("Color swatch", "palette", utility.rgba?.let(::swatchHex) ?: utility.display, rgba = utility.rgba)
+            "keys" -> CardQuote("Keyboard shortcut", "keyboard", utility.details.joinToString(" + ") { keyFace(it.quotePlain()).let { k -> k.word.ifEmpty { k.spoken } } })
             "rating" -> CardQuote("Rating", "star", utility.display)
             "progress" -> CardQuote("Progress", "data_usage", details(utility.display, utility.rich?.quotePlain()))
             "quote" -> CardQuote("Quote", "format_quote", details(utility.rich?.quotePlain()?.takeIf { it.isNotBlank() }?.let { "“$it”" }, utility.secondary?.quotePlain()))
@@ -205,7 +205,7 @@ fun QuoteBody(name: String?, text: String?, file: AttachmentDetails?, source: Ch
     val title = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
     if (file == null && card != null) Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         val ink = LocalContentColor.current
-        val swatch = card.rgba?.let { Color((it ushr 8).toInt() or ((it and 0xff).toInt() shl 24)) }
+        val swatch = card.rgba?.let(::swatchColor)
         Box(Modifier.size(QuotePreviewSize).clip(RoundedCornerShape(12.dp)).background(swatch ?: ink.copy(alpha = .1f)), contentAlignment = Alignment.Center) {
             if (card.chart != null) ChartThumbnail(card.chart, Modifier.padding(10.dp).fillMaxSize()) else if (swatch == null) Glyph(card.glyph, 24)
         }

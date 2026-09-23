@@ -256,7 +256,9 @@ pub fn parse_card(
             hints: vec![crate::Hint::IdentityRequired],
         }));
     };
-    let matches = resolve(query, known)?;
+    // `@::user:server;` reads as the at-sign of `@::`; both spellings resolve alike.
+    let query = if query.starts_with('@') { query.to_owned() } else { format!("@{query}") };
+    let matches = resolve(&query, known)?;
     if matches.len() != 1 {
         return Ok(Some(crate::Draft {
             content: crate::Parsed::Text(crate::parse(source, limits.text)?),

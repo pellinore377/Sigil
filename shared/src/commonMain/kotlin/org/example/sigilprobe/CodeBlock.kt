@@ -58,9 +58,6 @@ internal fun richSlice(value: RichText, start: Int, end: Int) = RichText(value.t
 @Composable
 internal fun CodeBlock(value: RichText, language: String, modifier: Modifier = Modifier, shape: Shape = RoundedCornerShape(12.dp)) = CodePanel(value, language, false, modifier, shape)
 
-@Composable
-internal fun AsciiArt(value: RichText) = CodePanel(value, "", true, Modifier, RoundedCornerShape(12.dp))
-
 // An opaque panel, not an alpha wash: the block must read identically on a primary bubble and on a surfaceVariant one.
 @Composable
 private fun CodePanel(value: RichText, language: String, hug: Boolean, modifier: Modifier, shape: Shape) {

@@ -183,17 +183,23 @@ fn card_preview(card:&crate::structured::Card,random:bool,now:u64)->Result<Value
         Construct::Poll(v)=>{value["kind"]=json!("poll");value["text"]=json!(v.question.body());value["rich"]=json!(v.question.presentation());value["multiple"]=json!(!matches!(v.selection,crate::structured::Selection::Single));value["items"]=Value::Array(v.options.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":false,"enabled":false})).collect());}
         Construct::Countdown(v)|Construct::Ago(v)|Construct::Reminder(v)=>{value["kind"]=json!(match &card.content {Construct::Countdown(_)=>"countdown",Construct::Ago(_)=>"ago",_=>"reminder"});value["text"]=json!(v.text.body());value["at"]=json!(v.at);}
         Construct::Timer(v)=>{value["kind"]=json!("timer");value["text"]=json!("Timer");value["at"]=json!(v.ends_at);value["started_at"]=json!(v.started_at);}
+        Construct::Contact(v)=>{value["kind"]=json!("contact");value["contact"]=v.presentation()?;}
         _=>return Err(Error::Invalid),
     }
     Ok(value)
 }
 
+/// Synthetic identities so the workbench can render contact cards without a real directory.
+fn demo_directory()->Result<Vec<crate::contact::Contact>,Error> {
+    [(0xa1,"@ari:studio.example","Ari Chen"),(0xa2,"@jules:studio.example","Jules Rivera")].into_iter()
+        .map(|(id,address,name)|Ok(crate::contact::Contact {user_id:[id;32],address:address.into(),display_name:crate::Text::plain(name,Default::default())?,avatar_url:None})).collect()
+}
 /// Explicit local submission for the design workbench, never an editor preview.
 pub fn playground(input:&str)->Result<String,Error> {
     if input.len()>65536 {return Err(Error::Limit);}
     let c:Context=serde_json::from_str(input).map_err(|_|Error::Invalid)?;
     if c.source.len()>16384 {return Err(Error::Limit);}
-    let doc=crate::composition::parse(&c.source,Origin {message:[1;32],creator:[2;32],created_at:c.now,timezone:Some(&c.timezone)},CardLimits::default(),None)?.content;
+    let doc=crate::composition::parse_with_contacts(&c.source,Origin {message:[1;32],creator:[2;32],created_at:c.now,timezone:Some(&c.timezone)},CardLimits::default(),None,&demo_directory()?)?.content;
     let text=|v:crate::Text|json!({"id":"preview","kind":"text","text":v.body(),"rich":v.presentation()});
     let values=match doc {
         crate::Document::Text(v)=>vec![text(v)],
@@ -304,6 +310,12 @@ mod tests {
         assert_eq!(view["recipe"]["ingredients"][0]["text"],"bold::plain;");
     }
 }
+    #[test]
+    fn playground_renders_contact_cards_from_the_synthetic_directory() {
+        let parts:Value=serde_json::from_str(&playground(&json!({"source":"@::ari:studio.example;","now":1800000000,"timezone":"UTC"}).to_string()).unwrap()).unwrap();
+        assert_eq!(parts[0]["kind"],"contact");
+        assert_eq!(parts[0]["contact"]["address"],"@ari:studio.example");
+    }
     #[test]
     fn explicit_playground_submission_preserves_composition_and_redaction() {
         let request=json!({"source":"roll::1d6;\n\nredact::private; A caption","now":1780000000u64,"timezone":"UTC"});

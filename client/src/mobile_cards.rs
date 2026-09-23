@@ -3,6 +3,7 @@ use sigil_protocol::text::{
     action::{Action as CardAction, Change, Reference as CardReference},
     composition::Part,
     structured::{Card, Construct, ListMode},
+    utility::{Qr, Utility},
     Document,
 };
 
@@ -308,10 +309,14 @@ impl ClientStore {
         let conversation = self.mobile_conversation(peer)?;
         let reference = self.mobile_card_reference(conversation, target, card)?;
         let state = self.card_state(conversation, reference)?;
-        let Construct::Contact(contact) = state.definition.content else {
-            return Err(Error::InvalidEvent);
+        let (address, identity) = match state.definition.content {
+            Construct::Contact(contact) => (contact.address, contact.user_id),
+            Construct::Utility(Utility::Qr(Qr::Contact { address, identity })) => {
+                (address, identity)
+            }
+            _ => return Err(Error::InvalidEvent),
         };
-        self.mobile_find_bound(&contact.address, Some(contact.user_id))
+        self.mobile_find_bound(&address, Some(identity))
     }
     /// Closes the author's poll: the closure, then each ballot page; the draft makes a retry resume.
     pub(super) fn mobile_poll_close(

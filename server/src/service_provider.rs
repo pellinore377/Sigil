@@ -42,11 +42,15 @@ fn html(value: &str) -> Result<Text, Error> {
     if value.len() > 8192 {
         return Err(Error::Limit);
     }
-    let plain = html2text::config::plain_no_decorate()
-        .link_footnotes(false)
+    let plain = html2text::config::with_decorator(html2text::render::TrivialDecorator::new())
         .string_from_read(value.as_bytes(), 4096)
         .map_err(|_| Error::Invalid)?;
     text(plain.trim())
+}
+pub(crate) fn user_agent(contact: Option<&str>) -> String {
+    contact.map_or("Sigil/experimental-v0".into(), |c| {
+        format!("Sigil/experimental-v0 (+{c})")
+    })
 }
 pub(super) fn fetch(entry: &StoredEntry, url: &str, body: Option<&Value>) -> Result<Value, Error> {
     let bytes = Zeroizing::new(
@@ -59,7 +63,8 @@ pub(super) fn fetch(entry: &StoredEntry, url: &str, body: Option<&Value>) -> Res
         .method(if body.is_some() { "POST" } else { "GET" })
         .uri(url)
         .header("accept", "application/json")
-        .header("accept-encoding", "identity");
+        .header("accept-encoding", "identity")
+        .header("user-agent", user_agent(entry.contact.as_deref()));
     if body.is_some() {
         request = request.header("content-type", "application/json");
     }

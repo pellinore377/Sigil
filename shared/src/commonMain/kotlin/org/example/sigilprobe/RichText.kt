@@ -176,9 +176,9 @@ private class MessageChunk(val value: RichText, val code: RichBlock?, val quote:
 
 /** A code panel is a bubble of its own; the captions around it are bubbles too, grouped against it. */
 @Composable
-fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, maxLines: Int = Int.MAX_VALUE) {
     val blocks = remember(value) { standaloneBlocks(value) }
-    if (blocks.isEmpty()) { RichInlineText(value, modifier, style); return }
+    if (blocks.isEmpty()) { RichInlineText(value, modifier, style, maxLines); return }
     val chunks = remember(value, blocks) {
         buildList {
             var start = 0
@@ -266,7 +266,7 @@ internal fun quoteBody(value: RichText): RichText {
 }
 
 @Composable
-private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge) {
+private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, maxLines: Int = Int.MAX_VALUE) {
     val ledgerKey = LocalMessageKey.current?.let { "$it/${value.text.hashCode()}/${value.spans.size}" }
     var local by remember(value) { mutableStateOf(emptySet<Int>()) }
     val revealed = if (ledgerKey != null) revealLedger[ledgerKey].orEmpty() else local
@@ -329,7 +329,7 @@ private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style
                 paint(down.position)
                 drag(down.id) { change -> change.consume(); paint(change.position) }
             }
-        }, style = style, onTextLayout = { layout = it })
+        }, style = style, maxLines = maxLines, overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis, onTextLayout = { layout = it })
 }
 /** A superellipse corner, matching the reference stylesheet's continuous rounding. */
 internal fun squirclePath(rect:Rect,radius:Float):Path {

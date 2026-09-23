@@ -399,7 +399,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                 when (action) {
                     "reply" -> respond(message, false)
                     "thread" -> respond(message, true)
-                    "copy" -> { clipboard.setText(AnnotatedString(message.text)); selected = null }
+                    "copy" -> { clipboard.setText(AnnotatedString(shareCopy(message) ?: serviceMessageCopy(message) ?: message.text)); selected = null }
                     "edit" -> { command("edit_source", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     "replay" -> {textMotion.state(message.author+message.id).replay();selected=null}
                     "details" -> { cardDetails = message; selected = null }

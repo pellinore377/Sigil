@@ -1067,24 +1067,26 @@ For category-based picks, store both the category identifier and the chosen valu
 
 | Syntax | Renders |
 |---|---|
-| `swatch::#ff5733;` | Filled color chip beside the value |
+| `swatch::#ff5733;` | Opaque rounded color sample over its `#RRGGBB` value |
 | `swatch::rgb(255,87,51);` | Same |
-| `swatch::rgba(255,87,51,0.5);` | Chip over a checkerboard so alpha is visible |
+| `swatch::rgba(255,87,51,0.5);` | Same sample, drawn opaque; the alpha is stated as "50% opacity" |
 | `swatch::hsl(9,100%,60%);` | Same |
-| `kbd::Ctrl+Shift+P;` | Rendered key caps — split on `+`, each a bordered rounded rect |
+| `kbd::Ctrl+Shift+P;` | Mechanical key caps split on `+`; keys print the legend a physical key carries (⌘ ⌥ ⇧ ⇥ ↵ ⌫), Ctrl and Alt print only their name |
 | `rate::4/5;` | Star rating |
 | `progress::75;` | Progress bar |
 | `quote::Author::Example quotation;` | Formatted pull-quote with attribution |
 
 `quote::` optionally takes a source: `quote::Author::Source::text;`. Distinct from Markdown `>`, which is for quoting conversation.
 
+The first unescaped `;` ends every display helper, so a quotation containing a semicolon writes it as `\;`; `::` inside the text is read as a field separator.
+
 ### Display-helper presentation
 
-- `swatch::` renders a generous color sample plus normalized text value; tapping copies the value.
-- `kbd::` uses tactile key-cap shapes but remains selectable/readable text for accessibility.
+- `swatch::` renders a generous opaque color sample, with no border, over its normalized value; consecutive swatches form one palette. Message-menu Copy gives the hex, `#RRGGBBAA` when translucent, one per line for a palette.
+- `kbd::` uses tactile key-cap shapes, announced as "Keyboard shortcut. Control plus Shift plus P". Cap text is not selectable; message-menu Copy gives `Ctrl+Shift+P`. A shortcut inside a sentence sits in the line as compact caps.
 - `rate::` renders filled/empty stars plus a textual value such as `4/5`. Ratings whose numerator exceeds the denominator, or whose denominator is zero/non-positive, are invalid and remain literal with a composer warning; do not silently clamp.
 - `progress::` renders a labelled progress track and numeric percent; numeric input is clamped to `0–100` because progress has an intrinsic bounded domain. Changes should not imply live progress unless the event itself is updated.
-- `quote::` uses restrained typography and attribution, with long quotes collapsed behind **Show more**.
+- `quote::` uses restrained typography and attribution, with quotes over eight lines collapsed behind **Show more**. Message-menu Copy gives the text and `— Author, Source`.
 
 
 ---

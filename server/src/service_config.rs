@@ -55,6 +55,9 @@ pub(crate) struct StoredEntry {
     pub provider: Provider,
     pub secret: Option<Zeroizing<String>>,
     pub exceptions: Vec<egress::Exception>,
+    // Public origin, sent as the User-Agent contact that Wikimedia asks for.
+    #[serde(skip)]
+    pub contact: Option<String>,
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,6 +162,7 @@ impl Store {
                 provider: entry.provider,
                 secret,
                 exceptions: entry.exceptions,
+                contact: None,
             });
         }
         let bytes =
@@ -216,11 +220,12 @@ impl Store {
         if revision != request.revision {
             return Err(StoreError::Conflict);
         }
-        let entry = settings
+        let mut entry = settings
             .providers
             .into_iter()
             .find(|p| p.provider.id == request.provider.id)
             .ok_or(StoreError::NotFound)?;
+        entry.contact = crate::admin::policy(&tx)?.public_origin;
         if entry.provider != request.provider {
             return Err(StoreError::Conflict);
         }

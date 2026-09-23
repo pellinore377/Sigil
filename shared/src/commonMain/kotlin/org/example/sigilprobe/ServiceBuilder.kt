@@ -25,7 +25,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
     var catalog by remember {mutableStateOf<JsonObject?>(null)}
     var provider by rememberSaveable {mutableStateOf("")}
     var text by rememberSaveable(kind,initial) {mutableStateOf(initial?.text.orEmpty())}
-    var language by rememberSaveable(kind,initial) {mutableStateOf(initial?.language?.takeIf {it.isNotEmpty()} ?: "en")}
+    var language by rememberSaveable(kind,initial) {mutableStateOf(initial?.language?.takeIf {it.isNotEmpty()} ?: androidx.compose.ui.text.intl.Locale.current.language.takeIf {it.isNotEmpty()} ?: "en")}
     var forecast by rememberSaveable(kind,initial) {mutableStateOf(initial?.forecast ?: false)}
     var place by remember {mutableStateOf<JsonObject?>(null)}
     var places by remember {mutableStateOf(emptyList<JsonObject>())}
@@ -48,7 +48,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")).animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(10.dp)) {
             if(access==null)BuilderNotice("Connect to your account to use configured providers.")
             else if(loadingCatalog)BuilderProgress("Loading providers")
-            else if(kind!="Contact" && catalog!=null && providers.isEmpty())BuilderNotice(if(locating)"Your server needs an address lookup provider to find a place." else "Your server has no provider configured for this tool.")
+            else if(kind!="Contact" && catalog!=null && providers.isEmpty())BuilderNotice(if(locating)"Weather needs a place lookup provider on this server. A server admin can add one in Services." else "$kind isn't set up on this server yet. A server admin can add a provider in Services.")
             else {
                 if(providers.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                     items(providers,key={it.getValue("id").jsonPrimitive.content}) {p->val name=p.getValue("id").jsonPrimitive.content;FilterChip(selected==p,{provider=name},label={Text(name,maxLines=1,overflow=TextOverflow.Ellipsis)},shape=RoundedCornerShape(12.dp))}
@@ -59,7 +59,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
                     Toggle("Include forecast",forecast){forecast=it}
                 }
                 else FormField(if(kind=="Contact")"Account address" else if(locating)"Place" else if(kind=="Definition")"Word" else "Text",text,{text=it},multiline=kind=="Translation")
-                if(kind!="Weather" && kind!="Contact")FormField(if(kind=="Translation")"Translate to (language code)" else "Language code",language,{language=it})
+                if(kind!="Weather" && kind!="Contact")LanguagePicker(if(kind=="Translation")"Translate to" else "Dictionary language",language) {language=it}
                 selected?.let {Text("This lookup sends your query through your server to ${it.getValue("endpoint").jsonPrimitive.content}. The resulting card is encrypted when sent to the conversation.",
                     style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=4,overflow=TextOverflow.Ellipsis)}
                 Expandable(places.isNotEmpty()) {
@@ -68,7 +68,7 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
                 }
             }
             if(busy && !loadingCatalog)BuilderProgress(if(locating)"Finding places" else "Looking up")
-            issue?.let {Text(it,Modifier.semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error);SigilTextButton({retry++}){Text("Reload providers")}}
+            issue?.let {Text(it,Modifier.semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error);if(catalog==null)SigilTextButton({retry++}){Text("Reload providers")}}
         }
         BuilderConfirm(if(busy)"Working…" else if(locating)"Find place" else "Look up and attach",enabled=!busy && (selected!=null || kind=="Contact" && access!=null) && newId!=null && (place!=null || text.isNotBlank())) {scope.launch {
             if(kind=="Contact") {busy=true;try {val result=access!!.invoke(buildJsonObject {put("command","contact_preview");put("address",text.trim())}.toString());result.preview?.let {stage(Json.parseToJsonElement(result.json).jsonObject.getValue("contact").toString(),it,true)}} catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue="Could not find this account. Check the full address and discovery settings."} finally {busy=false};return@launch}
@@ -82,8 +82,35 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
                 val data=Json.parseToJsonElement(result.json).jsonObject
                 if(locating) {places=data.getValue("places").jsonArray.map {it.jsonObject};if(places.isEmpty())issue="No places found. Try a more specific name.";access.invoke("{\"command\":\"service\",\"action\":\"discard\",\"request\":\"$request\"}");pending=null}
                 else result.preview?.let {transferred=true;stage(request,it,false)} ?: run {issue="The provider returned no usable card."}
-            } catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue="The lookup failed. Your text is kept; try again."} finally {busy=false}
+            } catch(e:kotlinx.coroutines.CancellationException){throw e} catch(_:Exception){issue=lookupIssue(kind,locating)} finally {busy=false}
         }}
+    }
+}
+private val recentLanguages=mutableStateListOf<String>()
+internal fun pickerName(code:String)=pickerLanguages.firstOrNull {it.first.equals(code,true)}?.second ?: languageName(code)
+// Names that start with the query first, then names containing it, then an exact code.
+internal fun languageMatches(query:String):List<Pair<String,String>> {
+    val q=query.trim()
+    if(q.isEmpty())return emptyList()
+    return (pickerLanguages.filter {it.second.startsWith(q,true)}+pickerLanguages.filter {it.second.contains(q,true)}+pickerLanguages.filter {it.first.equals(q,true)}).distinct()
+}
+@Composable internal fun LanguagePicker(label:String,code:String,pick:(String)->Unit) {
+    var query by remember(code) {mutableStateOf(pickerName(code))}
+    val matches=remember(query,code) {if(query==pickerName(code))emptyList() else languageMatches(query).take(5)}
+    val choose={c:String->recentLanguages.remove(c);recentLanguages.add(0,c);while(recentLanguages.size>6)recentLanguages.removeAt(recentLanguages.lastIndex);query=pickerName(c);pick(c)}
+    FormField(label,query,{query=it},isError=query.isNotBlank() && query!=pickerName(code) && matches.isEmpty())
+    if(query!=pickerName(code) && matches.isEmpty())Text(if(query.isBlank())"Type a language name." else "No language matches. ${pickerName(code)} is still selected.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+    val recents=recentLanguages.filter {!it.equals(code,true)}.take(4)
+    if(recents.isNotEmpty() && query==pickerName(code))LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        items(recents,key={it}) {c->FilterChip(false,{choose(c)},label={Text(pickerName(c),maxLines=1)},shape=RoundedCornerShape(12.dp))}
+    }
+    Expandable(matches.isNotEmpty()) {
+        matches.forEach {(c,name)->
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable(onClickLabel="Choose $name",role=Role.Button) {choose(c)}.heightIn(min=48.dp).padding(horizontal=12.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                Text(name,Modifier.weight(1f),style=MaterialTheme.typography.bodyLarge,maxLines=1,overflow=TextOverflow.Ellipsis)
+                Text(c,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 @Composable private fun BuilderNotice(message:String) {
@@ -100,4 +127,12 @@ val LocalDraftId=staticCompositionLocalOf<(() -> String)?> {null}
             if(detail.isNotEmpty())Text(detail,style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
     }
+}
+// The server reports failures without detail, so each names what to try rather than guessing a cause.
+internal fun lookupIssue(kind:String,locating:Boolean)=when {
+    locating->"Couldn't look up places. Check the name and try again."
+    kind=="Definition"->"No definition came back. Check the spelling and language, then try again."
+    kind=="Translation"->"The translation didn't come through. Your text is kept; try again."
+    kind=="Weather"->"Weather isn't available right now. Try again in a moment."
+    else->"The lookup failed. Your text is kept; try again."
 }
