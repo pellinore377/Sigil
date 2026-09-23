@@ -59,9 +59,6 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     var notificationPermission by mutableStateOf(false)
         private set
-    var recoveryCode by mutableStateOf<String?>(null)
-        private set
-    fun dismissRecoveryCode() { recoveryCode = null }
     /** A WebAuthn ceremony waiting for the Activity; Credential Manager needs an Activity context. */
     internal class PasskeyPrompt(val run: suspend (android.app.Activity) -> Passkeys.Result, val result: CompletableDeferred<Passkeys.Result> = CompletableDeferred())
     internal var passkeyPrompt by mutableStateOf<PasskeyPrompt?>(null)
@@ -91,7 +88,6 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             finally { busyOperations--; state = state.copy(busy = busyOperations > 0 || submittingPost) }
         }
     }
-    private fun recoveryCode() { scope.launch { serialized(true) { recoveryCode = execute("recovery_code").getString("code") } } }
     var contactQr by mutableStateOf<JSONObject?>(null)
         private set
     private fun contactQr(fields: Map<String, Any?>) {
@@ -296,7 +292,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             "edit_source_used" -> { state = state.copy(editDraft = null); return }
             "passkey_recover" -> { passkey(false); return }
             "passkey_create" -> { passkey(true); return }
-            "recovery_code" -> { recoveryCode(); return }
+            "oidc_reopen" -> { command("resume", emptyMap()); return }
             "sign_out" -> {
                 if (state.call != null || calls.occupied) { state = state.copy(issue = "End or leave your call before signing out."); return }
                 if (state.voice.phase != "Idle") { state = state.copy(issue = "Send or discard your voice recording before signing out."); return }
@@ -626,7 +622,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val value = execute("state", mapOf("calls" to true))
         val phase = value.getString("phase")
         files.enabled = foreground && phase == "connected"
-        if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress); return }
+        if (phase != "connected") { state = state.copy(phase = phase, loginAddress = if (phase == "new") state.loginAddress else value.optional("server") ?: state.loginAddress, recoverAddress = value.optString("address"), recoverPasskeys = value.optInt("passkeys")); return }
         if (contactQr?.optString("stage") == "show") { val status = execute("contact_qr", mapOf("action" to "status")); contactQr = JSONObject(contactQr.toString()).put("consumed", status.getBoolean("consumed")).put("expired", status.getBoolean("expired")) }
         NativePush.resume(getApplication())
         if (state.push != null && android.os.SystemClock.elapsedRealtime() >= nextPushStatus) {
@@ -646,7 +642,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             ChatSummary(chat.getString("id"), chat.getString("address"), chat.getString("preview"), clock(chat.getLong("timestamp")), chat.getBoolean("verified"),
                 chat.getJSONArray("devices").objects().map { device -> ChatDevice(device.getString("id"), device.getString("fingerprint"), device.optBoolean("identity_verified"), device.getBoolean("blocked"), device.getBoolean("changed")) }, chat.optString("name"), chat.optInt("unread"), chat.optBoolean("pinned"), chat.optBoolean("snoozed"), chat.optBoolean("hidden"), chat.optString("presence", "inactive"), chat.optJSONArray("collections")?.strings().orEmpty(), chat.optJSONArray("typing")?.strings().orEmpty(), chat.optional("draft").orEmpty(), chat.optBoolean("group"), avatar = chat.optString("avatar"), ui = pendingUi(chat.getString("id"), chat.optJSONObject("ui")?.stringMap().orEmpty()), contactOnly = chat.optBoolean("contact_only"), readReceipts = chat.optBoolean("read_receipts", true), typingIndicators = chat.optBoolean("typing_indicators", true), presenceSharing = chat.optBoolean("presence_sharing"), request = chat.optString("request", "none"), identityReview = chat.optString("identity_review").takeIf { it.isNotEmpty() && it != "null" })
         }
-        state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = pendingUi(null, value.optJSONObject("ui")?.stringMap().orEmpty()))
+        state = state.copy(profileAvatar = value.optString("profile_avatar"), photoPending = value.optBoolean("photo_pending"), phase = phase, address = value.getString("address"), device = value.getString("device"), fingerprint = value.getString("fingerprint"), chats = chats, collectionsEnabled = value.optBoolean("collections_enabled"), collections = value.optJSONArray("collections")?.objects()?.map { CollectionItem(it.getString("id"), it.getString("name"), it.optString("icon", "folder")) }.orEmpty(), ui = pendingUi(null, value.optJSONObject("ui")?.stringMap().orEmpty()), accountRecovery = value.optJSONObject("account_recovery")?.let { r -> AccountRecovery(r.optJSONArray("passkeys")?.objects()?.map { RecoveryPasskey(it.getString("id"), it.getString("label"), it.getLong("created")) }.orEmpty(), r.optBoolean("ready")) })
         if (timelineJob?.isActive != true) loadTimeline()
     }
     private fun resetPreload() { viewportEnd = 0; timelineWant = 0; timelineReloadAt = Int.MAX_VALUE; viewportChase = false }

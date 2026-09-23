@@ -131,7 +131,7 @@ internal fun SignIn(state: MessengerState, command: (String, Map<String, Any?>) 
                 SigilTextButton({ startingOver = true }, enabled = !state.busy) { Text("Start over with a new identity") }
             }
             state.phase == "oidc" -> {
-                SigilTextButton({ command("resume", emptyMap()) }, enabled = !state.busy) { Text("Open sign-in again") }
+                SigilTextButton({ command("oidc_reopen", emptyMap()) }, enabled = !state.busy) { Text("Open sign-in again") }
                 SigilTextButton({ command("cancel_login", emptyMap()) }, enabled = !state.busy) { Text("Cancel") }
             }
             !inForm -> SigilTextButton(link, enabled = !state.busy) { Text(linkLabel) }

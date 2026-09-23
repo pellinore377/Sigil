@@ -1,12 +1,24 @@
-# Encrypted history recovery
+# Account recovery and encrypted history
 
-Archives contain retained content and conversation structure, never identity secrets, prekeys, live ratchets, credentials, verification decisions or group master keys. A replacement device needs account reauthorization and the recovery key; it establishes fresh messaging sessions. Recovery-key compromise exposes retained backups. Recipient copies cannot be recalled.
+## Account key
 
-A separate random 256-bit secret derives the archive key through HKDF-SHA-256. Account scope binds the canonical server name and stable account ID. AES-256-GCM-SIV objects use random nonces and purpose-specific AAD; ciphertext SHA-256 identifies each object. Archive ownership does not prove another participant's authorship or current verification.
+Each account has one XEdDSA account key, separate from device identities. It signs an endorsement of each device binding fingerprint (`Sigil/account-endorsement/v1`). The server stores the public key once, verifies endorsements before a device joins, and lists them in the contact directory. Contacts pin the account key when they accept a contact and trust exactly the devices it endorsed; a different key pauses the contact until the user approves a review digest over the new key (`Sigil/contact-identity-review/v2`). Verifying one endorsed device by QR verifies the account.
+
+## Recovery secret and passkeys
+
+A random 256-bit recovery secret derives the backup key and seals the account key into a server-stored bundle (HKDF-SHA-256 salted with the account scope, AES-256-GCM-SIV). A passkey wraps the secret under its WebAuthn PRF output, bound to the scope and credential ID; the server stores only wraps (at most 16). The optional recovery code is the secret itself in groups of four and is shown only in Settings. The server never sees the secret, a PRF output or the account key.
+
+## Signing in on a new device
+
+Password, SSO or an administrator's recovery invitation on an account that has a key or devices creates a pending device: it can read only its pending state, the account key bundle and passkey wraps (`GET /client/v0/pending`). Unlocking the bundle, endorsing its own binding and `POST /client/v0/pending/activate` make it a device; nothing else changes. `POST /client/v0/pending/reset` is the explicit last resort when the secret is lost: a new account key, every other device signed out, wraps and backups cleared, and contacts asked to approve the new key. Pending devices expire after an hour.
+
+Backups carry the contact catalog (contact address and pinned account key) so a recovered device lists every conversation; the recovery secret authenticates it like the account key itself.
+
+A stolen trusted device holds the account key and secret. Account-key rotation after removing a device is not implemented; replace passkeys and the code by resetting if a device is lost to someone else.
 
 ## Publication and restoration
 
-`enable_history_recovery` returns the new secret for offline safekeeping. `sync_backend_due_online` integrates bounded history backfill, messaging, recovery publication and attachment work. Network lanes preserve independent durable deadlines/backoff. Platform callers schedule this blocking worker; onboarding and progress screens remain UI work.
+Signing in starts backups under the account's recovery secret. `sync_backend_due_online` integrates bounded history backfill, messaging, recovery publication and attachment work. Network lanes preserve independent durable deadlines/backoff. Platform callers schedule this blocking worker; onboarding and progress screens remain UI work.
 
 Freeze records, pages and manifest before upload. Upload children first, then compare-and-swap the account head. Exact retries preserve ciphertext/generation; later edits enter a successor. A manifest holds at most 512 ordered pages of 256 record references. Upload/import steps process a page or at most 16 records. Imports authenticate every dependency before atomic finalization. Conversation structure/text become available before progressive media downloads.
 
@@ -28,7 +40,7 @@ Bounded maintenance also erases obsolete transport/action bodies. SQLite clears 
 
 ## Server API and limits
 
-All routes require a live account-scoped device credential.
+Backup routes require a live account-scoped device credential. Account-key routes: `GET/PUT /client/v0/account-key`, `GET /client/v0/recovery-wraps`, `PUT/DELETE /client/v0/recovery-wraps/{id}`; pending routes are above.
 
 | Route | Contract |
 | --- | --- |
