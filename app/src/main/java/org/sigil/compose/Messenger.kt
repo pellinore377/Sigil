@@ -59,16 +59,39 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     var notificationPermission by mutableStateOf(false)
         private set
-    var recoveryKey by mutableStateOf<String?>(null)
+    var recoveryCode by mutableStateOf<String?>(null)
         private set
-    var restoringRecovery by mutableStateOf(false)
+    fun dismissRecoveryCode() { recoveryCode = null }
+    /** A WebAuthn ceremony waiting for the Activity; Credential Manager needs an Activity context. */
+    internal class PasskeyPrompt(val run: suspend (android.app.Activity) -> Passkeys.Result, val result: CompletableDeferred<Passkeys.Result> = CompletableDeferred())
+    internal var passkeyPrompt by mutableStateOf<PasskeyPrompt?>(null)
         private set
-    private fun recoveryPreference(value: Boolean) { getApplication<Application>().getSharedPreferences("recovery", 0).edit().putBoolean("requested", value).apply() }
-    fun dismissRestoreRecovery() { if (!state.busy) { restoringRecovery = false; recoveryPreference(false) } }
-    var recoveringAccount by mutableStateOf(false)
-        private set
-    fun dismissAccountRecovery() { if (!state.busy) recoveringAccount = false }
-    fun dismissRecovery() { recoveryKey = null }
+    private var passkeyJob: Job? = null
+    private suspend fun ceremony(run: suspend (android.app.Activity) -> Passkeys.Result): Passkeys.Result {
+        val prompt = PasskeyPrompt(run); passkeyPrompt = prompt
+        try { return prompt.result.await() } finally { if (passkeyPrompt === prompt) passkeyPrompt = null }
+    }
+    private fun passkey(create: Boolean) {
+        if (passkeyJob?.isActive == true) return
+        if (!Passkeys.available(getApplication())) { state = state.copy(issue = "Passkeys need Android 9 or later with Google Play services. Use a recovery code instead."); return }
+        passkeyJob = scope.launch {
+            busyOperations++; state = state.copy(busy = true, issue = null)
+            try {
+                val options = mutex.withLock { execute(if (create) "passkey_create_options" else "passkey_request") }
+                val result = ceremony { if (create) Passkeys.create(it, options) else Passkeys.recover(it, options) }
+                mutex.withLock {
+                    if (create) execute("passkey_add", mapOf("credential" to result.credential, "salt" to options.getString("salt"), "prf" to result.prf, "label" to android.os.Build.MODEL.take(60)))
+                    else execute("recover", mapOf("credential" to result.credential, "prf" to result.prf))
+                    refresh()
+                }
+                if (!create) { NativeSync.enable(getApplication(), state.phase == "connected"); syncWake.trySend(Unit) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Passkeys.Dismissed) { }
+            catch (error: Exception) { state = state.copy(issue = if (error is NativeFailure || error is Passkeys.Failure) error.message else "Could not finish with this passkey. Try again.") }
+            finally { busyOperations--; state = state.copy(busy = busyOperations > 0 || submittingPost) }
+        }
+    }
+    private fun recoveryCode() { scope.launch { serialized(true) { recoveryCode = execute("recovery_code").getString("code") } } }
     var contactQr by mutableStateOf<JSONObject?>(null)
         private set
     private fun contactQr(fields: Map<String, Any?>) {
@@ -92,7 +115,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         private set
     private fun linkResult(value: JSONObject) { deviceLink = value.takeUnless { it.getString("stage") == "none" } }
     private fun deviceLink(fields: Map<String, Any?>) {
-        if (fields["action"] == "pause") { deviceLink = null; return }
+        if (fields["action"] == "pause") { deviceLink = null; deviceLinkIssue = null; return }
+        // A fresh install scans the other device's code before any server is known.
+        if (fields["action"] == "join_scan" && fields["qr"] == null) { deviceLink = JSONObject().put("stage", JOIN_SCAN); deviceLinkIssue = null; return }
         if(deviceLinkBusy)return
         deviceLinkBusy=true
         scope.launch { mutex.withLock {
@@ -106,6 +131,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             catch(error:Exception){deviceLinkIssue=if(error is NativeFailure)error.message else "Could not complete this linking step. Retry when connected."}
             finally {
                 try{linkResult(execute("device_link",mapOf("action" to "status")))}catch(_:Exception){}
+                if(deviceLink==null && deviceLinkIssue!=null && fields["action"]=="join_scan")deviceLink=JSONObject().put("stage",JOIN_SCAN)
                 deviceLinkBusy=false
             }
         } }
@@ -268,9 +294,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         if (name.startsWith("call_")) { calls.command(name, fields + ("name" to (fields["peer"] as? String)?.let { peer -> state.chats.find { it.id == peer }?.name })); return }
         when (name) {
             "edit_source_used" -> { state = state.copy(editDraft = null); return }
-            "recovery_account_open" -> { recoveringAccount = true; return }
-            "recover_account" -> recoveringAccount = false
-            "recovery_restore_open" -> { restoringRecovery = true; return }
+            "passkey_recover" -> { passkey(false); return }
+            "passkey_create" -> { passkey(true); return }
+            "recovery_code" -> { recoveryCode(); return }
             "sign_out" -> {
                 if (state.call != null || calls.occupied) { state = state.copy(issue = "End or leave your call before signing out."); return }
                 if (state.voice.phase != "Idle") { state = state.copy(issue = "Send or discard your voice recording before signing out."); return }
@@ -420,10 +446,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         if (name == "group_create") groupCreate = fields.toMap() to it
                     }
                     val alreadyQueued = retry && execute("post_status", mapOf("peer" to fields["peer"], "request" to JSONObject(raw).getString("request"))).getBoolean("queued")
-                    if (name == "recover_account") recoveryPreference(true)
                     val result = if (alreadyQueued) JSONObject() else native(raw)
                     if (name !in setOf("draft","profile","devices","storage","edit_source")) syncWake.trySend(Unit)
-                    if (name == "cancel_login") recoveryPreference(false)
+                    if (name in listOf("recover", "reset_identity")) NativeSync.enable(getApplication(), true)
                     accountAccess(result)
                     result.optJSONObject("forward_file")?.let { files.forward(fields, it) }
                     if (name == "oidc_account") nextAccess = 0
@@ -442,11 +467,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                         state = state.copy(devices = merged.values.sortedByDescending { it.current }, devicesNext = result.optional("next"))
                     }
                     if (name == "contact_policy") state = state.copy(allowRequests = result.getBoolean("enabled"))
-                    if (name == "recovery_generate") recoveryKey = result.getString("secret")
-                    if (name in listOf("storage", "recovery_enable", "recovery_policy", "recovery_restore")) {
-                        storage(result)
-                        if (name in listOf("recovery_enable", "recovery_restore")) { dismissRecovery(); restoringRecovery = false; recoveryPreference(false); NativeSync.enqueue(getApplication()) }
-                    }
+                    if (name in listOf("storage", "recovery_policy")) storage(result)
                     result.optional("authorization_url")?.let { authorizationUrl = it }
                     if (name in listOf("post", "edit")) {
                         post = null
@@ -612,7 +633,6 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             state = state.copy(push = withContext(Dispatchers.IO) { NativePush.settings(getApplication()) })
             nextPushStatus = android.os.SystemClock.elapsedRealtime() + 10_000
         }
-        if (value.optBoolean("recover_history") && getApplication<Application>().getSharedPreferences("recovery", 0).getBoolean("requested", false)) restoringRecovery = true
         if (state.storage != null) storage(execute("storage"))
         if (android.os.SystemClock.elapsedRealtime() >= nextAccess) {
             nextAccess = android.os.SystemClock.elapsedRealtime() + 300_000
@@ -708,6 +728,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
     }
     override fun onCleared() { calls.close(); voice.close(); scope.cancel() }
     private class NativeFailure(message: String) : Exception(message)
+    companion object { const val JOIN_SCAN = "join_scan" }
 }
 private fun JSONObject.optional(key: String): String? = if (isNull(key)) null else optString(key).ifEmpty { null }
 private fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
