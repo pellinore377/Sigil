@@ -18,3 +18,5 @@ strip = true
 
 [patch.crates-io]
 ece-native = { path = "vendor/ece-native" }
+# 0.23.1 with a 1,000-packet NACK window; see vendor/str0m/src/streams/register_nack.rs.
+str0m = { path = "vendor/str0m" }

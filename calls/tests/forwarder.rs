@@ -434,3 +434,122 @@ async fn lossy_downlink(sdp: String, rtx: Vec<u32>) -> (String, Arc<Mutex<(usize
     });
     (rewritten, counts)
 }
+
+/// A sender's Wi-Fi stall drops a burst far longer than a small NACK window: every packet
+/// must still reach the receiver, resent by the sender at the forwarder's request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upload_burst_loss_is_repaired_end_to_end() {
+    let owners: Vec<_> = (0..2).map(|_| IdentityKey::generate().unwrap()).collect();
+    let members: Vec<_> = owners.iter().map(|k| Member::new(k.public_key())).collect();
+    let mut sorted = members.clone();
+    sorted.sort_by_key(|m| m.id);
+    let roster = Roster {
+        controller: None, version: 1, call: [23; 32], server: "chat.example".into(),
+        owner: owners[0].public_key(), created: 1000, expires: 2000, revision: 0,
+        previous: None, members: sorted, closed: false,
+    }.sign(&owners[0]).unwrap();
+    let head = roster.roster.digest().unwrap();
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let mut forwarder = Forwarder::new(socket.local_addr().unwrap(), 1).unwrap();
+    forwarder.install(roster.clone(), 1000).unwrap();
+    let forwarder = Arc::new(Mutex::new(forwarder));
+    let running = forwarder.clone();
+    let task = tokio::spawn(async move {
+        let mut buf = [0; 2048];
+        loop {
+            let tick = running.lock().unwrap().tick(1000, Instant::now());
+            for packet in tick.datagrams { socket.send_to(&packet.contents, packet.destination).await.unwrap(); }
+            tokio::select! {r=socket.recv_from(&mut buf)=>{let(n,source)=r.unwrap();running.lock().unwrap().receive(source,&buf[..n],Instant::now());},_=tokio::time::sleep_until(tick.next.into())=>()}
+        }
+    });
+    let mut peers = Vec::new();
+    for i in 0..2 {
+        let mut peer = Peer::repairing().await;
+        let mut uploads = Vec::new();
+        let mut tracks = Vec::new();
+        for n in 1..=3 { let (track, transceiver) = peer.track(n).await; tracks.push(track); uploads.push(transceiver); }
+        let (sdp, layout) = offer(&mut peer, &roster.roster, members[i].id, uploads).await;
+        let signed = Connect { call: roster.roster.call, roster: head, participant: members[i].id, sequence: 1, sdp, layout }
+            .sign(&owners[i]).unwrap();
+        let answer = forwarder.lock().unwrap().connect(&signed, 1000, Instant::now()).unwrap();
+        let sdp = if i == 0 { burst_uplink(answer.sdp).await } else { answer.sdp };
+        peer.pc.set_remote_description(RTCSessionDescription::answer(sdp).unwrap()).await.unwrap();
+        peers.push((peer, tracks));
+    }
+    let camera = peers[0].1[1].clone();
+    let packet = |seq: u16| rtc::rtp::packet::Packet {
+        header: rtc::rtp::header::Header { version: 2, payload_type: 41, sequence_number: seq,
+            timestamp: u32::from(seq) * 1500, ssrc: 2, marker: true, ..Default::default() },
+        payload: vec![0x10, 0x30, seq as u8, (seq >> 8) as u8].into(),
+    };
+    // Warm up until media flows end to end; the burst is counted from sequence 1000.
+    let mut warm = 0u16;
+    loop {
+        camera.write_rtp(packet(warm)).await.unwrap();
+        warm += 1;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if peers[1].0.packets.try_recv().is_ok() { break; }
+        assert!(warm < 900, "media never flowed");
+    }
+    while peers[1].0.packets.try_recv().is_ok() {}
+    for seq in 1000..1500u16 {
+        camera.write_rtp(packet(seq)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let mut seen = BTreeSet::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && (1100..1350u16).any(|s| !seen.contains(&s)) {
+        while let Ok(p) = peers[1].0.packets.try_recv() {
+            // Resends arrive on the RTX stream prefixed by the original sequence number.
+            let body = if p.payload.starts_with(&[0x10, 0x30]) { &p.payload[..] } else if p.payload.len() >= 6 { &p.payload[2..] } else { continue };
+            if body.len() >= 4 && body[..2] == [0x10, 0x30] { let id = u16::from_le_bytes([body[2], body[3]]); if id >= 1000 { seen.insert(id); } }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    if std::env::var("SIGIL_TRACE_REPAIR").is_ok() {
+        let f = forwarder.lock().unwrap();
+        let t = f.traffic();
+        eprintln!("TRAFFIC in={:?} out={:?} dropped={} unrouted={:?} rejected={:?}", t.rtp_in, t.rtp_out, f.dropped_packets(), t.unrouted, t.rejected);
+    }
+    let missing: Vec<_> = (1100..1350u16).filter(|s| !seen.contains(s)).collect();
+    assert!(missing.is_empty(), "{} of 250 dropped packets never arrived: {:?}..", missing.len(), &missing[..missing.len().min(8)]);
+    task.abort();
+}
+
+/// Drops camera (SSRC 2) packets with sequence 1100..1350 once, as a Wi-Fi stall does.
+async fn burst_uplink(sdp: String) -> String {
+    let first = sdp.lines().find(|l| l.starts_with("a=candidate:")).unwrap();
+    let parts: Vec<_> = first.split_whitespace().collect();
+    let target: std::net::SocketAddr = format!("{}:{}", parts[4], parts[5]).parse().unwrap();
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let local = socket.local_addr().unwrap();
+    let rewritten = sdp.lines().map(|line| if line.starts_with("a=candidate:") {
+        let mut p: Vec<_> = line.split_whitespace().map(str::to_owned).collect();
+        p[4] = local.ip().to_string(); p[5] = local.port().to_string(); p.join(" ")
+    } else { line.to_owned() }).collect::<Vec<_>>().join("\r\n") + "\r\n";
+    tokio::spawn(async move {
+        let mut buf = [0; 2048];
+        let mut peer = None;
+        let mut dropped = std::collections::HashSet::new();
+        loop {
+            let (len, from) = socket.recv_from(&mut buf).await.unwrap();
+            let packet = &buf[..len];
+            if from == target {
+                if len > 8 && packet[1] == 205 && std::env::var("SIGIL_TRACE_REPAIR").is_ok() { eprintln!("NACK rtcp fmt={} len={len}", packet[0] & 31); }
+                if let Some(to) = peer { socket.send_to(packet, to).await.unwrap(); }
+                continue;
+            }
+            peer = Some(from);
+            if len > 12 && packet[0] & 0xc0 == 0x80 && packet[1] & 0x7f == 106 && std::env::var("SIGIL_TRACE_REPAIR").is_ok() {
+                eprintln!("RTX ssrc={} seq={}", u32::from_be_bytes(packet[8..12].try_into().unwrap()), u16::from_be_bytes([packet[2], packet[3]]));
+            }
+            let rtp = len > 12 && packet[0] & 0xc0 == 0x80 && !(200..=206).contains(&packet[1]);
+            if rtp && u32::from_be_bytes(packet[8..12].try_into().unwrap()) == 2 {
+                let seq = u16::from_be_bytes([packet[2], packet[3]]);
+                if (1100..1350).contains(&seq) && dropped.insert(seq) { continue; }
+            }
+            socket.send_to(packet, target).await.unwrap();
+        }
+    });
+    rewritten
+}
