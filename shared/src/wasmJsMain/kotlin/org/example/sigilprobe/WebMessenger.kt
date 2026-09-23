@@ -293,7 +293,7 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
             val active=browserDocument.visibilityState=="visible" || calls.visible!=null
             val nudged=withTimeoutOrNull(if(active && state.phase=="connected") foregroundSyncWait(nextSync,BrowserDate.now().toLong(),if(calls.visible!=null)250 else 1000) else 1500){wake.receive();true}==true
             if(browserDocument.visibilityState=="visible" && state.phase=="oidc") {
-                try {mutex.withLock {refresh();if(state.phase!="oidc"){authorization=null;ssoWindow=null}}}
+                try {mutex.withLock {refresh();if(state.phase in setOf("connected","recover","username")){authorization=null;ssoWindow=null}}}
                 catch(cancelled:CancellationException){throw cancelled}
                 catch(_:Exception){}
             }
