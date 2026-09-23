@@ -90,22 +90,18 @@ class MessagingUiTest {
         ui.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
         ui.runOnIdle { assertTrue(commands.any { it.first == "post" }); assertFalse(commands.any { it.first == "confirm" }) }
     }
-    @Test fun recoveryRequiresASavedKeyAndProtectsItsWindow() {
-        var enabled = false
-        val secret = "abcde012".repeat(8)
-        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RecoveryDialog(secret, false, {}) { enabled = true } }) }
-        ui.onNodeWithText("Enable encrypted backups").assertIsNotEnabled()
-        ui.onNode(isToggleable()).performScrollTo().performClick()
-        ui.onNodeWithText("Last 8 characters of your saved key").performScrollTo().performTextInput("00000000")
-        ui.onNodeWithText("Enable encrypted backups").assertIsNotEnabled()
-        ui.onNodeWithText("Last 8 characters of your saved key").performTextReplacement(secret.takeLast(8))
+    @Test fun recoveryCodeIsShownInAProtectedWindow() {
+        var dismissed = false
+        val code = "ABCD-EFGH-2345-6789"
+        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RecoveryCodeDialog(code) { dismissed = true } }) }
+        ui.onNodeWithTag("recovery-code").assertTextEquals(code)
         if (android.os.Build.VERSION.SDK_INT >= 29) ui.runOnIdle {
             assertTrue(android.view.inspector.WindowInspector.getGlobalWindowViews().any { view ->
                 ((view.layoutParams as? WindowManager.LayoutParams)?.flags ?: 0) and WindowManager.LayoutParams.FLAG_SECURE != 0
             })
         }
-        ui.onNodeWithText("Enable encrypted backups").performClick()
-        ui.runOnIdle { assertTrue(enabled) }
+        ui.onNodeWithText("Done").performClick()
+        ui.runOnIdle { assertTrue(dismissed) }
     }
     @Test fun signOutRequiresAcknowledgingLocalLossAndDoesNotAssumeRevocation() {
         val stage = mutableStateOf("confirm")
@@ -147,16 +143,6 @@ class MessagingUiTest {
             assertFalse(commands.any { it.first == "oidc" || it.first == "enroll" })
         }
     }
-    @Test fun historyRestoreRequiresTheKeyAndExplicitBackupReview() {
-        var received: String? = null
-        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected"), { _, _ -> }, overlay = { RestoreRecoveryDialog(false, null, {}) { received = it } }) }
-        ui.onNodeWithText("Restore history").assertIsNotEnabled()
-        ui.onNodeWithText("Recovery key").performScrollTo().performTextInput("ABCD ".repeat(16))
-        ui.onNodeWithText("Restore history").assertIsNotEnabled()
-        ui.onNode(isToggleable()).performScrollTo().performClick()
-        ui.onNodeWithText("Restore history").performClick()
-        ui.runOnIdle { assertEquals("abcd".repeat(16), received) }
-    }
     @Test fun savedHistoryDoesNotOfferLiveMessagingOrCallControls() {
         val archived = chat.copy(id = "history:synthetic", displayName = "Saved conversation", archived = true)
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(archived), selected = archived.id, messages = listOf(message("out", true))), { _, _ -> }) }
@@ -167,19 +153,6 @@ class MessagingUiTest {
         ui.onNodeWithText("See you tomorrow.").performClick()
         ui.onNodeWithContentDescription("Restored encrypted message").assertIsDisplayed()
         screenshot("saved-history")
-    }
-    @Test fun replacingDevicesRequiresExplicitConfirmationAndARecoveryMethod() {
-        val actions = mutableListOf<Pair<String, String?>>()
-        show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "new"), { _, _ -> }, overlay = { AccountRecoveryDialog(true, false, null, {}) { method, invitation -> actions += method to invitation } }) }
-        ui.onNodeWithText("Continue recovery").assertIsNotEnabled()
-        ui.onNode(isToggleable()).performScrollTo().performClick()
-        ui.onNodeWithText("Continue recovery").performClick()
-        ui.runOnIdle { assertEquals(listOf("sso" to null), actions) }
-        ui.onAllNodes(isSelectable())[1].performScrollTo().performClick()
-        ui.onNodeWithText("Continue recovery").assertIsNotEnabled()
-        ui.onNodeWithText("Recovery invitation").performScrollTo().performTextInput("ab".repeat(32))
-        ui.onNodeWithText("Continue recovery").performClick()
-        ui.runOnIdle { assertEquals("invitation" to "ab".repeat(32), actions.last()) }
     }
     @Test fun attachment_and_voice_panels_remain_above_the_input() {
         show { SigilApp(NativeCore::palette, NativeCore::analyze, MessengerState(phase = "connected", chats = listOf(chat), selected = "peer", messages = listOf(message("out", true))), { _, _ -> }) }

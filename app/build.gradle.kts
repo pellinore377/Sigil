@@ -40,6 +40,8 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.5.3")
     implementation("androidx.camera:camera-lifecycle:1.5.3")
     implementation("androidx.camera:camera-view:1.5.3")
+    implementation("androidx.credentials:credentials:1.6.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
     implementation("org.maplibre.gl:android-sdk:13.4.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.unifiedpush.android:connector:3.3.5")
