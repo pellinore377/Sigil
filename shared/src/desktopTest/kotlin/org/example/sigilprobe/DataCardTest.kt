@@ -94,7 +94,7 @@ class DataCardTest {
 
     @Test fun a_calculation_leads_with_its_expression_and_lands_on_the_result() {
         render(message(MessagePart("c","utility","",utility=UtilityContent("calculation",display="-12345.5",copy="-12345.5",rich=RichText("12 * 4")))))
-        ui.onNodeWithContentDescription("Calculation. 12 * 4 equals −12,345.5").assertExists()
+        ui.onNodeWithContentDescription("Calculation. 12 times 4 equals minus 12,345.5").assertExists()
         ui.onNodeWithText("Calculation").assertDoesNotExist()
         ui.onNodeWithContentDescription("Copy calculation").assertDoesNotExist()
     }

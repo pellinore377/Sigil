@@ -6,6 +6,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -50,12 +54,28 @@ internal fun FigureCard(spoken: String, figure: String, source: @Composable () -
     }
 }
 
+// Typeset like mathematics: × ÷ − with operator spacing and raised exponents; plain source only if it fails to parse.
 @Composable
 internal fun CalculationCard(value: UtilityContent) {
+    val ink = LocalContentColor.current
     val figure = readableNumber(value.display)
-    val expression = value.rich?.text.orEmpty()
-    val code = MaterialTheme.typography.labelMedium.copy(fontFamily = LocalCodeFont.current)
-    FigureCard("Calculation. $expression equals $figure", figure) {
-        value.rich?.let { RichMessageText(it, style = code) }
+    val source = value.rich?.text.orEmpty()
+    val tree = remember(source) { parseArith(source).takeIf { value.rich?.spans.isNullOrEmpty() } }
+    val tokens = remember(tree) { tree?.let(::arithTokens) }
+    // An unbreakable run wider than the card falls back to the wrapped source rather than clip.
+    var overflow by remember(source) { mutableStateOf(false) }
+    val spoken = "Calculation. ${tree?.let { arithSpoken(it) } ?: source} equals ${spokenFigure(figure)}"
+    val hero = heroStyle("= $figure")
+    Column(Modifier.widthIn(min = MessageCardMinWidth, max = MessageCardMaxWidth).padding(vertical = 4.dp)
+        .clearAndSetSemantics { contentDescription = spoken }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        CompositionLocalProvider(LocalContentColor provides ink.copy(alpha = .68f)) {
+            if (tokens != null && !overflow) ArithmeticLine(tokens, MaterialTheme.typography.bodyLarge.copy(fontFeatureSettings = "lnum"), onOverflow = { overflow = true })
+            else value.rich?.let { RichMessageText(it, style = MaterialTheme.typography.labelMedium.copy(fontFamily = LocalCodeFont.current)) }
+        }
+        // "=" is its own run so the sans face loads on web; the figure hangs beside it and breaks only after a comma.
+        Row {
+            Text("=", Modifier.alignByBaseline().padding(end = 8.dp), style = hero.copy(fontFamily = operatorFamily()), color = ink.copy(alpha = .68f))
+            Text(figure.replace(",", ",\u200B"), Modifier.alignByBaseline(), style = hero, color = ink)
+        }
     }
 }

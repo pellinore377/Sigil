@@ -32,7 +32,7 @@ fun main() {
                 } catch (_: Exception) { failed = true }
             }
             if (ready) {
-                if(preview)WebPreview() else if(window.location.pathname=="/admin")AdminApp() else if(window.location.pathname=="/messenger")WebMessenger() else MessengerEntry()
+                WebNativeMenus { if(preview)WebPreview() else if(window.location.pathname=="/admin")AdminApp() else if(window.location.pathname=="/messenger")WebMessenger() else MessengerEntry() }
                 SideEffect {
                     (document.body?.shadowRoot?.querySelector("canvas") as? org.w3c.dom.HTMLCanvasElement)?.style?.display="block"
                     if (document.documentElement!!.getAttribute("data-ready-ms") == null) {

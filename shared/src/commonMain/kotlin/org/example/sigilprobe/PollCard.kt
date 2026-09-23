@@ -3,13 +3,12 @@ package org.sigil
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,10 +16,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.FirstBaseline
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
@@ -63,7 +66,10 @@ internal fun pollFoot(part:MessagePart):String {
     }
     val title=MaterialTheme.typography.titleMedium
     val titleLine=with(LocalDensity.current){title.lineHeight.toDp()}
-    Column(Modifier.widthIn(min=MessageCardMinWidth,max=MessageCardMaxWidth).fillMaxWidth().padding(vertical=4.dp).animateContentSize(motion.tween(MotionMillis))) {
+    val press=LocalMaterialPress.current
+    // A poll is not text: a right-click opens the message menu, where End poll lives, not the browser's text menu.
+    Column(Modifier.widthIn(min=MessageCardMinWidth,max=MessageCardMaxWidth).fillMaxWidth().padding(vertical=4.dp).animateContentSize(motion.tween(MotionMillis))
+        .pointerInput(press) {awaitPointerEventScope {while(true) {val event=awaitPointerEvent();if(press!=null && event.type==PointerEventType.Press && event.buttons.isSecondaryPressed) {event.changes.forEach {it.consume()};press()}}}}) {
         Box(Modifier.clearAndSetSemantics {contentDescription="Poll. ${part.text}";heading()}) {
             if(part.rich!=null)RichMessageText(part.rich,Modifier.heightIn(max=titleLine*3).clipToBounds(),title)
             else Text(part.text,style=MaterialTheme.typography.titleMedium,maxLines=3,overflow=TextOverflow.Ellipsis)
@@ -74,7 +80,7 @@ internal fun pollFoot(part:MessagePart):String {
         (if(expanded)shown else shown.take(PollRows)).forEach {item->key(item.id) {
             val votes=item.count?:0L
             val share=if(results)(votes.toFloat()/voters!!).coerceIn(0f,1f)else 0f
-            PollRow(item,part.multiple,results,share,votes,voters,leading!=null && item.count==leading,expanded,command!=null && item.enabled) {act(item)}
+            PollRow(item,part.multiple,results,share,votes,voters,leading!=null && item.count==leading,expanded,command!=null && item.enabled,press) {act(item)}
         }}
         // Chevron sits in the radio column and the label on the option text edge.
         if(part.items.size>PollRows)SigilTextButton({expanded=!expanded},Modifier.offset(x=-PollBleed),contentPadding=PaddingValues(horizontal=PollBleed)) {
@@ -85,7 +91,7 @@ internal fun pollFoot(part:MessagePart):String {
     }
 }
 
-@Composable private fun PollRow(item:CardItem,multiple:Boolean,results:Boolean,share:Float,votes:Long,voters:Long?,won:Boolean,expanded:Boolean,enabled:Boolean,act:()->Unit) {
+@Composable private fun PollRow(item:CardItem,multiple:Boolean,results:Boolean,share:Float,votes:Long,voters:Long?,won:Boolean,expanded:Boolean,enabled:Boolean,hold:(()->Unit)?,act:()->Unit) {
     val motion=LocalMotion.current
     val ink=LocalContentColor.current
     val body=MaterialTheme.typography.bodyMedium
@@ -99,8 +105,9 @@ internal fun pollFoot(part:MessagePart):String {
     // Revealed results grow from zero; results already there on first sight are simply drawn.
     val amount by animateFloatAsState(if(results)share else 0f,motion.tween(MotionSettle),label="Poll result")
     val percent=(share*100).roundToInt()
-    val choose=if(multiple)Modifier.toggleable(item.checked,interaction,null,enabled,Role.Checkbox) {act()}
-        else Modifier.selectable(item.checked,interaction,null,enabled,Role.RadioButton) {act()}
+    // A row takes the press, so its long press opens the message menu as the bubble's would.
+    val choose=Modifier.combinedClickable(interaction,null,enabled,role=if(multiple)Role.Checkbox else Role.RadioButton,onLongClick=hold,onClick=act)
+        .semantics {if(multiple)toggleableState=ToggleableState(item.checked) else selected=item.checked}
     Box(Modifier.bleed(PollBleed).fillMaxWidth().heightIn(min=48.dp).clip(RoundedCornerShape(14.dp)).background(ink.copy(alpha=fill))
         .then(choose).semantics {if(results)stateDescription="$percent%, $votes of $voters ${if(multiple)"voters" else "votes"}"+if(won)", most votes" else ""}
         .padding(horizontal=PollBleed,vertical=8.dp),contentAlignment=Alignment.CenterStart) {

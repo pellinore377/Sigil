@@ -205,6 +205,8 @@ impl ClientStore {
                 value["multiple"] =
                     json!(poll.selection != sigil_protocol::text::structured::Selection::Single);
                 value["closed"] = json!(current.closed);
+                value["can_close"] =
+                    json!(!current.closed && card.creator == self.account_reference()?);
                 value["voters"] = json!(current.voters);
                 value["items"] = json!(poll.options.iter().map(|item| json!({"id":transport::hex(&item.id), "text":item.text.body(), "rich":item.text.presentation(), "checked":current.choices.contains(&item.id), "enabled":!current.closed, "count":current.counts.as_ref().and_then(|v|v.iter().find(|(id,_)|id==&item.id).map(|(_,n)|n))})).collect::<Vec<_>>());
             }
@@ -310,6 +312,60 @@ impl ClientStore {
             return Err(Error::InvalidEvent);
         };
         self.mobile_find_bound(&contact.address, Some(contact.user_id))
+    }
+    /// Closes the author's poll: the closure, then each ballot page; the draft makes a retry resume.
+    pub(super) fn mobile_poll_close(
+        &mut self,
+        peer: &str,
+        target: Reference,
+        card: Id,
+        timestamp: u64,
+    ) -> Result<Value, Error> {
+        let conversation = self.mobile_conversation(peer)?;
+        let reference = self.mobile_card_reference(conversation, target, card)?;
+        let close = match self.poll_close_draft(conversation, reference)? {
+            Some(close) => close,
+            None => match self.prepare_poll_close(conversation, reference, timestamp) {
+                // Already closed: a repeated request is answered, not refused.
+                Err(Error::Obsolete)
+                    if self
+                        .card_state(conversation, reference)?
+                        .poll
+                        .is_some_and(|p| p.closed) =>
+                {
+                    return Ok(json!({}))
+                }
+                other => other?,
+            },
+        };
+        let Change::ClosePoll(closure) = &close.change else {
+            return Err(Error::InvalidStore);
+        };
+        let pages = closure.pages();
+        let send = |store: &mut Self, action: &CardAction| -> Result<(), Error> {
+            store.require_action(conversation, action)?;
+            let request = transport::hex(&action.id().map_err(|_| Error::InvalidEvent)?);
+            store.mobile_action(
+                peer,
+                &request,
+                action.created_at,
+                Action::Post {
+                    body: Body::Rich(action.to_bytes().map_err(|_| Error::InvalidEvent)?),
+                    reply: None,
+                    thread: None,
+                    expires_at: None,
+                    view_once: false,
+                },
+            )?;
+            Ok(())
+        };
+        send(self, &close)?;
+        for number in 0..pages {
+            let page = self.poll_close_page(conversation, reference, number)?;
+            send(self, &page)?;
+        }
+        self.discard_poll_close(conversation, reference)?;
+        Ok(json!({}))
     }
     #[allow(clippy::too_many_arguments)]
     pub(super) fn mobile_card_action(

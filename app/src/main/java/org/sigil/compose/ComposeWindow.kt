@@ -42,7 +42,7 @@ internal fun ComponentActivity.setSigilContent(content: @Composable () -> Unit) 
             val clip = android.content.ClipData.newPlainText("Sigil", value)
             clip.description.extras = android.os.PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
             getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
-        }, org.sigil.LocalMathContent provides { mathml, expression, modifier -> MathContent(mathml, expression, modifier) }, org.sigil.LocalKeepScreenAwake provides { enabled ->
+        }, org.sigil.LocalKeepScreenAwake provides { enabled ->
             val view = LocalView.current
             DisposableEffect(view, enabled) {
                 val previous = view.keepScreenOn

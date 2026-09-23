@@ -514,6 +514,16 @@ impl ClientStore {
         invalid(action.to_bytes())?;
         Ok(action)
     }
+    /// The prepared closure still awaiting delivery, whatever time it was stamped with.
+    pub(crate) fn poll_close_draft(
+        &self,
+        conversation: Id,
+        reference: Reference,
+    ) -> Result<Option<Action>, Error> {
+        let (scope, _) = account_context(&self.db, &self.key)?;
+        let index = card_index(&self.key, &scope, &conversation, &reference)?;
+        draft(&self.db, &self.key, &index)
+    }
     pub fn discard_poll_close(
         &mut self,
         conversation: Id,

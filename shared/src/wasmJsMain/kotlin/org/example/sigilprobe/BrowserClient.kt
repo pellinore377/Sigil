@@ -42,7 +42,6 @@ import kotlin.js.*
 @JsName("video_native_detach") external fun browserVideoNativeDetach(sender:String)
 @JsName("video_receive") external fun browserVideoReceive(sender:String,frame:JsAny):Boolean
 @JsName("camera_photo_url") external fun browserCameraPhotoUrl(file:JsAny):String
-@JsName("render_math") external fun browserRenderMath(target:org.w3c.dom.HTMLElement,mathml:String)
 @JsName("profile_image") external fun browserProfileImage(reference:String):Promise<JsString>
 @JsName("profile_stage") external fun browserProfileStage(file:JsAny?):Promise<JsAny>
 @JsName("wallpaper_stage") external fun browserWallpaperStage(peer:String,file:JsAny?):Promise<JsAny?>

@@ -31,7 +31,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-data class ClientFeatures(val calls:Boolean=true,val files:Boolean=true,val voice:Boolean=true,val locations:Boolean=true,val notifications:Boolean=true,val recovery:Boolean=true,val videoCalls:Boolean=true,val passkeys:Boolean=false)
+data class ClientFeatures(val calls:Boolean=true,val files:Boolean=true,val voice:Boolean=true,val locations:Boolean=true,val notifications:Boolean=true,val recovery:Boolean=true,val videoCalls:Boolean=true,val passkeys:Boolean=false,val screenShare:Boolean=true,val audioRoute:Boolean=true)
 internal val LocalWideLayout=staticCompositionLocalOf {false}
 val LocalClientFeatures=staticCompositionLocalOf {ClientFeatures()}
 internal val MainTabs = listOf("inbox", "calls", "notes", "settings")

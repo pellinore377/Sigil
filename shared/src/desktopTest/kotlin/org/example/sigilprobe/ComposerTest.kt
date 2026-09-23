@@ -17,6 +17,9 @@ import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.unit.dp
 import org.junit.Rule
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -212,5 +215,75 @@ class ComposerTest {
             .performKeyInput { keyDown(Key.ShiftLeft); pressKey(Key.Tab); keyUp(Key.ShiftLeft) }
         field.assertIsFocused()
         ui.runOnIdle { assertEquals("**bold** tail", state.text.toString()) }
+    }
+
+    private fun enter(composing: Boolean?, source: String = "hello"): MutableList<String> {
+        val sent = mutableListOf<String>()
+        state = TextFieldState(source)
+        ui.setContent {
+            CompositionLocalProvider(LocalImeComposing provides composing?.let { open -> { open } }) {
+                MaterialTheme { Composer(state, NativeCore::analyze, onSubmit = { sent += state.text.toString() }) }
+            }
+        }
+        field.performClick()
+        field.performTextInputSelection(TextRange(source.length))
+        return sent
+    }
+
+    @Test fun enter_sends_and_shift_enter_breaks_the_line_where_the_host_asks() {
+        val sent = enter(composing = false)
+        field.performKeyInput { keyDown(Key.ShiftLeft); pressKey(Key.Enter); keyUp(Key.ShiftLeft) }
+        ui.runOnIdle { assertEquals("hello\n", state.text.toString()); assertEquals(emptyList(), sent) }
+        field.performKeyInput { pressKey(Key.Enter) }
+        ui.runOnIdle { assertEquals(listOf("hello\n"), sent); assertEquals("hello\n", state.text.toString()) }
+    }
+
+    private fun breaksLine(composing: Boolean?) {
+        val sent = enter(composing)
+        field.performKeyInput { pressKey(Key.Enter) }
+        ui.runOnIdle { assertEquals("hello\n", state.text.toString()); assertEquals(emptyList(), sent) }
+    }
+    @Test fun enter_breaks_the_line_without_the_host() = breaksLine(null)
+    @Test fun enter_during_composition_never_sends() = breaksLine(true)
+
+    private fun panel(source: String, commands: MutableList<String>, sent: MutableList<String>) {
+        state = TextFieldState(source)
+        ui.setContent {
+            CompositionLocalProvider(LocalImeComposing provides { false }) {
+                MaterialTheme { androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.width(412.dp).height(760.dp)) {
+                    ComposerPanel(state, { "" }, true, false, { action, _ -> commands += action }, "peer", VoiceState(), 0, null) { text, _, _ -> sent += text }
+                } }
+            }
+        }
+    }
+
+    @Test fun enter_sends_the_draft_from_the_panel() {
+        val commands = mutableListOf<String>(); val sent = mutableListOf<String>()
+        panel("hello", commands, sent)
+        field.performClick()
+        field.performKeyInput { pressKey(Key.Enter) }
+        ui.runOnIdle { assertEquals(listOf("hello"), sent) }
+    }
+
+    @Test fun enter_on_an_empty_draft_never_starts_voice() {
+        val commands = mutableListOf<String>(); val sent = mutableListOf<String>()
+        panel("", commands, sent)
+        field.performClick()
+        field.performKeyInput { pressKey(Key.Enter) }
+        ui.onNodeWithContentDescription("Tap to record your voice").assertDoesNotExist()
+        ui.runOnIdle { assertEquals(emptyList(), sent); assertEquals(emptyList(), commands.filter { it.startsWith("record_") }) }
+    }
+
+    @Test fun enter_during_a_builder_step_does_not_submit() {
+        val commands = mutableListOf<String>(); val sent = mutableListOf<String>()
+        panel("hello", commands, sent)
+        ui.onNodeWithContentDescription("Attachments").performClick()
+        ui.onNodeWithContentDescription("Create").performClick()
+        ui.onNodeWithContentDescription("Poll").performClick()
+        ui.onNodeWithContentDescription("Back to create").assertExists()
+        field.performClick()
+        field.performKeyInput { pressKey(Key.Enter) }
+        ui.onNodeWithContentDescription("Back to create").assertExists()
+        ui.runOnIdle { assertEquals(emptyList(), sent); assertEquals(emptyList(), commands.filter { it == "post" }) }
     }
 }

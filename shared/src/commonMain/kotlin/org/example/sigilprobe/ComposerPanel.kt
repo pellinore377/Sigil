@@ -274,14 +274,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                     }
                 }
 
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, placeholder = if (hasAttachment) "Add text" else "Message", onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
-                }
-
-                Spacer(Modifier.width(8.dp))
-                val sendIcon=if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"graphic_eq" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq"
-                val sendLabel=if(contextual)confirmation.action?.label ?: "Complete attachment" else if(voice.peer==peer && voice.phase=="Save failed")"Retry saving recording" else if(voice.peer==peer && voice.phase=="Recording")"Stop recording" else if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if(hasStructured)"Send message" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message"
-                SigilFilledIconButton({ if(contextual){confirmation.action?.takeIf {it.enabled}?.invoke?.invoke()} else if (hasAttachment) {
+                val sendAction: () -> Unit = { if(contextual){confirmation.action?.takeIf {it.enabled}?.invoke?.invoke()} else if (hasAttachment) {
                         val caption = draft.text.toString(); pendingCaption = caption
                         attachmentDrafts.forEach { command("file_send", mapOf("request" to it.request, "caption" to caption)) }
                         if (voiceReady) command("record_send", mapOf("peer" to peer, "caption" to caption))
@@ -294,8 +287,17 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         val source=if(notes && !editingCaption) "note::${escapeField(draft.text.toString())};" else helpSource ?: draft.text.toString()
                         val structured=previewer?.invoke(source)?.previewLeaves()?.any {it.kind!="text" && it.previewIntent==null}==true
                         send(source,notes && !editingCaption || helpSource?.endsWith(';')==true || structured,null)
-                    } else change("Voice") },
-                    Modifier.semantics {contentDescription=sendLabel}, enabled = if(launch?.activeSource!=null)false else if(contextual)confirmation.action?.enabled==true else voice.phase !in listOf("Starting","Saving") && if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(hasStructured)enabled else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else LocalClientFeatures.current.voice) {
+                    } else change("Voice") }
+                val sendEnabled = if(launch?.activeSource!=null)false else if(contextual)confirmation.action?.enabled==true else voice.phase !in listOf("Starting","Saving") && if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(hasStructured)enabled else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else LocalClientFeatures.current.voice
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, placeholder = if (hasAttachment) "Add text" else "Message", onSubmit = { if (sendEnabled && !contextual && (hasAttachment || hasStructured || hasText)) sendAction() }, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
+                }
+
+                Spacer(Modifier.width(8.dp))
+                val sendIcon=if(panel in listOf("One-time location","Real-time location","Drop a pin"))"send" else if(contextual)"check" else if(voice.peer==peer && voice.phase=="Save failed")"refresh" else if(voice.peer==peer && voice.phase=="Recording")"graphic_eq" else if(helpQuery!=null)"help" else if (hasAttachment || hasStructured || hasText) "send" else "graphic_eq"
+                val sendLabel=if(contextual)confirmation.action?.label ?: "Complete attachment" else if(voice.peer==peer && voice.phase=="Save failed")"Retry saving recording" else if(voice.peer==peer && voice.phase=="Recording")"Stop recording" else if(helpQuery!=null)"Open help" else if (editingCaption) "Save caption" else if (voiceReady) "Send voice message" else if (attachmentDrafts.isNotEmpty()) "Send attachments" else if(hasStructured)"Send message" else if (hasText) if (requestContact != null) "Send request" else "Send message" else "Voice message"
+                SigilFilledIconButton(sendAction,
+                    Modifier.semantics {contentDescription=sendLabel}, enabled = sendEnabled) {
                     Crossfade(sendIcon, animationSpec = motionPolicy.tween(MotionMillis), label = "Send action") { icon -> Glyph(icon, 24) }
                 }
             }

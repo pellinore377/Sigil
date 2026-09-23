@@ -76,6 +76,7 @@ The attachment or card is the message surface; no second bubble around it. Fille
 | Sheets | The first rows in a grid | A full grid: tap selects a cell, a row number or a column number; one round handle on the block's lower-right corner stretches it and springs back; a hold offers to copy the block as tab-separated text. Selection is a 2dp primary border on the block's outer edge, never a fill |
 | Other files | A chip with name, type and size | File details with Save and Open externally |
 | Code | Google Sans Code, language label, Copy | Selectable code with wrap and horizontal scroll |
+| Diagrams | Flows in square boxes with decision diamonds; states in rounded tiles with an entry dot, a bullseye under every state with no way out, and curved returns; mind maps from an ink centre with branches clockwise above, right, below and left and each branch's topics stacked on its far side, capped at 16 topics. Mind map branch families follow the chart colour rule: an ink ramp up to four, the named palette from five | Every topic; large mind maps on deterministic rings |
 
 Every attachment has an expanded destination, reached through the in-window presentation host rather than a dialog, so its glass blurs the real page. Expansion preserves playback and return position.
 

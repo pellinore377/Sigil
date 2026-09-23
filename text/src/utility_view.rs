@@ -18,7 +18,7 @@ impl Utility {
                 json!({"kind":"conversion","display":format!("{} {}",value.input.as_str(),value.from),"alternate":format!("{} {}",value.output.fixed(4)?,value.to),"copy":format!("{} {}",value.output.as_str(),value.to)})
             }
             Self::Math { expression, block } => {
-                json!({"kind":"math","display":expression,"copy":expression,"block":*block,"mathml":crate::math::html(expression,*block)?})
+                json!({"kind":"math","display":expression,"copy":expression,"block":*block,"typeset":crate::math::typeset(expression,*block).ok()})
             }
             Self::Art(value) => json!({"kind":"art","display":value,"copy":value}),
             Self::Qr(value) => {
@@ -199,10 +199,9 @@ mod tests {
             expression: "\\frac{1}{2}".into(),
             block: true,
         };
-        assert!(math.presentation().unwrap()["mathml"]
-            .as_str()
-            .unwrap()
-            .contains("<mfrac>"));
+        let typeset = &math.presentation().unwrap()["typeset"];
+        assert!(!typeset["runs"].as_array().unwrap().is_empty());
+        assert_eq!(typeset["rules"].as_array().unwrap().len(), 1);
         // A title rides beside the figure without displacing it: the percentage stays the display value.
         let bare = Utility::Progress {
             value: crate::numeric::Number::new(75.0).unwrap(),

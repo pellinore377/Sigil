@@ -17,6 +17,7 @@ import org.sigil.DiagramEntry
 
 object ContentDecoder {
     fun part(raw:String,date:(Long)->String={it.toString()})=previewPart(WireObject(raw),date)
+    fun messagePart(raw:String,date:(Long)->String={it.toString()})=messagePart(WireObject(raw),date)
     fun richText(raw:String)=WireObject(raw).richText()
     fun richValue(raw:String)=WireObject(raw).richValue()
     fun tableContent(raw:String)=WireObject(raw).tableContent()
@@ -39,6 +40,21 @@ private fun previewPart(p:WireObject,date:(Long)->String):org.sigil.MessagePart 
         previewParts=p.optJSONArray("parts")?.let {parts->(0 until parts.length()).map {previewPart(parts.getJSONObject(it),date)}} ?: emptyList(),
         randomizerPreview=p.optJSONObject("randomizer")?.let {r->RandomizerPreview(r.getString("kind"),r.getJSONArray("sides").let {sides->(0 until sides.length()).map {sides.getInt(it)}})},
         previewIntent=p.optJSONObject("intent")?.let {v->PreviewIntent(v.getString("tool"),v.getString("text"),v.getString("language"),v.getBoolean("forecast"),v.getBoolean("ready"),v.getInt("start"),v.getInt("end"))})
+}
+
+// A stored message's part: unlike a preview it carries its card id, live item state, tallies and location.
+private fun messagePart(p:WireObject,date:(Long)->String):org.sigil.MessagePart {
+    val items=p.optJSONArray("items")
+    return org.sigil.MessagePart(p.optString("id"),p.getString("kind"),p.getString("text"),
+        items=if(items==null)emptyList() else (0 until items.length()).map {i->
+            val item=items.getJSONObject(i)
+            org.sigil.CardItem(item.getString("id"),item.getString("text"),item.getBoolean("checked"),item.optBoolean("enabled"),if(item.isNull("count"))null else item.getLong("count"),item.richText(),item.optBoolean("persistent"))
+        },multiple=p.optBoolean("multiple"),closed=p.optBoolean("closed"),voters=if(p.isNull("voters"))null else p.getLong("voters"),
+        date=if(p.has("date"))p.getString("date") else if(p.has("at"))date(p.getLong("at")) else "",
+        latitude=p.optInt("latitude_e6")/1_000_000.0,longitude=p.optInt("longitude_e6")/1_000_000.0,rich=p.richText(),locationMode=p.optString("location_mode","pin"),
+        sampledAt=p.optLong("sampled_at"),accuracyCm=if(p.isNull("accuracy_cm"))null else p.getLong("accuracy_cm"),until=if(p.isNull("until"))null else p.getLong("until"),
+        stopped=p.optBoolean("stopped"),canStop=p.optBoolean("can_stop"),table=p.tableContent(),recipe=p.recipeContent(),chart=p.chartContent(),diagram=p.diagramContent(),
+        utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),canClose=p.optBoolean("can_close"))
 }
 
 private fun WireObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
@@ -124,12 +140,21 @@ private fun WireObject.diagramContent(): DiagramContent? = optJSONObject("diagra
         list("entries") { DiagramEntry(it.getJSONObject("date").richValue(), it.getJSONObject("label").richValue()) })
 }
 
+private fun WireObject.mathTypeset(): MathTypeset? = optJSONObject("typeset")?.let { t ->
+    fun WireArray.float(i: Int) = getDouble(i).toFloat()
+    fun WireArray.rgb(i: Int) = if (length() > i) getDouble(i).toLong() else null
+    fun rows(name: String) = t.getJSONArray(name).let { a -> (0 until a.length()).map(a::getJSONArray) }
+    MathTypeset(t.getDouble("units").toFloat(), t.getDouble("width").toFloat(), t.getDouble("ascent").toFloat(), t.getDouble("descent").toFloat(),
+        rows("glyphs").associate { it.getInt(0) to it.getString(1) },
+        rows("runs").map { MathRun(it.getInt(0), it.float(1), it.float(2), it.float(3), it.rgb(4)) },
+        rows("rules").map { MathRule(it.float(0), it.float(1), it.float(2), it.float(3), it.rgb(4)) })
+}
 private fun WireObject.utilityContent(): org.sigil.UtilityContent? = optJSONObject("utility")?.let { u ->
     fun string(name: String) = if (u.isNull(name)) null else u.getString(name)
     org.sigil.UtilityContent(u.getString("kind"), u.optString("display"), u.optString("alternate"), string("copy"), u.richText(),
         u.optJSONObject("secondary")?.richValue(), u.optJSONArray("details")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).richValue() } }.orEmpty(),
         if (u.isNull("selected")) null else u.getInt("selected"), if (u.isNull("ratio")) null else u.getDouble("ratio").toFloat(),
-        if (u.isNull("rgba")) null else u.getLong("rgba"), string("mathml"), u.optJSONObject("qr")?.let { q ->
+        if (u.isNull("rgba")) null else u.getLong("rgba"), u.mathTypeset(), u.optJSONObject("qr")?.let { q ->
             org.sigil.QrContent(q.getString("kind"), q.getInt("width"), q.getString("cells"), q.getString("payload"), q.optJSONObject("password")?.richValue(), q.getBoolean("concealed"))
         }, u.optJSONObject("motion")?.let { m ->
             val dice = m.optJSONArray("dice")?.let { a -> (0 until minOf(6,a.length())).map {
