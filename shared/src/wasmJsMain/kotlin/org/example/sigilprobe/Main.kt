@@ -25,7 +25,7 @@ fun main() {
             var failed by remember { mutableStateOf(false) }
             LaunchedEffect(resolver) {
                 try {
-                for (name in listOf("arabic", "hebrew", "emoji")) {
+                for (name in listOf("arabic", "hebrew", "ipa", "emoji")) {
                     resolver.preload(FontFamily(Font("Sigil-$name", Res.readBytes("files/$name.ttf"))))
                 }
                 ready = true

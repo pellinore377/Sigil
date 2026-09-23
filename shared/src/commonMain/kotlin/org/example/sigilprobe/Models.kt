@@ -74,7 +74,7 @@ data class RandomizerMotion(val kind:String,val dice:List<DieFace> = emptyList()
 data class QrContent(val kind: String, val width: Int, val cells: String, val payload: String, val password: RichText? = null, val concealed: Boolean = false)
 data class ServiceContent(val kind: String, val title: RichText, val attribution: RichText, val stamp: String, val source: String?, val language: String, val copy: String?, val original: RichText?, val pronunciation: RichText?, val audio: String?, val senses: List<DefinitionSense>, val current: WeatherConditions?, val days: List<WeatherDay>, val hours: List<WeatherConditions>, val today: String, val historical: Boolean)
 data class DefinitionSense(val part: RichText, val definition: RichText, val example: RichText?, val etymology: RichText?, val synonyms: List<RichText>, val antonyms: List<RichText>, val copy: String?)
-data class WeatherConditions(val date: String, val key: String, val temperature: List<String>, val feelsLike: List<String>?, val description: RichText, val icon: String, val rain: String?, val chance: String?, val wind: List<String>, val humidity: String?, val uv: String?)
+data class WeatherConditions(val date: String, val key: String, val temperature: List<String>, val feelsLike: List<String>?, val description: RichText, val icon: String, val rain: String?, val chance: String?, val wind: List<String>, val humidity: String?, val uv: String?, val at: Long = 0)
 data class WeatherDay(val date: String, val key: String, val low: List<String>, val high: List<String>, val icon: String, val chance: String, val description: RichText, val charts: List<ChartContent> = emptyList())
 
 data class RandomizerPreview(val kind:String,val sides:List<Int>)

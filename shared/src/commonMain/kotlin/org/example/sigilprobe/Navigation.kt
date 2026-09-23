@@ -93,6 +93,7 @@ internal fun BackAction(enabled: Boolean, action: () -> Unit) {
 fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, state: MessengerState, command: Command,
     read: (String) -> String? = { null }, write: (String, String) -> Unit = { _, _ -> }, dynamicAccent: Int? = null,
     onBackAvailable: (Boolean, () -> Unit) -> Unit = { _, _ -> }, wideLayout: Boolean = false, overlay: @Composable () -> Unit = {}) {
+    remember { WeatherUnits.bind(read("weather_units")) { write("weather_units", if (it) "imperial" else "metric") } }
     var followAccount by remember { mutableStateOf(read("follow_account_theme") != "false") }
     var pendingAppearance by remember { mutableStateOf<String?>(null) }
     var appearance by remember { mutableStateOf(decodeAppearance(if (followAccount) state.ui["appearance"] ?: read("account_appearance") ?: read("appearance") else read("device_appearance") ?: read("appearance"))) }

@@ -25,7 +25,7 @@ private fun seeded(query:String):List<ChatMessage> {
         val built=items.mapIndexed {i,item->
             val source=item.jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
             val mine=item.jsonObject["mine"]?.jsonPrimitive?.booleanOrNull ?: true
-            val parts=Json.parseToJsonElement(rustPlayground(context(source,"UTC"))).jsonArray.mapIndexed {j,p->ContentDecoder.part(p.toString()) {WebDate(it*1000.0).toLocaleString()}.copy(id="seed-$i-$j")}
+            val parts=previewService(source)?.let {listOf(MessagePart("seed-$i-0","service","",service=it))} ?: Json.parseToJsonElement(rustPlayground(context(source,"UTC"))).jsonArray.mapIndexed {j,p->ContentDecoder.part(p.toString()) {WebDate(it*1000.0).toLocaleString()}.copy(id="seed-$i-$j")}
             ChatMessage("seed-$i",if(mine)"local" else "maya",source,mine,"","sent",false,emptyList(),emptyList(),null,true,timestamp=(WebDate.now()/1000).toLong()-60*i,parts=parts,peer="preview")
         }
         built.mapIndexed {i,m->
@@ -76,7 +76,7 @@ private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(
             "call_start","call_prepare"->error="Calls are unavailable in the design workbench."
         }
     }
-    CompositionLocalProvider(LocalMaterialPlatform provides WebMaterials, LocalSolidMaterial provides (if (materialsReady) { value, progress, modifier -> MaterialMessages(value, progress, modifier) } else null), LocalMaterialOverlay provides (if (materialsReady) { timeline, modifier -> MaterialTimelineOverlay(timeline, modifier) } else null), LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides ::preview,LocalBuilderTimezone provides "UTC",LocalCodePreview provides ::rustCode,
+    CompositionLocalProvider(LocalMaterialPlatform provides WebMaterials, LocalSolidMaterial provides (if (materialsReady) { value, progress, modifier -> MaterialMessages(value, progress, modifier) } else null), LocalMaterialOverlay provides (if (materialsReady) { timeline, modifier -> MaterialTimelineOverlay(timeline, modifier) } else null), LocalRecipeScale provides ::previewRecipeScale,LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides ::preview,LocalBuilderTimezone provides "UTC",LocalCodePreview provides ::rustCode,
         LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds,
         LocalTemporalPreview provides {kind,input->
             val result=rustTemporal("$kind\n${(WebDate.now()/1000).toLong()}\nUTC\nday\n$input").split('\n')

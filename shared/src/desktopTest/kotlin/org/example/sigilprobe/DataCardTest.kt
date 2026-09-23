@@ -132,7 +132,7 @@ class DataCardTest {
         val recipe=RecipeContent(RichText("Soup"),4,4,1500L,listOf(RichText("Stock")),listOf(false),listOf(RichText("Simmer")))
         render(message(MessagePart("r","recipe","",recipe=recipe)))
         ui.onNodeWithText("Open recipe").assertDoesNotExist()
-        ui.onNodeWithText("1 ingredients · 1 steps").assertHasNoClickAction()
+        ui.onNodeWithText("4 servings · 25 min").assertHasNoClickAction()
     }
 
     @Test fun only_chart_diagram_table_qr_and_recipe_reach_a_details_view() {

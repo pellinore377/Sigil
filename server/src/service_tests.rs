@@ -26,6 +26,7 @@ fn entry(fixture: &Fixture, kind: Kind, path: &str) -> StoredEntry {
         },
         secret: Some(Zeroizing::new("synthetic-key".into())),
         exceptions: vec![fixture.exception("127.0.0.1")],
+        contact: None,
     }
 }
 fn forecast() -> Value {
@@ -50,9 +51,9 @@ fn configured_https_providers_produce_bounded_canonical_snapshots() {
     let calls = Arc::new(AtomicUsize::new(0));
     let weather_calls = calls.clone();
     let app=Router::new()
-        .route("/google",post(|headers:HeaderMap,Json(body):Json<Value>|async move{assert_eq!(headers["x-goog-api-key"],"synthetic-key");assert_eq!(body["q"],"Hello");assert_eq!(body["format"],"text");Json(json!({"data":{"translations":[{"translatedText":"Hola &amp; &lt;world&gt;","detectedSourceLanguage":"en"}]}}))}))
+        .route("/google",post(|headers:HeaderMap,Json(body):Json<Value>|async move{assert_eq!(headers["x-goog-api-key"],"synthetic-key");assert_eq!(headers["user-agent"],"Sigil/experimental-v0");assert_eq!(body["q"],"Hello");assert_eq!(body["format"],"text");Json(json!({"data":{"translations":[{"translatedText":"Hola &amp; &lt;world&gt;","detectedSourceLanguage":"en"}]}}))}))
         .route("/libre",post(|Json(body):Json<Value>|async move{assert_eq!(body["api_key"],"synthetic-key");assert_eq!(body["source"],"auto");Json(json!({"translatedText":"Hola","detectedLanguage":{"language":"en"}}))}))
-        .route("/define/{word}",get(||async{Json(json!({"en":[{"partOfSpeech":"Noun","definitions":[{"definition":"A <b>synthetic</b> &amp; safe definition.","examples":["An <i>example</i>."]}]}]}))}))
+        .route("/define/{word}",get(||async{Json(json!({"en":[{"partOfSpeech":"Noun","definitions":[{"definition":"A <b>synthetic</b> &amp; <a href='/wiki/safe'>safe</a> definition.","examples":["An <i>example</i>."]}]}]}))}))
         .route("/index",post(|Json(body):Json<Value>|async move{Json(ResultData::Definition{word:text(body["word"].as_str().unwrap()).unwrap(),language:"en".into(),pronunciation:None,audio_url:None,senses:vec![Sense{part_of_speech:text("noun").unwrap(),definition:text("Synthetic local extract").unwrap(),example:None,etymology:Some(text("Synthetic origin").unwrap()),synonyms:vec![],antonyms:vec![]}]})}))
         .route("/geocode",get(|RawQuery(query):RawQuery|async move{assert!(query.unwrap().contains("name=Synthetic%20%26%20town"));Json(json!({"results":[{"name":"Synthetic east","latitude":10,"longitude":20,"timezone":"UTC"},{"name":"Synthetic west","latitude":11,"longitude":21,"timezone":"UTC"}]}))}))
         .route("/weather",get(move|RawQuery(query):RawQuery|{let calls=weather_calls.clone();async move{calls.fetch_add(1,Ordering::SeqCst);let query=query.unwrap();assert!(query.contains("timezone=UTC"));assert!(query.contains("wind_speed_unit=ms"));Json(forecast())}}));
@@ -331,4 +332,12 @@ fn provider_consent_and_quotas_survive_restart_and_failed_commits() {
         }),
         Err(StoreError::Invalid(_))
     ));
+}
+#[test]
+fn user_agent_names_the_public_origin() {
+    assert_eq!(user_agent(None), "Sigil/experimental-v0");
+    assert_eq!(
+        user_agent(Some("https://chat.example")),
+        "Sigil/experimental-v0 (+https://chat.example)"
+    );
 }

@@ -6,6 +6,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import org.junit.Rule
 import org.junit.Test
@@ -33,64 +40,126 @@ class UtilityPresentationTest {
         ui.onNode(hasText(body)).assertHasNoClickAction()
     }
 
-    @Test fun a_quote_pairs_its_marks_and_leads_the_attribution_with_an_em_dash() {
+    @Test fun a_quote_hangs_one_opening_mark_and_sets_the_attribution_on_its_own_line() {
         utility(UtilityContent("quote",rich=RichText("Simple is better."),secondary=RichText("Sam Example"),details=listOf(RichText("Field notes"))))
-        val quotation=bounds(hasText("Simple is better."))
-        val opening=bounds(hasText("“"))
-        val closing=bounds(hasText("”"))
-        assertTrue(opening.right<=quotation.left,"The opening mark leads the quotation")
-        assertTrue(closing.left>=quotation.right,"The closing mark trails the quotation")
-        val dash=bounds(hasText("—"))
-        val author=bounds(hasText("Sam Example"))
-        assertTrue(dash.right<=author.left,"An em dash introduces the attribution")
-        assertTrue(dash.top>=quotation.top,"The attribution follows the quotation")
-        ui.onNodeWithText("Field notes").assertExists()
-        ui.onNodeWithText("Show all 1").assertDoesNotExist()
+        ui.onNodeWithText("Quote",substring=false).assertDoesNotExist()
+        val card=ui.onNode(hasContentDescription("Quote")).fetchSemanticsNode()
+        val quotation=bounds(hasText("Simple is better."),true)
+        val by=bounds(hasContentDescription("— Sam Example, Field notes"),true)
+        assertTrue(quotation.left-card.boundsInRoot.left>=40f,"The quotation is indented past a hanging margin for the mark")
+        assertEquals(quotation.left,by.left,"Quotation and attribution share one start edge")
+        assertTrue(by.top>=quotation.bottom,"The attribution sits on its own line under the quotation")
+        ui.onNode(hasText("”"),true).assertDoesNotExist()
+        assertTrue(card.config.toString().contains("Simple is better."),"The quotation is read as one merged node")
     }
 
-    @Test fun a_shortcut_joins_text_height_keycaps_with_a_plus() {
-        utility(UtilityContent("keys",details=listOf(RichText("Ctrl"),RichText("Shift"),RichText("P"))))
-        assertEquals(2,ui.onAllNodesWithText("+").fetchSemanticsNodes().size,"Every gap between keys carries one joiner")
-        val first=bounds(hasText("Ctrl"))
-        val last=bounds(hasText("P"))
+    @Test fun the_quote_mark_stays_inside_the_card_and_meets_the_cap_line_at_large_text() {
+        var scale by mutableFloatStateOf(1f)
+        val message=message(MessagePart("u","utility","",utility=UtilityContent("quote",rich=RichText("Simple is better."),secondary=RichText("Sam"))))
+        ui.setContent {val d=LocalDensity.current; CompositionLocalProvider(LocalDensity provides Density(d.density,scale)) {SigilTheme(Appearance(),palette=NativeCore::palette) {Box(Modifier.width(400.dp)) {MessageCards(message,{""},null)}}}}
+        for (s in listOf(1f,1.3f)) {
+            scale=s; ui.waitForIdle()
+            val density=ui.density.density
+            val card=bounds(hasContentDescription("Quote"))
+            val text=bounds(hasText("Simple is better."),true)
+            val pixels=ui.onRoot().captureToImage().toPixelMap()
+            val ground=pixels[card.left.toInt()+1,card.top.toInt()+1]
+            fun inkTop(from:Float,to:Float)=(0 until pixels.height).first {y->(from.toInt() until to.toInt()).any {x->pixels[x,y].let {abs(it.red-ground.red)+abs(it.alpha-ground.alpha)>.2f}}}
+            val mark=inkTop(card.left,text.left-2f)
+            val cap=inkTop(text.left,text.right)
+            assertTrue(mark>=card.top-1f,"At $s the mark stays inside the card's padding")
+            assertTrue(abs(mark-cap)<=3*density,"At $s the mark's top meets the first line's cap line ($mark vs $cap)")
+        }
+    }
+
+    @Test fun a_quote_without_an_author_still_attributes_its_source() {
+        utility(UtilityContent("quote",rich=RichText("Less."),details=listOf(RichText("Volume 01"))))
+        ui.onNode(hasContentDescription("— Volume 01"),true).assertExists()
+    }
+
+    @Test fun a_shortcut_sets_deep_keycaps_with_modifier_glyphs_and_speaks_the_names() {
+        utility(UtilityContent("keys",details=listOf(RichText("cmd"),RichText("Shift"),RichText("p"))))
+        ui.onNodeWithText("Keyboard shortcut",substring=false).assertDoesNotExist()
+        ui.onNode(hasContentDescription("Keyboard shortcut. Command plus Shift plus P")).assertExists()
+        assertEquals(2,ui.onAllNodes(hasText("+"),true).fetchSemanticsNodes().size,"Every gap between keys carries one joiner")
+        val first=bounds(hasText("Cmd"),true)
+        val last=bounds(hasText("P"),true)
         assertTrue(first.right<=last.left,"The keys run left to right on one line")
         assertTrue(last.top<first.bottom,"A shortcut is one row, not a stack")
-        assertTrue(first.height<48f,"A keycap stays close to the height of the text beside it")
     }
 
-    @Test fun a_swatch_is_a_text_height_rectangle_beside_its_value() {
-        utility(UtilityContent("swatch",display="#ff5733",copy="#ff5733",rgba=0xff5733ffL))
-        val chip=bounds(hasContentDescription("Color sample #ff5733"))
-        val value=bounds(hasText("#ff5733"))
-        assertEquals(1,ui.onAllNodesWithText("#ff5733").fetchSemanticsNodes().size,"The value is written once")
-        assertTrue(chip.right<=value.left,"The rectangle leads the value")
-        assertTrue(chip.height<40f && chip.width>chip.height,"The rectangle is a text-height bar, not a slab")
-        assertTrue(abs(chip.center.y-value.center.y)<6f,"The rectangle is centred on the line of text")
+    @Test fun a_long_quote_collapses_behind_show_more() {
+        utility(UtilityContent("quote",rich=RichText(List(40){"words that run on"}.joinToString(" ")),secondary=RichText("Sam")))
+        ui.onNodeWithText("Show more").assertHasClickAction().performClick()
+        ui.onNodeWithText("Show less").assertExists()
     }
 
-    @Test fun a_qr_code_snaps_its_tile_and_carries_its_payload_underneath() {
-        val cells=(0 until 29*29).map {if(it/29 in 4..24 && it%29 in 4..24 && it%2==0)'1' else '0'}.joinToString("")
-        utility(UtilityContent("qr",rich=RichText("Synthetic network"),qr=QrContent("wifi",29,cells,"WIFI:T:WPA;S:Synthetic;P:synthetic-secret;;",RichText("synthetic-secret"),false)))
-        val tile=bounds(hasContentDescription("Scannable QR code"))
-        val payload=bounds(hasText("Synthetic network"))
-        assertEquals(tile.width,tile.height,"The tile is square")
-        assertEquals(0f,tile.width%29f,"The tile is a whole number of modules, so no white margin is left over")
-        assertTrue(tile.bottom<=payload.top,"The payload reads under the code, not as a heading over it")
-        ui.onNodeWithText("Open QR code").assertDoesNotExist()
-        ui.onNodeWithText("Copy Wi-Fi details").assertExists()
+    @Test fun a_short_quote_offers_no_show_more() {
+        utility(UtilityContent("quote",rich=RichText("Short."),secondary=RichText("Sam")))
+        ui.onNodeWithText("Show more").assertDoesNotExist()
     }
 
-    @Test fun a_contact_reads_as_avatar_name_handle_and_message() {
-        val contact=ContactContent("@sam:example.test",RichText("Sam Example"),"01".repeat(32),null)
-        render(message(MessagePart("card","contact","Shared contact",contact=contact)),{_,_->})
-        ui.onNodeWithText("Open contact").assertDoesNotExist()
-        val avatar=bounds(hasContentDescription("Sam Example"))
-        val name=bounds(hasText("Sam Example"))
-        val handle=bounds(hasText("@sam:example.test"))
-        val send=bounds(hasContentDescription("Message shared contact"))
-        assertTrue(avatar.right<=name.left,"The avatar leads the row")
-        assertTrue(handle.top>=name.bottom-2f && abs(handle.left-name.left)<2f,"The handle sits directly under the display name")
-        assertTrue(send.left>=name.right,"Message sits to the right of the name")
+    @Test fun a_shortcut_inside_a_sentence_stays_in_the_line() {
+        render(message(MessagePart("a","text","Press ",rich=RichText("Press ")),MessagePart("k","utility","",utility=UtilityContent("keys",details=listOf(RichText("Ctrl"),RichText("P")))),
+            MessagePart("b","text"," to find it.",rich=RichText(" to find it."))))
+        val press=bounds(hasText("Press"),true)
+        val ctrl=bounds(hasText("Ctrl"),true)
+        val to=bounds(hasText("to"),true)
+        assertTrue(press.right<=ctrl.left && ctrl.right<=to.left,"Words and keycaps run left to right")
+        assertTrue(ctrl.top<press.bottom && to.top<ctrl.bottom,"Text, keys and text share one line, not three blocks")
+        assertTrue(ctrl.height<40f,"An inline keycap is compact")
+        ui.onNode(hasContentDescription("Control plus P")).assertExists()
+        assertEquals(1,keyFlow(listOf(MessagePart("k","utility","",utility=UtilityContent("keys",details=listOf(RichText("Esc")))),MessagePart("t","text",".",rich=RichText(".")))).size,"Closing punctuation stays on the key")
+        val paren=keyFlow(listOf(MessagePart("a","text","Save (",rich=RichText("Save (")),MessagePart("k","utility","",utility=UtilityContent("keys",details=listOf(RichText("S")))),MessagePart("b","text",")",rich=RichText(")"))))
+        assertEquals(listOf(1,3),paren.map { it.size },"Brackets hug the shortcut they enclose")
+    }
+
+    @Test fun menu_copy_gives_the_value_not_the_source() {
+        fun one(value:UtilityContent)=shareCopy(message(MessagePart("u","utility","",utility=value)))
+        assertEquals("#FF5733",one(UtilityContent("swatch",rgba=0xff5733ffL)))
+        assertEquals("#6E84D280",one(UtilityContent("swatch",rgba=0x6e84d280L)))
+        assertEquals("Ctrl+Shift+P",one(UtilityContent("keys",details=listOf(RichText("Ctrl"),RichText("Shift"),RichText("P")))))
+        assertEquals("Less.\n— Sam, Notes",one(UtilityContent("quote",rich=RichText("Less."),secondary=RichText("Sam"),details=listOf(RichText("Notes")))))
+        assertEquals("Press Ctrl+P.",shareCopy(message(MessagePart("a","text","Press",rich=RichText("Press")),MessagePart("k","utility","",utility=UtilityContent("keys",details=listOf(RichText("Ctrl"),RichText("P")))),MessagePart("b","text",".",rich=RichText(".")))))
+        assertNull(shareCopy(message(MessagePart("t","text","Hello",rich=RichText("Hello")))),"Ordinary text keeps the message copy")
+    }
+
+    @Test fun key_faces_name_modifiers_for_every_platform() {
+        assertNotEquals(keyFace("Backspace").glyph,keyFace("Left").glyph,"Backspace is not drawn as a left arrow")
+        assertEquals(KeyFace(null,"Ctrl","Control"),keyFace("ctrl"),"A PC Ctrl key prints only its name")
+        assertEquals("keyboard_control_key",keyFace("ctrl",mac=true).glyph,"A Mac combination carries the ⌃ legend")
+        assertTrue(macCombo(listOf("Cmd","Ctrl","Q")))
+        assertEquals("Keyboard shortcut. Control plus Shift plus P",keysSpoken(listOf("Ctrl","Shift","P")))
+        assertEquals(KeyFace("keyboard_option_key","Option","Option"),keyFace("opt"))
+        assertEquals(KeyFace(null,"Esc","Escape"),keyFace("Escape"))
+        assertEquals(KeyFace("arrow_upward","","Up arrow"),keyFace("Up"))
+        assertEquals("K",keyFace(" k ").word)
+        assertEquals("F12",keyFace("F12").word)
+    }
+
+    @Test fun a_swatch_is_an_opaque_rounded_rectangle_over_its_value() {
+        utility(UtilityContent("swatch",display="#6e84d280",copy="#6e84d280",rgba=0x6e84d280L))
+        val card=ui.onNode(hasContentDescription("Color #6E84D2, blue, 50% opacity"))
+        card.assertExists()
+        val tile=card.fetchSemanticsNode().boundsInRoot
+        assertTrue(tile.width>=200f && tile.height>=120f,"One swatch is a generous sample, not a text-height chip")
+        assertEquals("#FF5733",swatchHex(0xff5733ffL))
+        assertNull(swatchOpacity(0xff5733ffL),"An opaque colour says nothing about opacity")
+        assertEquals(50,swatchOpacity(0x6e84d280L))
+        assertEquals(1f,swatchColor(0x6e84d280L).alpha,"The sample is drawn opaque, never see-through")
+        assertEquals("white",swatchName(0xffffffffL))
+        assertEquals("orange",swatchName(0xff5733ffL))
+    }
+
+    @Test fun consecutive_swatches_form_one_palette_row() {
+        val sw={c:Long->MessagePart("s$c","utility","",utility=UtilityContent("swatch",rgba=c))}
+        render(message(sw(0xff5733ffL),MessagePart("t","text"," "),sw(0x2e7d32ffL),sw(0x6e84d2ffL)))
+        val a=bounds(hasContentDescription("Color #FF5733",substring=true))
+        val b=bounds(hasContentDescription("Color #2E7D32",substring=true))
+        val c=bounds(hasContentDescription("Color #6E84D2",substring=true))
+        assertEquals(a.top,b.top,"Swatches sit side by side")
+        assertEquals(b.top,c.top)
+        assertTrue(a.right<b.left && b.right<c.left)
     }
 
     @Test fun a_vcard_lists_each_field_with_a_type_label_and_a_quiet_copy() {

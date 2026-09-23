@@ -86,6 +86,51 @@ fn shared_contact_action_binds_the_account_without_sending_a_request_or_acceptin
     }
 }
 #[test]
+fn contact_qr_card_opens_the_bound_account_and_refuses_a_replaced_key() {
+    use sigil_protocol::text::{
+        structured::{Card, Construct},
+        utility::{Qr, Utility},
+    };
+    let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();
+    alice.publish_device_binding_online().unwrap();
+    bob.publish_device_binding_online().unwrap();
+    let author = alice.account_reference().unwrap();
+    for (number, identity) in [(81u8, [7; 32]), (82, bob.account_reference().unwrap())] {
+        let card = Card {
+            id: [number; 32],
+            creator: author,
+            created_at: now,
+            content: Construct::Utility(Utility::Qr(Qr::Contact {
+                address: "@bob:chat.example".into(),
+                identity,
+            })),
+        };
+        let body = Body::Rich(card.to_bytes().unwrap());
+        let post = Action::Post {
+            body,
+            reply: None,
+            thread: None,
+            expires_at: None,
+            view_once: false,
+        };
+        alice
+            .mobile_action("self", &transport::hex(&card.id), now, post)
+            .unwrap();
+        let target = Reference {
+            author,
+            message: card.id,
+        };
+        let result = alice.mobile_open_contact_card("self", target, card.id);
+        if number == 81 {
+            assert!(matches!(result, Err(Error::SharedContactChanged)));
+        } else {
+            assert!(result.unwrap()["open"].as_str().unwrap().starts_with("dm:"));
+        }
+    }
+    assert_eq!(count(&server, "contact_requests"), 0);
+}
+#[test]
 fn directory_contacts_require_acceptance_and_preserve_trust_after_restart() {
     let (dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
     let server = rusqlite::Connection::open(dir.path().join("server.db")).unwrap();

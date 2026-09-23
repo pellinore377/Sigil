@@ -172,7 +172,7 @@ private fun WireObject.serviceContent(): org.sigil.ServiceContent? = optJSONObje
     fun WireObject.texts(name: String) = getJSONArray(name).let { a -> (0 until a.length()).map { a.getJSONObject(it).richValue() } }
     fun <T> rows(name: String, read: (WireObject)->T) = s.optJSONArray(name)?.let { a -> (0 until a.length()).map { read(a.getJSONObject(it)) } }.orEmpty()
     fun condition(c: WireObject) = org.sigil.WeatherConditions(c.getString("date"),c.optString("key"),c.strings("temperature"),if(c.isNull("feels_like"))null else c.strings("feels_like"),
-        c.getJSONObject("description").richValue(),c.getString("icon"),c.string("rain"),c.string("chance"),c.strings("wind"),c.string("humidity"),c.string("uv"))
+        c.getJSONObject("description").richValue(),c.getString("icon"),c.string("rain"),c.string("chance"),c.strings("wind"),c.string("humidity"),c.string("uv"),c.optLong("at"))
     org.sigil.ServiceContent(s.getString("kind"),s.getJSONObject("title").richValue(),s.getJSONObject("attribution").richValue(),s.getString("stamp"),s.string("source"),s.optString("language"),s.string("copy"),
         s.optJSONObject("original")?.richValue(),s.optJSONObject("pronunciation")?.richValue(),s.string("audio"),rows("senses") { d ->
             org.sigil.DefinitionSense(d.getJSONObject("part").richValue(),d.getJSONObject("definition").richValue(),d.optJSONObject("example")?.richValue(),d.optJSONObject("etymology")?.richValue(),d.texts("synonyms"),d.texts("antonyms"),d.string("copy"))
