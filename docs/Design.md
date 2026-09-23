@@ -104,10 +104,12 @@ The mark and the word Sigil above one tonal card that refills as the steps go by
 
 1. **Server**: the address field and a status line with a dot once the server answers, naming what it offers.
 2. **Sign in**: only what the server offers. One method ends the card in a single primary key; several become rows with a squircle key, a title and a line saying what the method means.
-3. **Refilled**: the server line becomes the card's header with Change, and the card holds the password fields, the invitation code, or the name step with its verified line. The foot offers the other ways in.
-4. **Before you begin**: once, after the first sign-in, a card of what contacts may see with the real read receipt, typing, activity and message request switches, then Start messaging.
+3. **Refilled**: the server line becomes the card's header with Change, and the card holds the password fields, the invitation code, or the name step with its verified line. The foot offers the other ways in. While single sign-on is open elsewhere, the card holds one quiet waiting line; the foot offers Open sign-in again and Cancel.
+4. **Welcome back**: only after signing in to an account that already has devices. The address, one line, and Recover with passkey as the key; the foot offers Use a recovery code, Link from another device instead, and Start over with a new identity, which asks first because contacts must accept the new identity and old devices are signed out. Without passkeys on this platform the recovery code is the key.
+5. **Protect your account**: once, for a new account without a passkey. Create passkey as the key, Not now at the foot.
+6. **Before you begin**: once, after the first sign-in, a card of what contacts may see with the real read receipt, typing, activity and message request switches, then Start messaging.
 
-Link to an existing device and Recover a lost account sit at the foot of the first card. About carries a tap-through preview of the flow with made-up state.
+The first card's foot carries only the link action, which needs no server: a device with a camera scans the other device's code (Link from another device); the web shows its own (Link from your phone). Recovery never appears before sign-in. Settings keeps Account recovery (passkeys, Add a passkey, Show recovery code); linking a new device from Devices offers Show a code or Scan its code. About carries a tap-through preview of the flow with made-up state.
 
 ## Inbox, notes and settings
 

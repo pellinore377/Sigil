@@ -31,6 +31,16 @@ import sigil.shared.generated.resources.sigil_mark
     }
 }
 
+// Fields sit quietly on the card: a tonal fill, no outline.
+@Composable internal fun quietFieldColors(): TextFieldColors {
+    val scheme = MaterialTheme.colorScheme
+    val none = androidx.compose.ui.graphics.Color.Transparent
+    return TextFieldDefaults.colors(focusedContainerColor = scheme.onSurface.copy(alpha = .06f), unfocusedContainerColor = scheme.onSurface.copy(alpha = .06f), disabledContainerColor = scheme.onSurface.copy(alpha = .04f),
+        focusedIndicatorColor = none, unfocusedIndicatorColor = none, disabledIndicatorColor = none)
+}
+
+@Composable internal fun OnboardingTitle(text: String) = Text(text, style = MaterialTheme.typography.headlineSmall)
+
 // A status line with a small dot: the server found, a name available, a device recognised.
 @Composable internal fun OnboardingStatus(text: String, ok: Boolean = true, trailing: (@Composable () -> Unit)? = null) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -52,6 +62,16 @@ import sigil.shared.generated.resources.sigil_mark
     }
 }
 
+// Once, for a new account without a passkey: a way back in on a new phone or computer.
+@Composable internal fun ProtectAccount(state: MessengerState, command: Command, done: () -> Unit) {
+    OnboardingCard(foot = { SigilTextButton(done, enabled = !state.busy) { Text("Not now") } }) {
+        OnboardingTitle("Protect your account")
+        Text("Create a passkey so you can get your conversations back on a new phone or computer.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        state.issue?.let { OnboardingStatus(it, ok = false) }
+        SigilButton({ command("passkey_create", emptyMap()) }, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Create passkey") }
+    }
+}
+
 // The last step: what contacts may see, chosen once here rather than found later in settings.
 @Composable internal fun WelcomePermissions(state: MessengerState, command: Command, done: () -> Unit) {
     OnboardingCard(foot = { SigilButton(done, Modifier.fillMaxWidth(), enabled = !state.busy) { Text("Start messaging") } }) {
@@ -68,17 +88,24 @@ import sigil.shared.generated.resources.sigil_mark
 // The whole flow with made-up state, for looking at, reachable from About: every screen in turn, nothing sent anywhere.
 @Composable internal fun OnboardingPreview(close: () -> Unit) {
     var step by remember { mutableIntStateOf(0) }
-    val server = "avalon.watchtower.example"
-    val steps = listOf("Server", "Server found, SSO only", "All methods", "Password", "Invitation", "Your name", "Before you begin")
+    val server = "chat.example.org"
+    val methods = LoginMethods(server, sso = true, password = true, invitation = true)
+    val steps = listOf("Server", "Server found, SSO only", "All methods", "Password", "Invitation", "Waiting for SSO", "Your name", "Welcome back", "Recovery code", "Protect your account", "Before you begin")
     Box(Modifier.fillMaxSize().background(LocalGlobalBackground.current)) {
-        when (step) {
-            0 -> SignIn(MessengerState(phase = "new", loginAddress = "", ui = emptyMap()), { _, _ -> })
-            1 -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = LoginMethods(server, sso = true, password = false, invitation = false)), { _, _ -> })
-            2 -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = LoginMethods(server, sso = true, password = true, invitation = true)), { _, _ -> })
-            3 -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = LoginMethods(server, sso = true, password = true, invitation = true)), { _, _ -> }, initialMethod = "password")
-            4 -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = LoginMethods(server, sso = true, password = true, invitation = true)), { _, _ -> }, initialMethod = "invitation")
-            5 -> SignIn(MessengerState(phase = "username", loginAddress = server, loginMethods = LoginMethods(server, sso = true, password = true, invitation = true)), { _, _ -> })
-            else -> WelcomePermissions(MessengerState(phase = "connected", readReceipts = true, typingIndicators = true, presenceSharing = false, allowRequests = true), { _, _ -> }) {}
+        CompositionLocalProvider(LocalClientFeatures provides LocalClientFeatures.current.copy(passkeys = true)) {
+            when (steps[step]) {
+                "Server" -> SignIn(MessengerState(phase = "new", loginAddress = "", ui = emptyMap()), { _, _ -> })
+                "Server found, SSO only" -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = LoginMethods(server, sso = true, password = false, invitation = false)), { _, _ -> })
+                "All methods" -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = methods), { _, _ -> })
+                "Password" -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = methods), { _, _ -> }, initialMethod = "password")
+                "Invitation" -> SignIn(MessengerState(phase = "new", loginAddress = server, loginMethods = methods), { _, _ -> }, initialMethod = "invitation")
+                "Waiting for SSO" -> SignIn(MessengerState(phase = "oidc", loginAddress = server, loginMethods = methods), { _, _ -> })
+                "Your name" -> SignIn(MessengerState(phase = "username", loginAddress = server, loginMethods = methods), { _, _ -> })
+                "Welcome back" -> SignIn(MessengerState(phase = "recover", loginAddress = server, recoverAddress = "@sam:$server", recoverPasskeys = 1), { _, _ -> })
+                "Recovery code" -> SignIn(MessengerState(phase = "recover", loginAddress = server, recoverAddress = "@sam:$server", recoverPasskeys = 1), { _, _ -> }, initialMethod = "code")
+                "Protect your account" -> ProtectAccount(MessengerState(phase = "connected", accountRecovery = AccountRecovery(emptyList(), true)), { _, _ -> }) {}
+                else -> WelcomePermissions(MessengerState(phase = "connected", readReceipts = true, typingIndicators = true, presenceSharing = false, allowRequests = true), { _, _ -> }) {}
+            }
         }
         // The preview's own controls: step name, back and next, and a way out.
         Row(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp).clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = .94f)).padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
