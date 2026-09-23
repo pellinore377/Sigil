@@ -6,6 +6,8 @@ const MAX_COMMAND: usize = 131072;
 use std::{cell::RefCell, time::Duration};
 use wasm_bindgen::{prelude::*, JsCast};
 mod auth;
+mod passkey;
+mod passkey_codec;
 mod camera;
 mod location;
 mod call;
