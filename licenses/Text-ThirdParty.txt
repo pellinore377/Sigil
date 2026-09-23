@@ -8,7 +8,13 @@ below. Existing serde/JSON, bitflags, memchr and proc-macro dependency notices
 are in Server-ThirdParty.txt; distribute those files together. No native parser
 or native rendering library is added by this package. qrcode 0.14.1 uses its MIT
 option with all default features disabled; it has no transitive dependencies.
-getrandom 0.4.3 is covered by Crypto-ThirdParty.txt.
+getrandom 0.4.3 is covered by Crypto-ThirdParty.txt. ttf-parser 0.25.1 uses its
+MIT option with only the std and opentype-layout features; it has no transitive
+dependencies. The bundled STIX Two Math font is under the SIL Open Font License
+1.1 in STIXTwoMath.txt. It is STIX Two Math 2.13 subset with fontTools pyftsubset
+(Latin, Greek, Cyrillic, symbols and math alphanumerics; hinting, GSUB, GPOS, GDEF
+and DSIG dropped; MATH and name tables kept). The subset stays under the OFL and
+does not use the Reserved Font Name.
 
 pulldown-cmark-0.13.4/LICENSE
 
@@ -336,3 +342,26 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+ttf-parser-0.25.1/LICENSE-MIT
+
+Copyright (c) 2018 Yevhenii Reizner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+

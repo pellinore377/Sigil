@@ -42,6 +42,9 @@ private val DiagramNodeWidth = 120.dp
 private val DiagramNodeGap = 12.dp
 private val DiagramCell = 88.dp
 private val DiagramCorner = 8.dp
+private val DiagramMarkRadius = 7.dp
+// Space above the initial state for its dot and entry arrow, and below a final state for its exit.
+private val DiagramMarkSpace = 32.dp
 
 private fun DiagramContent.descendants(node: Int): Set<Int> {
     val seen = mutableSetOf<Int>()
@@ -58,7 +61,9 @@ internal fun DiagramContent.summary(): String = buildString {
     fun name(i: Int) = nodes.getOrNull(i)?.label?.text.orEmpty()
     when (kind) {
         "timeline" -> entries.forEach { append(". ").append(it.date.text).append(": ").append(it.label.text) }
-        "org", "mindmap" -> edges.groupBy { it.from }.forEach { (from, out) -> append(". ").append(name(from)).append(": ").append(out.joinToString(", ") { name(it.to) }) }
+        "mindmap" -> { val tree = mindTree(); append(". ").append(topicDescription(tree, tree.root))
+            tree.reading().filter { tree.children[it].isNotEmpty() }.forEach { n -> append(". ").append(name(n)).append(": ").append(tree.children[n].joinToString(", ") { name(it) }) } }
+        "org" -> edges.groupBy { it.from }.forEach { (from, out) -> append(". ").append(name(from)).append(": ").append(out.joinToString(", ") { name(it.to) }) }
         else -> edges.forEach { edge ->
             append(". ").append(name(edge.from)).append(" to ").append(name(edge.to))
             if (edge.label.text.isNotBlank()) append(if (kind == "sequence") ": " else ", ").append(edge.label.text)
@@ -119,40 +124,57 @@ private fun roundedPolyline(points: List<Offset>, radius: Float, sharp: Set<Int>
     lineTo(points.last().x, points.last().y)
 }
 
-// Sharp corners are junctions shared with a sibling connector, kept square so they read as a tee.
-internal data class DiagramStroke(val points: List<Offset>, val arrow: Boolean, val dashed: Boolean, val step: Int, val sharp: Set<Int> = emptySet())
+// Sharp corners are junctions shared with a sibling connector, kept square so they read as a tee; an arc's four points are Bézier controls.
+internal data class DiagramStroke(val points: List<Offset>, val arrow: Boolean, val dashed: Boolean, val step: Int, val sharp: Set<Int> = emptySet(),
+    val arc: Boolean = false, val corner: Dp = DiagramCorner, val color: Color = Color.Unspecified, val width: Dp = 1.5.dp)
+
+// A state or pseudo-state marker: the initial dot, or the final bullseye.
+internal data class DiagramMark(val center: Offset, val final: Boolean, val step: Int)
 
 // Connector geometry settled in layout and read by the same frame's draw, so lines never lag their tiles.
 private class DiagramInk {
     var strokes = emptyList<DiagramStroke>(); private set
     var lifelines = emptyList<Pair<Offset, Offset>>(); private set
+    var marks = emptyList<DiagramMark>(); private set
     val tick = mutableIntStateOf(0)
-    fun set(strokes: List<DiagramStroke>, lifelines: List<Pair<Offset, Offset>> = emptyList()) {
-        if (strokes == this.strokes && lifelines == this.lifelines) return
+    fun set(strokes: List<DiagramStroke>, lifelines: List<Pair<Offset, Offset>> = emptyList(), marks: List<DiagramMark> = emptyList()) {
+        if (strokes == this.strokes && lifelines == this.lifelines && marks == this.marks) return
         val redraw = this.strokes.isNotEmpty() || this.lifelines.isNotEmpty()
-        this.strokes = strokes; this.lifelines = lifelines
+        this.strokes = strokes; this.lifelines = lifelines; this.marks = marks
         if (redraw) Snapshot.withoutReadObservation { tick.intValue++ }
     }
 }
 
 // Draws each connector trimmed to its reveal, with a filled head once the line lands.
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawStrokes(strokes: List<DiagramStroke>, color: Color, elapsed: Float) {
-    val width = 1.5.dp.toPx(); val head = 7.dp.toPx(); val half = 3.5.dp.toPx()
+    val head = 7.dp.toPx(); val half = 3.5.dp.toPx()
     val dash = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx()))
     val measure = PathMeasure()
     for (stroke in strokes) {
         val t = diagramReveal(elapsed, stroke.step)
         if (t <= 0f || stroke.points.size < 2) continue
+        val tint = stroke.color.takeOrElse { color }
         val end = stroke.points.last(); val from = stroke.points[stroke.points.lastIndex - 1]
         val direction = (end - from) / (end - from).getDistance().coerceAtLeast(.001f)
         val trimmed = if (stroke.arrow) stroke.points.dropLast(1) + (end - direction * (head - 1f)) else stroke.points
-        var path = roundedPolyline(trimmed, DiagramCorner.toPx(), stroke.sharp)
+        var path = if (stroke.arc && trimmed.size == 4) Path().apply { moveTo(trimmed[0].x, trimmed[0].y); cubicTo(trimmed[1].x, trimmed[1].y, trimmed[2].x, trimmed[2].y, trimmed[3].x, trimmed[3].y) }
+            else roundedPolyline(trimmed, stroke.corner.toPx(), stroke.sharp)
         if (t < 1f) { measure.setPath(path, false); path = Path().also { measure.getSegment(0f, measure.length * t, it, true) } }
-        drawPath(path, color, style = Stroke(width, cap = StrokeCap.Round, join = StrokeJoin.Round, pathEffect = if (stroke.dashed) dash else null))
+        drawPath(path, tint, style = Stroke(stroke.width.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round, pathEffect = if (stroke.dashed) dash else null))
         if (stroke.arrow && t > .85f) {
             val normal = Offset(-direction.y, direction.x); val base = end - direction * head
-            drawPath(Path().apply { moveTo(end.x, end.y); lineTo(base.x + normal.x * half, base.y + normal.y * half); lineTo(base.x - normal.x * half, base.y - normal.y * half); close() }, color, alpha = ((t - .85f) / .15f).coerceIn(0f, 1f))
+            drawPath(Path().apply { moveTo(end.x, end.y); lineTo(base.x + normal.x * half, base.y + normal.y * half); lineTo(base.x - normal.x * half, base.y - normal.y * half); close() }, tint, alpha = ((t - .85f) / .15f).coerceIn(0f, 1f))
         }
+    }
+}
+
+// The initial state is a filled ink dot; a final state's exit lands on a ringed dot.
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMarks(marks: List<DiagramMark>, ink: Color, elapsed: Float) {
+    for (mark in marks) {
+        val t = diagramReveal(elapsed, mark.step)
+        if (t <= 0f) continue
+        if (mark.final) { drawCircle(ink, DiagramMarkRadius.toPx() * t, mark.center, style = Stroke(1.5.dp.toPx())); drawCircle(ink, 4.dp.toPx() * t, mark.center) }
+        else drawCircle(ink, 5.dp.toPx() * t, mark.center)
     }
 }
 
@@ -166,7 +188,7 @@ internal fun DiagramCard(diagram: DiagramContent) {
         BoxWithConstraints(Modifier.fillMaxWidth()) { val width = maxWidth; Column {
             when (diagram.kind) {
                 "timeline" -> DiagramTimeline(diagram, elapsed)
-                "mindmap" -> DiagramBranches(diagram, elapsed)
+                "mindmap" -> DiagramMindMap(diagram, elapsed)
                 "sequence" -> if (diagram.nodes.size in 1..4 && width / diagram.nodes.size >= 72.dp) DiagramSequence(diagram, elapsed) else DiagramTransitions(diagram, elapsed)
                 else -> {
                     val plan = rememberLayerPlan(diagram, width)
@@ -244,7 +266,11 @@ private fun rememberLayerPlan(diagram: DiagramContent, width: Dp): LayerPlan? {
     return remember(diagram, width, style, density) { diagram.layerPlan(width) { with(density) { measurer.measure(it.text, style).size.width.toDp() } } }
 }
 
-internal class LayerGeometry(val height: Int, val tiles: List<Rect>, val chips: Map<Int, Rect>, val strokes: List<DiagramStroke>)
+internal class LayerGeometry(val height: Int, val tiles: List<Rect>, val chips: Map<Int, Rect>, val strokes: List<DiagramStroke>, val marks: List<DiagramMark> = emptyList())
+
+// A state machine enters at its first source-less state, else its first state; it ends at states with no way out.
+internal fun DiagramContent.initialState() = if (kind != "state") null else nodes.indices.firstOrNull { n -> edges.none { it.to == n } } ?: 0
+internal fun DiagramContent.finalStates() = if (kind != "state") emptyList() else nodes.indices.filter { n -> edges.none { it.from == n } }
 
 // Places tiles, connectors and their labels in pixels; null when a label or bus would be misread as another's.
 internal fun Density.layerGeometry(diagram: DiagramContent, plan: LayerPlan, width: Int, tiles: List<IntSize>, chips: Map<Int, IntSize>): LayerGeometry? {
@@ -261,15 +287,20 @@ internal fun Density.layerGeometry(diagram: DiagramContent, plan: LayerPlan, wid
     val upper = IntArray(levels); val lower = IntArray(levels)
     band.filter { it in chips }.forEach { i -> val k = graph.level[edges[i].from]; val h = chips.getValue(i).height; if (i in onSource) upper[k] = max(upper[k], h) else lower[k] = max(lower[k], h) }
     val tops = IntArray(levels); val heights = IntArray(levels); val buses = IntArray(levels)
-    var y = 0
+    val initial = diagram.initialState()?.takeIf { graph.level[it] == 0 }
+    val finals = diagram.finalStates()
+    val space = DiagramMarkSpace.roundToPx()
+    // Any row holding a final state keeps room beneath it for the bullseye, above that row's bus.
+    val marked = IntArray(levels).also { m -> finals.forEach { m[graph.level[it]] = space } }
+    var y = if (initial != null) space else 0
     graph.levels.forEachIndexed { k, row ->
         tops[k] = y; heights[k] = row.maxOf { tiles[it].height }
         val labelled = upper[k] > 0 || lower[k] > 0
         val drop = when { upper[k] > 0 -> upper[k] + 16.dp.roundToPx(); labelled -> 12.dp.roundToPx(); else -> 16.dp.roundToPx() }
-        buses[k] = y + heights[k] + drop
-        y += heights[k] + drop + if (labelled) lower[k] + 20.dp.roundToPx() else 16.dp.roundToPx()
+        buses[k] = y + heights[k] + marked[k] + drop
+        y += heights[k] + marked[k] + drop + if (labelled) lower[k] + 20.dp.roundToPx() else 16.dp.roundToPx()
     }
-    val height = tops.last() + heights.last()
+    val height = tops.last() + heights.last() + marked.last()
     val rects = MutableList(diagram.nodes.size) { Rect.Zero }
     graph.levels.forEachIndexed { k, row ->
         val span = row.sumOf { tiles[it].width } + (row.size - 1) * gap
@@ -284,6 +315,9 @@ internal fun Density.layerGeometry(diagram: DiagramContent, plan: LayerPlan, wid
     }
     val left = rects.minOf { it.left }; val right = rects.maxOf { it.right }
     val arrows = diagram.kind != "org"
+    val state = diagram.kind == "state"
+    // Flows turn square corners; transitions between states bend in soft curves.
+    val corner = if (state) 20.dp else 4.dp
     val lastStep = (levels - 1) * 2 + 1
     val anchors = mutableMapOf<Int, Offset>()
     val strokes = edges.mapIndexed { i, edge ->
@@ -291,10 +325,10 @@ internal fun Density.layerGeometry(diagram: DiagramContent, plan: LayerPlan, wid
         val lane = laneOf[i]
         if (lane == null) {
             val bus = buses[graph.level[edge.from]].toFloat()
-            if (i in chips) anchors[i] = if (i in onSource) Offset(from.center.x, (from.bottom + bus) / 2) else Offset(to.center.x, (bus + to.top) / 2)
+            if (i in chips) anchors[i] = if (i in onSource) Offset(from.center.x, (tops[graph.level[edge.from]] + heights[graph.level[edge.from]] + marked[graph.level[edge.from]] + bus) / 2) else Offset(to.center.x, (bus + to.top) / 2)
             if (abs(from.center.x - to.center.x) < 1f) DiagramStroke(listOf(Offset(from.center.x, from.bottom), Offset(to.center.x, to.top)), arrows, edge.dashed, graph.level[edge.to] * 2 - 1)
             else DiagramStroke(listOf(Offset(from.center.x, from.bottom), Offset(from.center.x, bus), Offset(to.center.x, bus), Offset(to.center.x, to.top)), arrows, edge.dashed,
-                graph.level[edge.to] * 2 - 1, setOfNotNull(1.takeIf { out[edge.from] > 1 }, 2.takeIf { into[edge.to] > 1 }))
+                graph.level[edge.to] * 2 - 1, setOfNotNull(1.takeIf { out[edge.from] > 1 }, 2.takeIf { into[edge.to] > 1 }), corner = corner)
         } else {
             val offset = plan.offsets.getValue(lane.right to lane.index).toPx()
             val x = if (lane.right) right + offset else left - offset
@@ -302,9 +336,19 @@ internal fun Density.layerGeometry(diagram: DiagramContent, plan: LayerPlan, wid
             val loop = edge.from == edge.to
             val fromY = if (loop) from.center.y - 8.dp.toPx() else from.center.y; val toY = if (loop) to.center.y + 8.dp.toPx() else to.center.y
             if (i in chips) anchors[i] = Offset(x, (fromY + toY) / 2)
-            DiagramStroke(listOf(Offset(fromX, fromY), Offset(x, fromY), Offset(x, toY), Offset(toX, toY)), true, edge.dashed, lastStep + 1)
+            // A state's return or self-transition is one arc whose apex meets the lane, so its label still sits on it.
+            // A self-transition is a round loop tall enough to show above and below its label.
+            if (state && loop) { val a = from.center.y - 14.dp.toPx(); val b = from.center.y + 14.dp.toPx(); val c = fromX + (x - fromX) * 4 / 3; val k = 10.dp.toPx()
+                DiagramStroke(listOf(Offset(fromX, a), Offset(c, a - k), Offset(c, b + k), Offset(fromX, b)), true, edge.dashed, lastStep + 1, arc = true) }
+            else if (state) DiagramStroke(listOf(Offset(fromX, fromY), Offset(fromX + (x - fromX) * 4 / 3, fromY), Offset(toX + (x - toX) * 4 / 3, toY), Offset(toX, toY)), true, edge.dashed, lastStep + 1, arc = true)
+            else DiagramStroke(listOf(Offset(fromX, fromY), Offset(x, fromY), Offset(x, toY), Offset(toX, toY)), true, edge.dashed, lastStep + 1, corner = corner)
         }
     }
+    val marks = mutableListOf<DiagramMark>(); val entries = mutableListOf<DiagramStroke>()
+    initial?.let { n -> val tile = rects[n]; val dot = Offset(tile.center.x, tile.top - space + 7.dp.toPx())
+        marks += DiagramMark(dot, false, 0); entries += DiagramStroke(listOf(dot + Offset(0f, 5.dp.toPx()), Offset(tile.center.x, tile.top)), true, false, 0) }
+    finals.forEach { n -> val tile = rects[n]; val ring = Offset(tile.center.x, tile.bottom + space - DiagramMarkRadius.toPx() - 1.dp.toPx())
+        marks += DiagramMark(ring, true, lastStep + 1); entries += DiagramStroke(listOf(Offset(tile.center.x, tile.bottom), ring - Offset(0f, DiagramMarkRadius.toPx() + 1.dp.toPx())), true, false, lastStep) }
     val placed = anchors.mapValues { (i, c) ->
         val size = chips.getValue(i)
         Rect(Offset((c.x - size.width / 2f).roundToInt().coerceIn(0, max(0, width - size.width)).toFloat(), (c.y - size.height / 2f).roundToInt().toFloat()), Size(size.width.toFloat(), size.height.toFloat()))
@@ -316,7 +360,7 @@ internal fun Density.layerGeometry(diagram: DiagramContent, plan: LayerPlan, wid
     for ((i, rect) in placed) for (j in band) if (j != i) strokes[j].points.zipWithNext().forEach { (p, q) ->
         if (abs(p.x - q.x) < 1f && abs(p.x - anchors.getValue(i).x) >= 1f && p.x > rect.left - margin && p.x < rect.right + margin && max(p.y, q.y) > rect.top && min(p.y, q.y) < rect.bottom) return null
     }
-    return LayerGeometry(height, rects, placed, strokes)
+    return LayerGeometry(height, rects, placed, strokes + entries, marks)
 }
 
 // Org charts, flows and state machines: tonal tiles in rows, elbows between rows, loops in side lanes.
@@ -335,7 +379,7 @@ private fun DiagramLayers(diagram: DiagramContent, plan: LayerPlan, elapsed: () 
     Layout(content = {
         diagram.nodes.forEach { DiagramTile(it, diagram.kind, fill) }
         labeled.forEach { DiagramChip(diagram.edges[it].label, ground) }
-    }, modifier = Modifier.fillMaxWidth().drawBehind { drawn.tick.intValue; drawStrokes(drawn.strokes, line, elapsed()) }) { measurables, constraints ->
+    }, modifier = Modifier.fillMaxWidth().drawBehind { drawn.tick.intValue; drawStrokes(drawn.strokes, line, elapsed()); drawMarks(drawn.marks, ink, elapsed()) }) { measurables, constraints ->
         val width = constraints.maxWidth
         val gap = DiagramNodeGap.roundToPx()
         val per = graph.levels.maxOf { it.size }
@@ -347,7 +391,7 @@ private fun DiagramLayers(diagram: DiagramContent, plan: LayerPlan, elapsed: () 
         val chips = measurables.drop(diagram.nodes.size).map { it.measure(Constraints(maxWidth = min(160.dp.roundToPx(), width))) }
         val geometry = layerGeometry(diagram, plan, width, tiles.map { IntSize(it.width, it.height) }, labeled.withIndex().associate { (k, edge) -> edge to IntSize(chips[k].width, chips[k].height) })
         if (geometry == null) { tangle(); return@Layout layout(width, 0) {} }
-        drawn.set(geometry.strokes)
+        drawn.set(geometry.strokes, marks = geometry.marks)
         layout(width, geometry.height) {
             tiles.forEachIndexed { n, tile ->
                 val step = graph.level[n] * 2
@@ -366,7 +410,14 @@ private fun DiagramLayers(diagram: DiagramContent, plan: LayerPlan, elapsed: () 
 
 private val DiamondShape = GenericShape { size, _ -> moveTo(size.width / 2, 0f); lineTo(size.width, size.height / 2); lineTo(size.width / 2, size.height); lineTo(0f, size.height / 2); close() }
 
-// Terminals and states are pills, steps are tiles, decisions are diamonds sized so their words sit inside.
+// Terminals are pills, flow steps are square-cornered boxes, states and org roles are rounded tiles, decisions are diamonds sized so their words sit inside.
+internal fun diagramNodeShape(kind: String, shape: String): Shape = when {
+    shape == "decision" -> DiamondShape
+    shape == "rounded" -> RoundedCornerShape(50)
+    kind == "flow" || shape == "process" -> RoundedCornerShape(4.dp)
+    else -> RoundedCornerShape(14.dp)
+}
+
 @Composable
 private fun DiagramTile(node: DiagramNode, kind: String, fill: Color) {
     val style = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center)
@@ -383,8 +434,8 @@ private fun DiagramTile(node: DiagramNode, kind: String, fill: Color) {
         })
         return
     }
-    val pill = node.shape == "rounded" || (kind == "state" && node.shape == "default")
-    Box(Modifier.background(fill, if (pill) RoundedCornerShape(50) else RoundedCornerShape(14.dp)).heightIn(min = 44.dp).padding(horizontal = if (pill) 16.dp else 12.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
+    val pill = node.shape == "rounded"
+    Box(Modifier.background(fill, diagramNodeShape(kind, node.shape)).heightIn(min = 44.dp).padding(horizontal = if (pill) 16.dp else 12.dp, vertical = 10.dp), contentAlignment = Alignment.Center) {
         DiagramText(node.label, style, 3)
     }
 }
@@ -541,6 +592,315 @@ private fun DiagramBranches(diagram: DiagramContent, elapsed: () -> Float) {
     DiagramMore(all.size - shown.size)
 }
 
+internal class MindTree(val root: Int, val parent: IntArray, val depth: IntArray, val order: List<Int>, val family: IntArray, val branches: List<Int>, val children: List<List<Int>>)
+
+// The map's tree: breadth-first from its one root; each node belongs to the family of the first-level branch above it.
+internal fun DiagramContent.mindTree(): MindTree {
+    val children = nodes.indices.map { from -> edges.filter { it.from == from && it.to != from }.map { it.to }.distinct() }
+    val root = nodes.indices.firstOrNull { n -> edges.none { it.to == n } } ?: 0
+    val parent = IntArray(nodes.size) { -1 }; val depth = IntArray(nodes.size) { -1 }; val family = IntArray(nodes.size) { -1 }
+    val order = mutableListOf(root); depth[root] = 0
+    var i = 0
+    while (i < order.size) { val at = order[i++]; children[at].forEach { c -> if (depth[c] < 0) { depth[c] = depth[at] + 1; parent[c] = at; family[c] = if (at == root) c else family[at]; order += c } } }
+    val kept = order.toSet()
+    return MindTree(root, parent, depth, order, family, children[root], children.map { it.filter { c -> parent[c] >= 0 && c in kept } })
+}
+
+// A branch grown away from the root along one axis: its children stack across that axis on the far side, each grown the same way.
+// Positions are top-left corners inside the block, for growth right or down; left and up mirror them.
+private class MindBlock(val main: Float, val cross: Float, val at: Map<Int, Pair<Float, Float>>)
+
+private fun MindTree.grow(n: Int, sideways: Boolean, sizes: List<IntSize>, gap: Float): MindBlock {
+    val a = (if (sideways) sizes[n].width else sizes[n].height).toFloat(); val b = (if (sideways) sizes[n].height else sizes[n].width).toFloat()
+    val kids = children[n].map { grow(it, sideways, sizes, gap) }
+    if (kids.isEmpty()) return MindBlock(a, b, mapOf(n to (0f to 0f)))
+    val stack = kids.sumOf { it.cross.toDouble() }.toFloat() + gap * (kids.size - 1)
+    val cross = max(b, stack); val reach = a + gap * if (sideways) 3f else 2.5f
+    val at = mutableMapOf(n to (0f to (cross - b) / 2))
+    var c = (cross - stack) / 2
+    kids.forEach { k -> k.at.forEach { (m, p) -> at[m] = reach + p.first to c + p.second }; c += k.cross + gap }
+    return MindBlock(reach + kids.maxOf { it.main }, cross, at)
+}
+
+// The reference mind map: the central topic in the middle, branches clockwise above, right, below and left of it, and each branch's topics
+// continuing outward on its far side. Every split of the branches between the four sides is tried; the one that fits the width
+// with the central topic nearest the middle wins. Null marks a topic the card has no room for.
+internal fun MindTree.arrange(sizes: List<IntSize>, width: Int, gap: Float, step: Float = 4f): List<Rect?> {
+    val rootSize = sizes[root]
+    val half = Offset(rootSize.width / 2f, rootSize.height / 2f)
+    val across = branches.map { grow(it, true, sizes, gap) }; val upright = branches.map { grow(it, false, sizes, gap) }
+    fun layout(up: Int, right: Int, down: Int): Map<Int, Rect> {
+        val out = mutableMapOf(root to Rect(-half, half))
+        fun put(block: MindBlock, x: Float, y: Float, sideways: Boolean, flip: Boolean) = block.at.forEach { (n, p) ->
+            val w = sizes[n].width.toFloat(); val h = sizes[n].height.toFloat()
+            var px = if (sideways) p.first else p.second; var py = if (sideways) p.second else p.first
+            if (flip) { if (sideways) px = block.main - px - w else py = block.main - py - h }
+            out[n] = Rect(Offset(x + px, y + py), Size(w, h))
+        }
+        val reach = gap * 3
+        fun column(range: IntRange, leftward: Boolean) {
+            val blocks = range.map { across[it] }.let { if (leftward) it.reversed() else it }
+            var y = -(blocks.sumOf { it.cross.toDouble() }.toFloat() + gap * (blocks.size - 1).coerceAtLeast(0)) / 2
+            blocks.forEach { k -> put(k, if (leftward) -half.x - reach - k.main else half.x + reach, y, true, leftward); y += k.cross + gap }
+        }
+        column(up until up + right, false); column(up + right + down until branches.size, true)
+        val sides = out.values.filter { it != out[root] }
+        fun row(range: IntRange, upward: Boolean) {
+            val blocks = range.map { upright[it] }.let { if (upward) it else it.reversed() }
+            if (blocks.isEmpty()) return
+            val total = blocks.sumOf { it.cross.toDouble() }.toFloat() + gap * (blocks.size - 1)
+            // A row clears the root, and any side column it reaches over.
+            val blocking = sides.filter { it.right > -total / 2 - gap && it.left < total / 2 + gap }
+            val edge = if (upward) min(-half.y, blocking.minOfOrNull { it.top } ?: 0f) - gap * 2.5f else max(half.y, blocking.maxOfOrNull { it.bottom } ?: 0f) + gap * 2.5f
+            var x = -total / 2
+            blocks.forEach { k -> put(k, x, if (upward) edge - k.main else edge, false, upward); x += k.cross + gap }
+        }
+        row(0 until up, true); row(up + right until up + right + down, false)
+        return out
+    }
+    var best: Map<Int, Rect>? = null; var score = Float.MAX_VALUE; var narrowest: Map<Int, Rect>? = null; var least = Float.MAX_VALUE
+    val n = branches.size
+    for (up in 0..n) for (right in 0..n - up) for (down in 0..n - up - right) {
+        val left = n - up - right - down
+        if (n >= 2 && listOf(up, right, down, left).count { it > 0 } < 2) continue
+        val placed = layout(up, right, down)
+        val l = placed.values.minOf { it.left }; val r = placed.values.maxOf { it.right }
+        val t = placed.values.minOf { it.top }; val b = placed.values.maxOf { it.bottom }
+        if (r - l < least) { least = r - l; narrowest = placed }
+        if (r - l > width) continue
+        // The height the card needs with the central topic centred, and a lighter pull toward horizontal balance.
+        val cost = 2 * max(-t, b) + .5f * abs(r + l) + .25f * abs(up - down) * gap
+        if (cost < score) { score = cost; best = placed }
+    }
+    val chosen = best ?: narrowest!!.let { placed ->
+        // Nothing fits: centre the narrowest split and leave out topics past either edge, and whatever hangs from them.
+        val l = placed.values.minOf { it.left }; val r = placed.values.maxOf { it.right }; val mid = (l + r) / 2
+        val kept = placed.filterValues { it.left >= mid - width / 2f && it.right <= mid + width / 2f }.keys
+        placed.filterKeys { k -> generateSequence(k) { parent[it].takeIf { p -> p >= 0 } }.all { it in kept } }
+    }
+    // A map too crowded for any split falls back to the free search when that keeps more topics.
+    if (best == null) search(sizes, width, gap, step).let { free -> if (free.count { it != null } > chosen.size) return free }
+    return sizes.indices.map { chosen[it] }
+}
+
+private fun segmentHits(a: Offset, b: Offset, rect: Rect): Boolean {
+    var t0 = 0f; var t1 = 1f; val d = b - a
+    for ((p, q) in listOf(-d.x to a.x - rect.left, d.x to rect.right - a.x, -d.y to a.y - rect.top, d.y to rect.bottom - a.y)) {
+        if (abs(p) < 1e-6f) { if (q < 0) return false; continue }
+        val r = q / p
+        if (p < 0) t0 = max(t0, r) else t1 = min(t1, r)
+        if (t0 > t1) return false
+    }
+    return true
+}
+
+// Free placement for maps too crowded for the compass in a narrow card: the root at the centre, first-level branches around it by weight,
+// and each child searched outward from its parent until it clears every placed topic and connector inside the width.
+internal fun MindTree.place(sizes: List<IntSize>, width: Int, gap: Float, step: Float, start: Float = -PI.toFloat() / 2, reach: Float = 0f): List<Rect?> {
+    val rects = arrayOfNulls<Rect>(sizes.size)
+    val links = mutableListOf<Triple<Offset, Offset, Int>>()
+    val half = width / 2f
+    fun rect(center: Offset, n: Int) = Rect(center - Offset(sizes[n].width / 2f, sizes[n].height / 2f), Size(sizes[n].width.toFloat(), sizes[n].height.toFloat()))
+    rects[root] = rect(Offset.Zero, root)
+    val weight = IntArray(sizes.size) { 1 }
+    for (n in order.reversed()) if (children[n].isNotEmpty()) weight[n] = children[n].sumOf { weight[it] }
+    val sector = Array(sizes.size) { 0f to 0f }
+    sector[root] = start to start + 2 * PI.toFloat()
+    for (n in order) {
+        val (start, end) = sector[n]; var at = start
+        children[n].forEach { c -> val span = (end - start) * weight[c] / weight[n]; sector[c] = at to at + span; at += span }
+    }
+    val sweep = listOf(0) + (1..9).flatMap { listOf(it * 12, -it * 12) }
+    val wide = sweep + (10..15).flatMap { listOf(it * 12, -it * 12) }
+    for (n in order) {
+        if (n == root) continue
+        val p = parent[n]; val from = rects[p] ?: continue
+        val angle = (sector[n].first + sector[n].second) / 2
+        val origin = rects[root]!!.center
+        var best: Pair<Float, Rect>? = null
+        for (turn in if (p == root) wide else sweep) {
+            val direction = angle + turn * PI.toFloat() / 180
+            val unit = Offset(cos(direction), sin(direction))
+            val clear = min(((from.width + sizes[n].width) / 2 + gap) / abs(unit.x).coerceAtLeast(.001f), ((from.height + sizes[n].height) / 2 + gap) / abs(unit.y).coerceAtLeast(.001f))
+            var d = max(clear + if (p == root) 0f else gap, if (p == root) reach else 0f)
+            while (d < width * 3f) {
+                val center = from.center + unit * d
+                val candidate = rect(center, n)
+                d += step
+                if (candidate.left < -half || candidate.right > half) { if (abs(unit.x) > .2f && (candidate.left < -half) == (unit.x < 0)) break else continue }
+                if (p != root && (center - origin).getDistance() <= (from.center - origin).getDistance()) continue
+                if (rects.withIndex().any { (k, r) -> r != null && r.inflate(if (k != p) gap else if (p == root) gap * 2.5f else gap * 1.5f).overlaps(candidate) }) continue
+                if (rects.withIndex().any { (k, r) -> r != null && k != p && segmentHits(from.center, center, r.inflate(gap / 2)) }) continue
+                if (links.any { (a, b, owner) -> owner != p && segmentHits(a, b, candidate.inflate(gap / 2)) }) continue
+                val cost = d + abs(turn) * step * .9f
+                if (best == null || cost < best.first) best = cost to candidate
+                break
+            }
+        }
+        best?.let { (_, r) -> rects[n] = r; links += Triple(from.center, r.center, p) }
+    }
+    return rects.toList()
+}
+
+// Tries a few turns of the first branch and radii for the first ring until one places every topic, else keeps whichever places most.
+private fun MindTree.search(sizes: List<IntSize>, width: Int, gap: Float, step: Float): List<Rect?> {
+    val quarter = PI.toFloat() / 2
+    var best: List<Rect?>? = null; var score = -1 to 0f
+    for (reach in listOf(0f, gap * 4, gap * 8)) for (start in listOf(-quarter, -quarter * 2 / 3, -quarter / 3, -quarter * 4 / 3)) {
+        val rects = place(sizes, width, gap, step, start, reach)
+        val placed = rects.filterNotNull()
+        val next = placed.size to -(placed.maxOf { it.bottom } - placed.minOf { it.top })
+        if (next.first > score.first || (next.first == score.first && next.second > score.second)) { best = rects; score = next }
+        if (placed.size == order.size) return rects
+    }
+    return best!!
+}
+
+// Rings for maps too big to search: each topic mid-sector on its depth's ring, each ring pushed out until every topic clears its neighbours. Linear in topics.
+internal fun MindTree.radial(sizes: List<IntSize>, gap: Float, start: Float = -PI.toFloat() / 2): List<Rect?> {
+    val weight = IntArray(sizes.size) { 1 }
+    for (n in order.reversed()) if (children[n].isNotEmpty()) weight[n] = children[n].sumOf { weight[it] }
+    val sector = Array(sizes.size) { 0f to 0f }
+    sector[root] = start to start + 2 * PI.toFloat()
+    for (n in order) { val (a, b) = sector[n]; var at = a; children[n].forEach { c -> val span = (b - a) * weight[c] / weight[n]; sector[c] = at to at + span; at += span } }
+    fun angle(n: Int) = (sector[n].first + sector[n].second) / 2
+    // Half the topic's extent along its ray, and its full extent across it.
+    fun along(n: Int, a: Float) = (abs(cos(a)) * sizes[n].width + abs(sin(a)) * sizes[n].height) / 2
+    fun across(n: Int) = abs(sin(angle(n))) * sizes[n].width + abs(cos(angle(n))) * sizes[n].height
+    val rings = order.groupBy { depth[it] }.let { g -> g.keys.sorted().map { g.getValue(it) } }
+    val radius = FloatArray(rings.size)
+    for (k in 1 until rings.size) {
+        val out = rings[k].maxOf { n -> along(parent[n], angle(n)) + along(n, angle(n)) } + gap * 2
+        val room = rings[k].maxOf { n -> (across(n) + gap) / (2 * sin(min(sector[n].second - sector[n].first, PI.toFloat()) / 2).coerceAtLeast(.001f)) }
+        radius[k] = max(radius[k - 1] + out, room)
+    }
+    val rects = arrayOfNulls<Rect>(sizes.size)
+    rings.forEachIndexed { k, ring -> ring.forEach { n -> val c = Offset(cos(angle(n)), sin(angle(n))) * radius[k]
+        rects[n] = Rect(c - Offset(sizes[n].width / 2f, sizes[n].height / 2f), Size(sizes[n].width.toFloat(), sizes[n].height.toFloat())) } }
+    return rects.toList()
+}
+
+// Laid-out maps by content, sizes and width, so a map scrolled back into view or reopened is not searched again.
+private val mindLayouts = LinkedHashMap<Any, List<Rect?>>()
+private fun mindLayout(key: Any, make: () -> List<Rect?>): List<Rect?> =
+    mindLayouts.remove(key)?.also { mindLayouts[key] = it } ?: make().also { mindLayouts[key] = it; if (mindLayouts.size > 32) mindLayouts.remove(mindLayouts.keys.first()) }
+
+// A connector leaves the parent's facing side and lands square on the child's, bending once like a hand-drawn branch.
+internal fun mindLink(from: Rect, to: Rect): List<Offset> {
+    val d = to.center - from.center
+    val sideways = abs(d.x) / ((from.width + to.width) / 2) > abs(d.y) / ((from.height + to.height) / 2)
+    if (sideways) {
+        val s = if (d.x > 0) 1f else -1f
+        val a = Offset(if (s > 0) from.right else from.left, from.center.y); val b = Offset(if (s > 0) to.left else to.right, to.center.y)
+        if ((b.x - a.x) * s > 8f) { val mid = (a.x + b.x) / 2; return listOf(a, Offset(mid, a.y), Offset(mid, b.y), b) }
+    }
+    val s = if (d.y > 0) 1f else -1f
+    val a = Offset(from.center.x, if (s > 0) from.bottom else from.top); val b = Offset(to.center.x, if (s > 0) to.top else to.bottom)
+    val mid = (a.y + b.y) / 2
+    return listOf(a, Offset(a.x, mid), Offset(b.x, mid), b)
+}
+
+// Branch families follow the chart rule, up to four an ink ramp and five or more the named palette, each drawn toward ink until its connector reads at 3:1.
+internal fun mindColors(count: Int, ink: Color, ground: Color) = chartColors(count, ink, ground).map { c ->
+    var t = 0f; var x = c
+    while (chartContrast(x, ground) < 3f && t < 1f) { t += .05f; x = lerp(c, ink, t) }
+    x
+}
+
+@Composable
+private fun mindFamilies(tree: MindTree, ink: Color, ground: Color) = remember(tree, ink, ground) { mindColors(tree.branches.size, ink, ground) }
+
+// Depth-first reading order, so a screen reader hears each branch through before the next.
+internal fun MindTree.reading(): List<Int> = buildList { fun walk(n: Int) { add(n); children[n].forEach(::walk) }; walk(root) }
+
+internal fun DiagramContent.topicDescription(tree: MindTree, n: Int): String = nodes[n].label.text.let { name ->
+    if (n == tree.root) "$name, central topic, ${tree.children[n].size} branches" else "$name, under ${nodes[tree.parent[n]].label.text}" }
+
+private const val MindMapNodes = 16
+
+// A mind map: the central topic in ink, branches radiating in every direction, each branch's topics continuing outward in its colour family.
+// The expanded view passes its viewport width as base: every topic is shown and the map widens until all of them fit.
+@Composable
+private fun DiagramMindMap(diagram: DiagramContent, elapsed: () -> Float, base: Dp? = null, hidden: Set<Int> = emptySet(), focused: Int? = null, focus: ((Int) -> Unit)? = null) {
+    val ink = LocalContentColor.current
+    val ground = groundColor()
+    val tree = remember(diagram) { diagram.mindTree() }
+    val families = mindFamilies(tree, ink, ground)
+    fun hue(n: Int) = tree.branches.indexOf(tree.family[n]).let { if (it < 0) ink else families[it] }
+    val drawn = remember(diagram) { DiagramInk() }
+    val rise = with(LocalDensity.current) { 6.dp.toPx() }
+    val shown = remember(tree, hidden, base) { tree.order.filter { it !in hidden }.let { if (base == null) it.take(MindMapNodes) else it } }
+    val reading = remember(tree) { tree.reading().withIndex().associate { (i, n) -> n to i.toFloat() } }
+    SubcomposeLayout((if (base == null) Modifier.fillMaxWidth() else Modifier.semantics { isTraversalGroup = true }).drawBehind { drawn.tick.intValue; drawStrokes(drawn.strokes, ink, elapsed()) }) { constraints ->
+        val viewport = base?.roundToPx() ?: constraints.maxWidth
+        val tiles = subcompose("nodes") { shown.forEach { n ->
+            val spoken = if (focus == null) Modifier else Modifier.clearAndSetSemantics {
+                contentDescription = diagram.topicDescription(tree, n); traversalIndex = reading[n] ?: 0f; role = Role.Button; selected = focused == n
+                onClick("Focus topic") { focus(n); true }
+            }
+            MindTopic(diagram.nodes[n].label, tree.depth[n], hue(n), ink, ground, focused == n, focus?.let { { it(n) } }, spoken)
+        } }
+            .mapIndexed { i, m -> m.measure(Constraints(maxWidth = min(viewport, (if (tree.depth[shown[i]] == 0) 168.dp else 128.dp).roundToPx()))) }
+        val sizes = MutableList(diagram.nodes.size) { IntSize(1, 1) }
+        shown.forEachIndexed { i, n -> sizes[n] = IntSize(tiles[i].width, tiles[i].height) }
+        val limited = MindTree(tree.root, tree.parent, tree.depth, shown, tree.family, tree.branches, tree.children.map { it.filter { c -> c in shown } })
+        var width = viewport
+        val gap = 12.dp.toPx(); val step = 4.dp.toPx()
+        // The card searches for a compact map; the expanded view does too while it is small, else takes the rings, which always hold every topic.
+        val raw = mindLayout(listOf(diagram, shown, sizes.toList(), viewport, base != null)) {
+            if (base == null) limited.arrange(sizes, viewport, gap, step)
+            else limited.takeIf { shown.size <= MindMapNodes }?.arrange(sizes, viewport, gap, step)?.takeIf { r -> shown.all { r[it] != null } } ?: limited.radial(sizes, gap)
+        }
+        val placed = raw.filterNotNull()
+        val left = placed.minOf { it.left }; val top = placed.minOf { it.top }; val span = placed.maxOf { it.right } - left
+        if (base != null) width = max(viewport, span.roundToInt())
+        val shift = Offset((width - span) / 2 - left, -top)
+        val rects = raw.map { it?.translate(shift) }
+        val height = placed.maxOf { it.bottom } - top
+        drawn.set(shown.filter { it != tree.root && rects[it] != null && rects[tree.parent[it]] != null }.map { n ->
+            DiagramStroke(mindLink(rects[tree.parent[n]]!!, rects[n]!!), true, false, tree.depth[n] * 2 - 1, arc = true,
+                color = hue(n), width = if (tree.depth[n] == 1) 2.5.dp else 1.5.dp)
+        })
+        val missing = diagram.nodes.size - hidden.size - shown.count { rects[it] != null }
+        val more = subcompose("more") { DiagramMore(missing) }.map { it.measure(Constraints(maxWidth = width)) }
+        val body = height.roundToInt()
+        layout(width, body + more.sumOf { it.height }) {
+            shown.forEachIndexed { i, n ->
+                val r = rects[n] ?: return@forEachIndexed
+                tiles[i].placeWithLayer(r.left.roundToInt(), r.top.roundToInt()) {
+                    val t = diagramReveal(elapsed(), tree.depth[n] * 2); alpha = t; translationY = rise * (1f - t); scaleX = .94f + .06f * t; scaleY = scaleX
+                }
+            }
+            more.forEach { it.place(0, body) }
+        }
+    }
+}
+
+@Composable
+private fun MindTopic(label: RichText, depth: Int, hue: Color, ink: Color, ground: Color, selected: Boolean = false, onClick: (() -> Unit)? = null, spoken: Modifier = Modifier) {
+    val center = MaterialTheme.typography.bodyMedium.copy(textAlign = TextAlign.Center)
+    val shape = when (depth) { 0 -> RoundedCornerShape(16.dp); 1 -> RoundedCornerShape(14.dp); else -> RoundedCornerShape(50) }
+    val fill = if (depth == 0) ink else mindFill(ground, hue, ink, if (selected) MindSelectedTint else if (depth == 1) MindBranchTint else MindLeafTint)
+    val tap = if (onClick == null) Modifier else spoken.clip(shape).clickable(role = Role.Button, onClickLabel = "Focus topic", onClick = onClick)
+    Box(tap.background(fill, shape).then(if (selected) Modifier.border(2.dp, ink, shape) else Modifier).heightIn(min = if (depth == 0) 48.dp else 40.dp).padding(horizontal = if (depth == 1) 12.dp else if (depth == 0) 16.dp else 14.dp, vertical = if (depth == 0) 10.dp else 8.dp),
+        contentAlignment = Alignment.Center) {
+        CompositionLocalProvider(LocalContentColor provides if (depth == 0) ground else ink, LocalMessageSurface provides fill) {
+            DiagramText(label, if (depth == 0) MaterialTheme.typography.titleMedium.copy(textAlign = TextAlign.Center) else center, 3)
+        }
+    }
+}
+
+internal const val MindSelectedTint = .36f
+internal const val MindBranchTint = .26f
+internal const val MindLeafTint = .13f
+
+// A family tint over the ground, eased back until body text in ink still reads at 4.5:1.
+internal fun mindFill(ground: Color, hue: Color, ink: Color, tint: Float): Color {
+    var t = tint
+    while (t > 0f && chartContrast(ink, lerp(ground, hue, t)) < 4.5f) t -= .02f
+    return lerp(ground, hue, t.coerceAtLeast(0f))
+}
+
 // The fallback for graphs too wide to draw legibly: one row per connection, source to target.
 @Composable
 private fun DiagramTransitions(diagram: DiagramContent, elapsed: () -> Float) {
@@ -595,6 +955,11 @@ internal fun DiagramDetails(diagram: DiagramContent, dismiss: () -> Unit) {
                                     RichMessageText(node.label,Modifier.weight(1f))
                                 }
                             }
+                        } else if (diagram.kind == "mindmap") BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().semantics { contentDescription = "mindmap diagram viewport" }) {
+                            val base = maxWidth
+                            Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState())) {
+                                DiagramMindMap(diagram, { Float.MAX_VALUE }, base, hidden, focused) { focused = it }
+                            }
                         } else DiagramPlot(diagram, hidden, focused, { focused = it }, Modifier.weight(1f).fillMaxWidth(), true)
                         if (branch != null) SigilTextButton({ branch = null }) { Text("Show whole diagram") }
                         focused?.let { index ->
@@ -631,11 +996,21 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
     val ink = LocalContentColor.current
     val surface = LocalMessageSurface.current.takeOrElse { MaterialTheme.colorScheme.surface }
     val connected = remember(diagram, focused) { focused?.let { node -> setOf(node) + diagram.edges.filter { it.from == node || it.to == node }.flatMap { listOf(it.from,it.to) } } ?: diagram.nodes.indices.toSet() }
-    fun minimumZoom() = min(bounds.width / (diagram.width * density), bounds.height / (diagram.height * density)).coerceIn(.0001f, 1f)
+    val tree = remember(diagram) { diagram.takeIf { it.kind == "mindmap" }?.mindTree() }
+    val families = remember(tree, ink, surface) { tree?.let { mindColors(it.branches.size, ink, surface) } }
+    fun hue(n: Int) = tree?.let { t -> t.branches.indexOf(t.family[n]).takeIf { it >= 0 }?.let { families!![it] } }
+    val initial = remember(diagram) { diagram.initialState() }
+    val finals = remember(diagram) { diagram.finalStates() }
+    // Room under the core's last row for a final bullseye.
+    val tall = diagram.height + if (finals.isNotEmpty()) 16f else 0f
+    // Each return edge takes its own lane beside the column, so two returns into one node stay apart.
+    val backRank = remember(diagram) { var k = 0; diagram.edges.map { e -> if (diagram.kind != "sequence" && diagram.kind != "mindmap" && diagram.nodes[e.to].y <= diagram.nodes[e.from].y) k++ else -1 } }
+    fun backSide(start: Offset, end: Offset, edge: Int) = max(start.x, end.x) + (48 + 40 * backRank[edge].coerceAtLeast(0)) * density * zoom
+    fun minimumZoom() = min(bounds.width / (diagram.width * density), bounds.height / (tall * density)).coerceIn(.0001f, 1f)
     fun fit() {
         if (bounds.width == 0 || bounds.height == 0) return
         zoom = if (interactive) minimumZoom() else minimumZoom().coerceAtLeast(.65f)
-        pan = Offset(max(0f,(bounds.width-diagram.width*density*zoom)/2),max(0f,(bounds.height-diagram.height*density*zoom)/2))
+        pan = Offset(max(0f,(bounds.width-diagram.width*density*zoom)/2),max(0f,(bounds.height-tall*density*zoom)/2))
     }
     LaunchedEffect(diagram, bounds) { if (!initialized && bounds.width > 0 && bounds.height > 0) { fit(); initialized=true } }
     LaunchedEffect(focused, initialized) {
@@ -646,6 +1021,9 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
         }
     }
     fun at(x: Float,y: Float) = Offset(x*density*zoom,y*density*zoom)+pan
+    // A mind map's centre is ink and its branches keep their families; every other node is a tonal tile.
+    fun nodeFill(index: Int) = when { tree?.root == index -> ink; hue(index) != null -> mindFill(surface, hue(index)!!, ink, if (focused == index) MindSelectedTint else if (tree!!.depth[index] == 1) MindBranchTint else MindLeafTint)
+        else -> lerp(surface, ink, if (focused == index) .16f else DiagramFill) }
     fun shown(rect: Rect) = rect.right > 0 && rect.bottom > 0 && rect.left < bounds.width && rect.top < bounds.height
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onSizeChanged { bounds=it }.then(if (!interactive) Modifier else Modifier.pointerInput(diagram, hidden) {
@@ -660,17 +1038,17 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                 val next = (zoom*scale).coerceIn(minimumZoom(),3f)
                 pan=(pan-centroid)*(next/zoom)+centroid+change
                 zoom=next
-                pan=Offset(pan.x.coerceIn(-diagram.width*density*zoom, size.width.toFloat()),pan.y.coerceIn(-diagram.height*density*zoom,size.height.toFloat()))
+                pan=Offset(pan.x.coerceIn(-diagram.width*density*zoom, size.width.toFloat()),pan.y.coerceIn(-tall*density*zoom,size.height.toFloat()))
             }
         }).semantics { contentDescription="${diagram.kind} diagram viewport" }) {
             Canvas(Modifier.fillMaxSize()) {
                 if (zoom < .45f) diagram.nodes.forEachIndexed { index,node -> if (index !in hidden) drawRoundRect(ink.copy(alpha=if(index in connected).7f else .2f),at(node.x,node.y),Size(160*density*zoom,72*density*zoom),CornerRadius(3.dp.toPx()*zoom)) }
                 if (diagram.kind == "sequence") diagram.nodes.forEachIndexed { index,node -> if (index !in hidden) drawLine(ink.copy(alpha=.25f),at(node.x+80,node.y+72),at(node.x+80,diagram.height-24),1.dp.toPx(),pathEffect=PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(),4.dp.toPx()))) }
-                diagram.edges.forEach { edge ->
-                    if (edge.from in hidden || edge.to in hidden) return@forEach
+                diagram.edges.forEachIndexed { index, edge ->
+                    if (edge.from in hidden || edge.to in hidden) return@forEachIndexed
                     val from=diagram.nodes[edge.from]; val to=diagram.nodes[edge.to]
                     val strong=focused==null || edge.from==focused || edge.to==focused
-                    val color=ink.copy(alpha=if(strong) .8f else .16f)
+                    val color=(hue(edge.to) ?: ink).copy(alpha=if(strong) .8f else .16f)
                     val start:Offset; val end:Offset; val control1:Offset; val control2:Offset
                     if(diagram.kind=="sequence") {
                         start=at(from.x+80,edge.y); end=at(to.x+80,edge.y)
@@ -682,12 +1060,22 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                     } else if(to.y>from.y) {
                         start=at(from.x+80,from.y+72);end=at(to.x+80,to.y);control1=Offset(start.x,(start.y+end.y)/2);control2=Offset(end.x,control1.y)
                     } else {
-                        start=at(from.x+160,from.y+36);end=at(to.x+160,to.y+36);val side=max(start.x,end.x)+48.dp.toPx()*zoom;control1=Offset(side,start.y-36.dp.toPx()*zoom);control2=Offset(side,end.y+36.dp.toPx()*zoom)
+                        // Returns into one state land at spread points down its side so their heads stay apart.
+                        start=at(from.x+160,from.y+36);end=at(to.x+160,to.y+36+listOf(0f,-16f,16f)[backRank[index].coerceAtLeast(0)%3]);val side=backSide(start,end,index);control1=Offset(side,start.y-36.dp.toPx()*zoom);control2=Offset(side,end.y+36.dp.toPx()*zoom)
                     }
                     val path=Path().apply { moveTo(start.x,start.y);cubicTo(control1.x,control1.y,control2.x,control2.y,end.x,end.y) }
                     drawPath(path,color,style=Stroke(if(strong)2.dp.toPx() else 1.5.dp.toPx(),pathEffect=if(edge.dashed)PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(),4.dp.toPx()))else null))
                     val direction=end-(if(control2==end)start else control2);val angle=atan2(direction.y,direction.x);val head=8.dp.toPx()
                     drawPath(Path().apply {moveTo(end.x,end.y);lineTo(end.x-cos(angle-.42f)*head,end.y-sin(angle-.42f)*head);lineTo(end.x-cos(angle+.42f)*head,end.y-sin(angle+.42f)*head);close()},color)
+                }
+                // The same state marks as the card: an entry arrow from a dot, and a bullseye beneath each state with no way out.
+                fun arrow(a: Offset, b: Offset) { val head=7.dp.toPx()*zoom; val half=3.5.dp.toPx()*zoom; val u=(b-a)/(b-a).getDistance().coerceAtLeast(.001f); val n=Offset(-u.y,u.x); val base=b-u*head
+                    drawLine(ink,a,base,1.5.dp.toPx()*zoom); drawPath(Path().apply { moveTo(b.x,b.y); lineTo(base.x+n.x*half,base.y+n.y*half); lineTo(base.x-n.x*half,base.y-n.y*half); close() },ink) }
+                if (zoom >= .45f) {
+                    initial?.takeIf { it !in hidden }?.let { n -> val node=diagram.nodes[n]; val dot=at(node.x+80,node.y-22)
+                        drawCircle(ink,5.dp.toPx()*zoom,dot); arrow(dot+Offset(0f,5.dp.toPx()*zoom),at(node.x+80,node.y)) }
+                    finals.filter { it !in hidden }.forEach { n -> val node=diagram.nodes[n]; val ring=at(node.x+80,node.y+72+26); val r=DiagramMarkRadius.toPx()*zoom
+                        arrow(at(node.x+80,node.y+72),ring-Offset(0f,r+1.dp.toPx()*zoom)); drawCircle(ink,r,ring,style=Stroke(1.5.dp.toPx()*zoom)); drawCircle(ink,4.dp.toPx()*zoom,ring) }
                 }
             }
             // An edge label is a UI chip, not geometry: it keeps its theme size at every zoom and rides a plate so the line cannot cut through it.
@@ -699,7 +1087,7 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                     diagram.kind=="sequence" -> at((from.x+to.x)/2+80,edge.y-40)
                     diagram.kind=="mindmap" -> at((from.x+to.x)/2+80,(from.y+to.y)/2+20)
                     to.y>from.y -> at((from.x+to.x)/2+80,(from.y+72+to.y)/2-20)
-                    else -> at(max(from.x,to.x)+168+lane/2,(from.y+to.y)/2+16)
+                    else -> { val s=at(from.x+160,from.y+36); val e=at(to.x+160,to.y+36); Offset((s.x+e.x+6*backSide(s,e,index))/8,(s.y+e.y)/2-12*density) }
                 }
                 val plate=max(96f,lane*zoom)
                 val left=middle.x-plate*density/2
@@ -716,13 +1104,13 @@ private fun DiagramPlot(diagram: DiagramContent, hidden: Set<Int>, focused: Int?
                 if(zoom < .45f || index in hidden) return@forEachIndexed
                 val position=at(node.x,node.y)
                 if(!shown(Rect(position,Size(160*density*zoom,72*density*zoom)))) return@forEachIndexed
-                val shape=when { node.shape=="decision" -> DiamondShape; node.shape=="rounded" || (diagram.kind=="state" && node.shape=="default") -> RoundedCornerShape(50); else -> RoundedCornerShape(14.dp) }
+                val shape=diagramNodeShape(diagram.kind,node.shape)
                 Surface(Modifier.offset { IntOffset(position.x.roundToInt(),position.y.roundToInt()) }
                     .graphicsLayer { scaleX=zoom;scaleY=zoom;transformOrigin=TransformOrigin(0f,0f);alpha=if(index in connected)1f else .3f }.size(160.dp,72.dp)
                     .then(if(interactive)Modifier.combinedClickable(onClick={focus(index)},onLongClickLabel="Focus node",onLongClick={focus(index)}) else Modifier)
                     .semantics { contentDescription="Node ${index+1}"; selected=focused==index }, shape=shape,
-                    color=lerp(surface,ink,if(focused==index).16f else DiagramFill),contentColor=ink) {
-                    CompositionLocalProvider(LocalMessageSurface provides lerp(surface,ink,if(focused==index).16f else DiagramFill)) {
+                    color=nodeFill(index),contentColor=if(tree?.root==index) surface else ink) {
+                    CompositionLocalProvider(LocalMessageSurface provides nodeFill(index)) {
                         Box(Modifier.padding(horizontal=if(node.shape=="decision")28.dp else 10.dp,vertical=8.dp).clipToBounds(),contentAlignment=Alignment.Center) { RichMessageText(node.label,style=MaterialTheme.typography.bodyMedium) }
                     }
                 }

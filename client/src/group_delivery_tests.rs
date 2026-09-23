@@ -1501,3 +1501,63 @@ fn group_acknowledgement_survives_an_approved_binding_change_for_the_sender() {
     );
     assert_eq!(bob.acknowledge_incoming_online().unwrap(), 0);
 }
+
+#[test]
+fn a_group_vote_updates_every_member_poll() {
+    use serde_json::{json, Value};
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    let authority = IdentityKey::generate().unwrap();
+    let (group, b) = setup(&mut alice, &mut bob, &authority, now);
+    let (a, _) = trust(&mut alice, &mut bob);
+    distribution(&mut alice, &mut bob, group, b, now);
+    bob.prepare_group_distribution(group, a, now).unwrap();
+    for _ in 0..2 {
+        bob.resume_outbound_online(now).unwrap();
+    }
+    for received in alice.receive_mailbox_online(now).unwrap() {
+        assert!(received.result.is_ok());
+    }
+    alice.acknowledge_incoming_online().unwrap();
+    let peer = format!("group:{}", transport::hex(&group));
+    let run = |store: &mut ClientStore, value: Value| -> Value {
+        let reply: Value = serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"].clone()
+    };
+    let deliver = |from: &mut ClientStore, to: &mut ClientStore| {
+        for _ in 0..2 {
+            from.resume_group_outbound_online(now).unwrap();
+        }
+        for e in to.receive_mailbox_online(now).unwrap() {
+            assert!(e.result.as_ref().err().is_none(), "{:?}", e.result.as_ref().err());
+        }
+        to.acknowledge_incoming_online().unwrap();
+    };
+    let poll = |store: &mut ClientStore| -> (Value, Value) {
+        let timeline = run(store, json!({"command":"timeline","peer":peer}));
+        let message = timeline["messages"].as_array().unwrap().iter().find(|m| m["parts"][0]["kind"] == "poll").cloned().expect("poll");
+        (message.clone(), message["parts"][0].clone())
+    };
+    run(&mut alice, json!({"command":"post","peer":peer,"request":"94".repeat(32),"timestamp":now,"rich":true,"text":"poll::Lunch?\n- Soup\n- Salad;"}));
+    deliver(&mut alice, &mut bob);
+    let (message, card) = poll(&mut bob);
+    assert_eq!(card["items"][1]["enabled"], true, "{card}");
+    run(&mut bob, json!({"command":"card_action","peer":peer,"author":message["author"],"message":message["id"],"card":card["id"],"choices":[card["items"][1]["id"]],"timestamp":now+1}));
+    assert_eq!(poll(&mut bob).1["items"][1]["count"], 1);
+    deliver(&mut bob, &mut alice);
+    assert_eq!(poll(&mut alice).1["items"][1]["count"], 1, "{}", poll(&mut alice).1);
+    assert_eq!(poll(&mut alice).1["can_close"], true);
+    assert_eq!(poll(&mut bob).1["can_close"], false);
+    let close = json!({"command":"poll_close","peer":peer,"author":message["author"],"message":message["id"],"card":card["id"],"timestamp":now+2});
+    let refused: Value = serde_json::from_str(&bob.mobile_command(&close.to_string())).unwrap();
+    assert_eq!(refused["ok"], false, "{refused}");
+    run(&mut alice, close.clone());
+    run(&mut alice, close);
+    let card = poll(&mut alice).1;
+    assert_eq!((card["closed"].clone(), card["can_close"].clone(), card["items"][1]["count"].clone()), (json!(true), json!(false), json!(1)), "{card}");
+    deliver(&mut alice, &mut bob);
+    let card = poll(&mut bob).1;
+    assert_eq!(card["closed"], true, "{card}");
+    assert_eq!(card["items"][1]["enabled"], false, "{card}");
+    assert_eq!((card["voters"].clone(), card["items"][1]["count"].clone()), (json!(1), json!(1)), "{card}");
+}

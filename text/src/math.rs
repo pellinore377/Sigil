@@ -5,6 +5,13 @@ use pulldown_latex::{
 };
 use std::io::{self, Write};
 
+mod typeset;
+
+/// Typeset glyph outlines and rules for `source`, identical on every client.
+pub fn typeset(source: &str, block: bool) -> Result<serde_json::Value, Error> {
+    typeset::layout(&html(source, block)?, block)
+}
+
 /// Bounded, macro-free LaTeX rendered without source annotations or error markup.
 pub fn html(source: &str, block: bool) -> Result<String, Error> {
     if source.trim().is_empty()
@@ -112,6 +119,51 @@ mod tests {
         assert!(output.contains("&lt;script&gt;"));
         assert!(!output.contains("annotation"));
         assert!(html(r"\{x\}", false).is_ok());
+    }
+    #[test]
+    fn typeset_math_uses_the_font_math_table() {
+        let runs = |v: &serde_json::Value| v["runs"].as_array().unwrap().clone();
+        let frac = typeset(r"\frac{1}{2}", true).unwrap();
+        assert_eq!(frac["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(runs(&frac).len(), 2);
+        assert!(frac["ascent"].as_f64().unwrap() > 0.5 && frac["descent"].as_f64().unwrap() > 0.3);
+        // Scripts shrink by the font's ScriptPercentScaleDown.
+        let script = runs(&typeset("x^2", false).unwrap());
+        assert_eq!(script[0][3], 1.0);
+        assert!(script[1][3].as_f64().unwrap() < 0.8);
+        // A matrix's fences grow past the text-size parenthesis.
+        let paren = runs(&typeset("(x)", true).unwrap())[0][0].clone();
+        let matrix = typeset(r"\begin{pmatrix}1 & 2 \\ 3 & 4\end{pmatrix}", true).unwrap();
+        assert_ne!(runs(&matrix)[0][0], paren);
+        assert!(matrix["ascent"].as_f64().unwrap() > 1.0);
+        // Display style picks the large integral variant.
+        let inline = typeset(r"\int x", false).unwrap();
+        let display = typeset(r"\int x", true).unwrap();
+        assert_ne!(runs(&inline)[0][0], runs(&display)[0][0]);
+        assert!(display["ascent"].as_f64().unwrap() > inline["ascent"].as_f64().unwrap());
+        // Radicals carry their overbar, and every glyph run has an outline.
+        let root = typeset(r"\sqrt{x}", true).unwrap();
+        assert_eq!(root["rules"].as_array().unwrap().len(), 1);
+        let ids: Vec<_> = root["glyphs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g[0].clone())
+            .collect();
+        assert!(runs(&root).iter().all(|r| ids.contains(&r[0])));
+        assert_eq!(
+            typeset(r"\alpha + \frac{a}{b}", true).unwrap(),
+            typeset(r"\alpha + \frac{a}{b}", true).unwrap()
+        );
+        assert!(typeset(r"\frac{a}{", true).is_err());
+        // Script the font lacks leaves the formula untypeset, never drawn as replacement boxes.
+        assert!(typeset(r"\text{面积} = \pi r^2", true).is_err());
+        assert!(typeset(r"\text{Площадь} = \pi r^2", true).is_ok());
+        // Matrix cells stand clear of their fences.
+        let bare = typeset(r"\begin{matrix}1\end{matrix}", true).unwrap();
+        let one = typeset("1", true).unwrap();
+        assert!(bare["runs"][0][1].as_f64().unwrap() > 0.15);
+        assert!(bare["width"].as_f64().unwrap() > one["width"].as_f64().unwrap() + 0.3);
     }
     #[test]
     fn malformed_math_and_macro_expansion_are_rejected() {

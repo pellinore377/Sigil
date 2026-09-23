@@ -23,7 +23,6 @@ import androidx.compose.ui.window.*
 import kotlin.math.floor
 
 val LocalSensitiveCopy = staticCompositionLocalOf<((String) -> Unit)?> { null }
-val LocalMathContent = staticCompositionLocalOf<(@Composable (String, String, Modifier) -> Unit)?> { null }
 
 internal fun utilityLabel(value: UtilityContent) = when (value.kind) {
     "calculation" -> "Calculation"; "conversion" -> "Conversion"; "math" -> "Formula"; "qr" -> when (value.qr?.kind) {

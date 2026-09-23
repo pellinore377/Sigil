@@ -45,25 +45,15 @@ class UtilityTest {
     @Test fun inline_utilities_preserve_exact_values_and_math_disables_active_content() {
         show(UtilityContent("calculation",display="0.333333",copy="0.3333333333333333",rich=RichText("1 / 3")))
         ui.onNodeWithText("Open calculation").assertDoesNotExist()
-        ui.onNodeWithContentDescription("Calculation. 1 / 3 equals 0.333333").assertIsDisplayed()
+        ui.onNodeWithContentDescription("Calculation. 1 divided by 3 equals 0.333333").assertIsDisplayed()
         ui.onNodeWithContentDescription("Copy calculation").assertDoesNotExist()
         ui.runOnIdle { utility=UtilityContent("conversion",display="5 km",alternate="3.1069 mi",copy="3.1068559611866697 mi") }
         ui.onNodeWithContentDescription("Conversion. 5 km is 3.11 mi").assertIsDisplayed()
-        ui.runOnIdle { utility=UtilityContent("math",display="\\frac{1}{2}",copy="\\frac{1}{2}",mathml="<math xmlns='http://www.w3.org/1998/Math/MathML'><mfrac><mn>1</mn><mn>2</mn></mfrac></math>") }
-        ui.onNodeWithText("Open formula").performClick()
+        ui.runOnIdle { utility=UtilityContent("math",display="\\frac{1}{2}",copy="\\frac{1}{2}",math=MathTypeset(1000f,1f,1f,.5f,emptyMap(),emptyList(),listOf(MathRule(0f,-.3f,1f,.05f,null)))) }
+        ui.onNodeWithContentDescription("Formula. \\frac{1}{2}").assertIsDisplayed()
+        // Typeset math is drawn by Compose: no web renderer exists at all.
         fun views(view: View): List<WebView> = if(view is WebView) listOf(view) else if(view is ViewGroup) (0 until view.childCount).flatMap { views(view.getChildAt(it)) } else emptyList()
-        ui.waitUntil(10_000) { var loaded=false; ui.runOnUiThread { loaded=WindowInspector.getGlobalWindowViews().flatMap(::views).any { it.progress==100 } }; loaded }
-        ui.runOnIdle {
-            val renderers=WindowInspector.getGlobalWindowViews().flatMap(::views)
-            assertTrue(renderers.isNotEmpty())
-            renderers.forEach { view ->
-                assertFalse(view.settings.javaScriptEnabled); assertFalse(view.settings.allowFileAccess)
-                assertFalse(view.settings.allowContentAccess); assertFalse(view.settings.domStorageEnabled)
-                assertTrue(view.settings.blockNetworkLoads); assertTrue(view.settings.blockNetworkImage)
-            }
-        }
-        ui.onNode(isDialog()).captureToImage().asAndroidBitmap().let { bitmap -> java.io.File(ui.activity.cacheDir,"utility-math.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) } }
-        ui.onNodeWithContentDescription("Close formula").performClick()
+        ui.runOnIdle { assertTrue(WindowInspector.getGlobalWindowViews().flatMap(::views).isEmpty()) }
         ui.onNodeWithTag("composer").assertIsDisplayed()
     }
 }

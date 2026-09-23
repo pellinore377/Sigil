@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onSizeChanged
@@ -147,6 +150,7 @@ internal suspend fun resolveWebAudioDuration(audio:HTMLAudioElement):Long {
     var size by remember { mutableStateOf(IntSize.Zero) }
     fun bounded(value:Offset,z:Float)=Offset(value.x.coerceIn(-size.width*(z-1)/2,size.width*(z-1)/2),value.y.coerceIn(-size.height*(z-1)/2,size.height*(z-1)/2))
     val imageGestures=interactive && type.startsWith("image/") && type!="image/gif"
+    LocalViewerZoomed.current?.let {state->SideEffect {state.value=zoom>1f}}
     val timeline=LocalMaterialTimeline.current.takeIf {open!=null && !LocalObjectMenu.current}
     val occlusion=LocalMaterialOcclusion.current
     val density=LocalDensity.current.density
@@ -223,10 +227,28 @@ internal suspend fun resolveWebAudioDuration(audio:HTMLAudioElement):Long {
     })
 }
 
-@Composable internal fun WebFileViewer(file:WebFile,load:suspend(WebFile)->String,close:()->Unit) {
+// A focused clip keeps its own arrow keys for seeking.
+internal fun mediaKeepsKeys(event:org.w3c.dom.events.Event)=event.defaultPrevented || (event.target as? Element)?.closest("video,audio")!=null
+
+private val LocalViewerZoomed=compositionLocalOf<MutableState<Boolean>?> {null}
+
+@Composable internal fun WebFileViewer(file:WebFile,load:suspend(WebFile)->String,close:()->Unit,gallery:List<WebFile> = emptyList(),step:(WebFile)->Unit={}) {
     val onClose by rememberUpdatedState(close)
+    // The conversation's pictures and clips page like Android's carousel: side arrows and the arrow keys.
+    val index=gallery.indexOfFirst {it.peer==file.peer && it.author==file.author && it.message==file.message}
+    val previous=gallery.getOrNull(index-1)?.takeIf {index>0}
+    val next=gallery.getOrNull(index+1)?.takeIf {index>=0}
+    val paging by rememberUpdatedState(previous to next)
+    val onStep by rememberUpdatedState(step)
     DisposableEffect(Unit){
-        val listener:(org.w3c.dom.events.Event)->Unit={event->if((event as? org.w3c.dom.events.KeyboardEvent)?.key=="Escape"){event.preventDefault();onClose()}}
+        val listener:(org.w3c.dom.events.Event)->Unit={event->
+            val seeking=mediaKeepsKeys(event)
+            when((event as? org.w3c.dom.events.KeyboardEvent)?.key){
+                "Escape"->{event.preventDefault();onClose()}
+                "ArrowLeft"->if(!seeking)paging.first?.let {event.preventDefault();onStep(it)}
+                "ArrowRight"->if(!seeking)paging.second?.let {event.preventDefault();onStep(it)}
+            }
+        }
         document.addEventListener("keydown",listener)
         onDispose{document.removeEventListener("keydown",listener)}
     }
@@ -248,7 +270,30 @@ internal suspend fun resolveWebAudioDuration(audio:HTMLAudioElement):Long {
             finally {saving=false}
         }
     })) {
-        WebAttachment(file,load,{},Modifier.widthIn(max=1000.dp).fillMaxSize(),expanded=true)
+        // Arrows sit beside the media: page elements draw over the canvas, so an overlay would be hidden.
+        if(gallery.size>1 && index>=0) BoxWithConstraints(Modifier.fillMaxSize()) {
+            val side=if(maxWidth<600.dp)48.dp else 56.dp
+            val zoomed=remember(file) {mutableStateOf(false)}
+            val threshold=with(LocalDensity.current) {64.dp.toPx()}
+            // Swipes page like Android's carousel; a zoomed picture keeps its drag for panning.
+            Row(Modifier.fillMaxSize().pointerInput(file) {awaitEachGesture {
+                val down=awaitFirstDown(requireUnconsumed=false,pass=PointerEventPass.Initial)
+                var travel=Offset.Zero;var fingers=1
+                while(true) {
+                    val event=awaitPointerEvent(PointerEventPass.Initial)
+                    fingers=maxOf(fingers,event.changes.count {it.pressed})
+                    event.changes.firstOrNull {it.id==down.id}?.let {travel+=it.position-it.previousPosition}
+                    if(event.changes.none {it.pressed})break
+                }
+                if(fingers==1 && !zoomed.value && kotlin.math.abs(travel.x)>threshold && kotlin.math.abs(travel.x)>2*kotlin.math.abs(travel.y))
+                    (if(travel.x>0)paging.first else paging.second)?.let(onStep)
+            }},verticalAlignment=Alignment.CenterVertically) {
+                Box(Modifier.width(side),contentAlignment=Alignment.Center) {if(previous!=null)SigilIconButton({step(previous)}){Glyph("chevron_left",32,"Previous media")}}
+                CompositionLocalProvider(LocalViewerZoomed provides zoomed) {key(file) {WebAttachment(file,load,{},Modifier.weight(1f).widthIn(max=1000.dp).fillMaxHeight(),expanded=true)}}
+                Box(Modifier.width(side),contentAlignment=Alignment.Center) {if(next!=null)SigilIconButton({step(next)}){Glyph("chevron_right",32,"Next media")}}
+            }
+        }
+        else WebAttachment(file,load,{},Modifier.widthIn(max=1000.dp).fillMaxSize(),expanded=true)
     }
     issue?.let { text -> AlertDialog({issue=null},text={Text(text)},confirmButton={SigilTextButton({issue=null}){Text("OK")}}) }
 }

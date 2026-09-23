@@ -90,6 +90,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
     var editing by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     var selected by remember(chat.id) { mutableStateOf<Pair<ChatMessage, Rect>?>(null) }
     var cardDetails by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
+    var endingPoll by remember(chat.id) { mutableStateOf<Pair<ChatMessage, MessagePart>?>(null) }
     var reactionPick by remember(chat.id) { mutableStateOf<ChatMessage?>(null) }
     reactionPick?.let { target -> EmojiDrawer({ reactionPick = null }) { emoji -> command("react", mapOf("peer" to chat.id, "author" to target.author, "message" to target.id, "emoji" to emoji, "active" to (emoji !in target.myReactions))) } }
     // Each message keeps its own details open or closed, as the reference does.
@@ -229,7 +230,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     } else if (threadsOverview) {
                         Surface(itemMotion().fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(20.dp)).clickable { setThread(ThreadTarget(message.threadAuthor!!, message.threadMessage!!)) }, shape = RoundedCornerShape(20.dp), color = scheme.surfaceContainerHigh) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text(message.threadPreview ?: "Earlier message", maxLines = 3, overflow = TextOverflow.Ellipsis)
+                                cardQuote(message.threadParts)?.let { QuoteBody(null, null, null, null, 3, card = it) } ?: Text(quoteText(message.threadParts, message.threadPreview) ?: "Earlier message", maxLines = 3, overflow = TextOverflow.Ellipsis)
                                 Row(verticalAlignment = Alignment.CenterVertically) { Glyph("forum", 18); Spacer(Modifier.width(8.dp)); Text(message.text, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall); Glyph("chevron_right", 20) }
                             }
                         }
@@ -373,7 +374,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             FooterContent {
             CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
             Column(Modifier.fillMaxWidth()) {
-            val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to it.text }
+            val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to quoteText(it.parts, it.text) }
             context?.let { (title, text) -> ContextChip(title, text, reply?.attachment, reply, reply?.let { cardQuote(it.parts) }) { reply = null; editing = null } }
             val inputCommand: Command = { action, fields ->
                 command(action, if (action in listOf("attachment_pick", "record_start")) fields + mapOf("reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id) else fields)
@@ -402,6 +403,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
                     "edit" -> { command("edit_source", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     "replay" -> {textMotion.state(message.author+message.id).replay();selected=null}
                     "details" -> { cardDetails = message; selected = null }
+                    "end_poll" -> { endingPoll = message.parts.firstOrNull { it.id == value && it.kind == "poll" && it.canClose }?.let { message to it }; selected = null }
                     "pick_reaction" -> { reactionPick = message; selected = null }
                     "forward" -> { command("forward_picker", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id)); selected = null }
                     else -> {
@@ -418,9 +420,18 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         if (footerHost == null) menuBody()
         else if (selected != null) Presented({ selected = null; heldContent.value = null }) { Box(Modifier.fillMaxSize().onGloballyPositioned { menuPage = it.boundsInWindow() }) { menuBody() } }
         cardDetails?.let { CardDetails(it) { cardDetails = null } }
+        endingPoll?.let { (message, poll) -> EndPollDialog({ endingPoll = null }, poll.text.takeIf { message.parts.count { it.kind == "poll" && it.canClose } > 1 }) {
+            endingPoll = null
+            command("poll_close", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id, "card" to poll.id))
+        } }
     }
 }
 private val BubbleCueSpread = 12.dp
+@Composable
+internal fun EndPollDialog(dismiss: () -> Unit, question: String? = null, confirm: () -> Unit) {
+    AlertDialog(dismiss, title = { Text("End poll?") }, text = { Text((question?.let { "“$it”\n" } ?: "") + "Voting closes for everyone and the results become final. This can't be undone.") },
+        confirmButton = { SigilTextButton(confirm) { Text("End poll", color = MaterialTheme.colorScheme.error) } }, dismissButton = { SigilTextButton(dismiss) { Text("Keep open") } })
+}
 
 @Composable
 internal fun MessageBubble(message: ChatMessage, grouped: Boolean, followed: Boolean, analyze: (String) -> String, command: Command? = null) {
@@ -595,9 +606,10 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
                     val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
                         (if(message.detailsPart()!=null)listOf("details" to "Details") else emptyList()) +
                         (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
+                        message.parts.filter { it.kind == "poll" && it.canClose }.let { polls -> polls.map { "end_poll/${it.id}" to if (polls.size > 1) "End poll: ${it.text}" else "End poll" } } +
                         (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
-                    entries.forEach { (key, label) -> DropdownMenuItem({ Text(label, color = if (key == "delete") scheme.error else scheme.onSurface) }, { choose(key, "") },
-                        leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; else -> key }, 20) }) }
+                    entries.forEach { (entry, label) -> val key = entry.substringBefore('/'); DropdownMenuItem({ Text(label, color = if (key == "delete") scheme.error else scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis) }, { choose(key, entry.substringAfter('/', "")) },
+                        leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; "end_poll" -> "lock"; else -> key }, 20) }) }
                 }
             }
         }) { measurables, constraints ->

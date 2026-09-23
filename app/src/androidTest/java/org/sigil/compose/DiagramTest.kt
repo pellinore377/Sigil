@@ -32,8 +32,9 @@ class DiagramTest {
             ui.onNodeWithContentDescription("Clear node focus").assertIsDisplayed()
             ui.onNode(hasContentDescription("${type} diagram viewport") and hasAnyAncestor(isDialog())).assertIsDisplayed()
             if(type=="mindmap") {
+                ui.onNode(hasContentDescription("Letters, under Root") and hasAnyAncestor(isDialog()),useUnmergedTree=true).assertExists()
                 ui.onNodeWithText("Collapse branch").performClick()
-                ui.onNode(hasContentDescription("Node 2") and hasAnyAncestor(isDialog())).assertDoesNotExist()
+                ui.onNode(hasContentDescription("Letters, under Root") and hasAnyAncestor(isDialog()),useUnmergedTree=true).assertDoesNotExist()
                 ui.onNodeWithText("Expand branch").performClick()
             }
             if(type=="org") {
@@ -41,7 +42,7 @@ class DiagramTest {
                 ui.onNodeWithText("Show whole diagram").assertIsDisplayed().performClick()
             }
             ui.onNodeWithContentDescription("Clear node focus").performClick()
-            ui.onNodeWithText("Fit diagram").performClick()
+            if(type!="mindmap") ui.onNodeWithText("Fit diagram").performClick()
             if(type=="flow") {
                 val label=ui.onNode(hasContentDescription("Connection 1") and hasAnyAncestor(isDialog())).fetchSemanticsNode().boundsInRoot
                 val child=ui.onNode(hasContentDescription("Node 2") and hasAnyAncestor(isDialog())).fetchSemanticsNode().boundsInRoot

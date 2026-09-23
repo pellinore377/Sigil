@@ -215,6 +215,13 @@ enum Command {
         card: String,
         serves: u16,
     },
+    PollClose {
+        peer: String,
+        author: String,
+        message: String,
+        card: String,
+        timestamp: u64,
+    },
     CardAction {
         peer: String,
         author: String,
@@ -1068,6 +1075,13 @@ impl ClientStore {
                     json!({"recipe":recipe.presentation(Some(serves)).map_err(|_| Error::InvalidEvent)?}),
                 )
             }
+            Command::PollClose {
+                peer,
+                author,
+                message,
+                card,
+                timestamp,
+            } => self.mobile_poll_close(&peer, reference(&author, &message)?, id(&card)?, timestamp),
             Command::CardAction {
                 peer,
                 author,
@@ -1867,6 +1881,15 @@ impl ClientStore {
                         },
                         None => (None, Vec::new()),
                     };
+                    // The threads overview quotes each root's cards.
+                    let thread_parts = match message.thread.as_ref().filter(|_| category.as_deref() == Some("Threads")) {
+                        Some(root) => match self.conversation_message(conversation, root.clone(), conversations::now()) {
+                            Ok(m) if !m.view_once && !m.deleted => self.mobile_parts(conversation, m.body.as_ref())?,
+                            Ok(_) | Err(Error::NotFound | Error::Obsolete) => Vec::new(),
+                            Err(e) => return Err(e),
+                        },
+                        None => Vec::new(),
+                    };
                     messages.push(json!({"id":transport::hex(&message.reference.message),"author":transport::hex(&message.reference.author),
                         "text":message.body.as_ref().map(body_text).transpose()?.unwrap_or_else(||"View-once message".into()),
                         "mine":mine,"timestamp":message.timestamp,"delivery":delivery,"pinned":message.pinned,"attachment":files::metadata(message.body.as_ref())?,
@@ -1878,7 +1901,7 @@ impl ClientStore {
                         "noted":message.noted || self.mobile_is_note(conversation, &message)?,
                         "thread_author":message.thread.as_ref().map(|v|transport::hex(&v.author)),
                         "thread_message":message.thread.as_ref().map(|v|transport::hex(&v.message)),
-                        "thread_preview":thread_preview,
+                        "thread_preview":thread_preview,"thread_parts":thread_parts,
                         "editable":message.body.as_ref().is_some_and(Body::editable),
                         "kind":views::body_kind(message.body.as_ref()), "parts":self.mobile_parts(conversation, message.body.as_ref())?}));
                 }

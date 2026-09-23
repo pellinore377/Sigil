@@ -28,6 +28,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 
 val LocalEditorAnalysis = staticCompositionLocalOf<((String) -> String)?> { null }
+/** Set where Enter sends and Shift+Enter breaks the line; reports whether an IME composition is open. */
+val LocalImeComposing = staticCompositionLocalOf<(() -> Boolean)?> { null }
 
 internal data class FormatSpan(val start: Int, val end: Int, val prefix: Int, val suffix: Int, val style: Int, val argument: String = "")
 
@@ -164,13 +166,14 @@ internal fun TextFieldState.format(marker: String, range: TextRange = selection)
 }
 
 @Composable
-fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}, enabled: Boolean = true, namedFormatting: Boolean = true, showSource: Boolean? = null, placeholder: String = "Message") {
+fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modifier = Modifier, showTools: Boolean = true, focusRequester: FocusRequester? = null, onFocus: () -> Unit = {}, enabled: Boolean = true, namedFormatting: Boolean = true, showSource: Boolean? = null, placeholder: String = "Message", onSubmit: (() -> Unit)? = null) {
     var internalSourceMode by remember { mutableStateOf(false) }
     val sourceMode = showSource ?: internalSourceMode
     var editorFocused by remember { mutableStateOf(false) }
     var formattingSelection by remember { mutableStateOf(state.selection) }
     val editorFocus = focusRequester ?: remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+    val composing = LocalImeComposing.current
     SideEffect { if (editorFocused) formattingSelection = state.selection }
     val source = state.text.toString()
     val editorAnalysis = if (namedFormatting) LocalEditorAnalysis.current ?: analyze else analyze
@@ -209,6 +212,10 @@ fun Composer(state: TextFieldState, analyze: (String) -> String, modifier: Modif
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Tab && !it.isCtrlPressed && !it.isAltPressed && !it.isMetaPressed) {
                         focusManager.moveFocus(if (it.isShiftPressed) FocusDirection.Previous else FocusDirection.Next)
+                    }
+                    else if ((it.key == Key.Enter || it.key == Key.NumPadEnter) && onSubmit != null && composing != null && !it.isAltPressed) {
+                        // The web backing input ignores the browser's own line break, so Shift+Enter inserts it here.
+                        if (composing()) false else { if (!it.isShiftPressed) onSubmit() else if (state.text.length < 16_384) state.edit { replace(selection.min, selection.max, "\n") }; true }
                     }
                     else if (!it.isCtrlPressed) false
                     else when (it.key) {

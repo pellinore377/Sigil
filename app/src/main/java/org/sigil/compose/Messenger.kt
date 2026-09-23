@@ -574,7 +574,7 @@ class Messenger(application: Application) : AndroidViewModel(application) {
         val value = JSONObject().put("command", name)
         fields.forEach { (key, item) -> value.put(key, if(key=="shared_contact" && item is String)JSONObject(item)else JSONObject.wrap(item)) }
         if (name in listOf("oidc", "enroll")) value.put("label", android.os.Build.MODEL.take(60))
-        if (name == "card_action") value.put("timestamp", System.currentTimeMillis() / 1000)
+        if (name == "card_action" || name == "poll_close") value.put("timestamp", System.currentTimeMillis() / 1000)
         if (name in listOf("post", "place", "group_create", "react", "pin", "read", "mark_read", "snooze", "forward", "organize", "edit", "delete", "clear_conversation", "note", "typing", "draft")) {
             val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
             value.put("request", bytes.joinToString("") { "%02x".format(it) })
@@ -694,12 +694,13 @@ class Messenger(application: Application) : AndroidViewModel(application) {
             timelineWant = timeline.getInt("want"); timelineReloadAt = timeline.getInt("reload_at")
             val buffer = TimelineBufferDepth(timeline.getInt("cache_ahead") / 10f, timeline.getInt("cache_behind") / 10f)
             state = state.copy(people = timeline.getJSONObject("people").stringMap())
-            val decodePart = { part: org.json.JSONObject -> MessagePart(part.optString("id"), part.getString("kind"), part.getString("text"), part.optJSONArray("items")?.objects()?.map { item -> CardItem(item.getString("id"), item.getString("text"), item.getBoolean("checked"), item.getBoolean("enabled"), if (item.isNull("count")) null else item.getLong("count"), item.richText(), item.optBoolean("persistent")) }.orEmpty(), part.optBoolean("multiple"), part.optBoolean("closed"), if (part.isNull("voters")) null else part.getLong("voters"), if (part.has("date")) part.getString("date") else if (part.has("at")) separator(part.getLong("at")) else "", part.optInt("latitude_e6") / 1_000_000.0, part.optInt("longitude_e6") / 1_000_000.0, part.richText(), part.optString("location_mode", "pin"), part.optLong("sampled_at"), if (part.isNull("accuracy_cm")) null else part.getLong("accuracy_cm"), if (part.isNull("until")) null else part.getLong("until"), part.optBoolean("stopped"), part.optBoolean("can_stop"), part.tableContent(), part.recipeContent(), part.chartContent(), part.diagramContent(), part.utilityContent(), part.serviceContent(), part.contactContent(),part.optLong("at"),part.optLong("started_at")) }
+            // One decoder with the web, so a new part field reaches both platforms.
+            val decodePart = { part: org.json.JSONObject -> org.sigil.ContentDecoder.messagePart(part.toString(), ::separator) }
             messages += timeline.getJSONArray("messages").objects().map { message ->
                 ChatMessage(message.getString("id"), message.getString("author"), message.getString("text"), message.getBoolean("mine"), clock(message.getLong("timestamp")),
                     message.getString("delivery"), message.getBoolean("pinned"), message.getJSONArray("reactions").strings(), message.getJSONArray("my_reactions").strings(), message.optional("reply"), message.getBoolean("read_by_me"), message.getLong("timestamp"), separator(message.getLong("timestamp")), message.optJSONArray("readers")?.strings().orEmpty(), message.optBoolean("noted"), message.optional("thread_author"), message.optional("thread_message"), message.optBoolean("editable", true), message.optString("kind", "Text"), peer,
                     message.optJSONObject("attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) },
-                    message.optJSONArray("parts")?.objects()?.map(decodePart).orEmpty(), message.optional("thread_preview"), message.optional("reply_author"), message.optBoolean("reply_mine"), message.optional("reply_message"), message.optJSONObject("reply_attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) }, message.optJSONArray("reply_parts")?.objects()?.map(decodePart).orEmpty())
+                    message.optJSONArray("parts")?.objects()?.map(decodePart).orEmpty(), message.optional("thread_preview"), message.optional("reply_author"), message.optBoolean("reply_mine"), message.optional("reply_message"), message.optJSONObject("reply_attachment")?.let { AttachmentDetails(it.getString("name"), it.getString("media_type"), it.getLong("length"), it.optString("caption")) }, message.optJSONArray("reply_parts")?.objects()?.map(decodePart).orEmpty(), message.optJSONArray("thread_parts")?.objects()?.map(decodePart).orEmpty())
             }
             before = if (timeline.isNull("next")) null else timeline.getLong("next")
             if (timelinePublishes(messages.size, onScreen, timelineWant, before == null)) {

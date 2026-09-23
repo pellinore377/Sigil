@@ -120,8 +120,9 @@ internal fun CallPage(active: ActiveCall, contacts: List<ChatSummary>, command: 
             } else {
                 CallControl(if (active.muted) "mic_off" else "mic", if (active.muted) "Unmute" else "Mute") { command("call_mute", emptyMap()) }
                 if (video) CallControl(if (active.camera) "videocam" else "videocam_off", "Camera", state = if (active.camera) "On" else "Off") { command("call_camera", emptyMap()) }
-                CallControl(if (active.speaker) "volume_up" else "hearing", if (active.speaker) "Earpiece" else "Speaker") { command("call_speaker", emptyMap()) }
-                if (video) CallControl(if (active.screen) "stop_screen_share" else "present_to_all", if (active.screen) "Stop share" else "Share") { command("call_screen", emptyMap()) }
+                val features = LocalClientFeatures.current
+                if (features.audioRoute) CallControl(if (active.speaker) "volume_up" else "hearing", if (active.speaker) "Earpiece" else "Speaker") { command("call_speaker", emptyMap()) }
+                if (video && features.screenShare) CallControl(if (active.screen) "stop_screen_share" else "present_to_all", if (active.screen) "Stop share" else "Share") { command("call_screen", emptyMap()) }
                 else if (call.canInvite) CallControl("person_add", "Add person") { setPanel("invite") }
                 CallControl("call_end", if (call.direct) "End" else "Leave", true) { command("call_end", mapOf("call" to call.id)) }
             }
@@ -178,7 +179,7 @@ internal fun CallHeader(active: ActiveCall, contacts: List<ChatSummary>, ownPhot
                 Symbol("more_vert", "Call options") { more = true }
                 DropdownMenu(more, { more = false }) {
                     DropdownMenuItem({ Text("Call security") }, { more = false; panel("security") }, leadingIcon = { Glyph("lock", 22) })
-                    DropdownMenuItem({ Text(if (active.screen) "Stop sharing screen" else "Share screen") }, { more = false; command("call_screen", emptyMap()) }, leadingIcon = { Glyph("present_to_all", 22) })
+                    if (LocalClientFeatures.current.screenShare) DropdownMenuItem({ Text(if (active.screen) "Stop sharing screen" else "Share screen") }, { more = false; command("call_screen", emptyMap()) }, leadingIcon = { Glyph("present_to_all", 22) })
                     if (active.camera) DropdownMenuItem({ Text("Switch camera") }, { more = false; command("call_flip", emptyMap()) }, leadingIcon = { Glyph("cameraswitch", 22) })
                 }
             }

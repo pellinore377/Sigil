@@ -9,6 +9,7 @@ serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark = { version = "=0.13.4", default-features = false }
 pulldown-latex = { version = "=0.8.0", default-features = false }
+ttf-parser = { version = "=0.25.1", default-features = false, features = ["std", "opentype-layout"] }
 unicode-normalization = { version = "=0.1.25", default-features = false }
 unicode-segmentation = { version = "=1.13.3", default-features = false }
 sha2 = "=0.10.9"

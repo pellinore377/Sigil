@@ -851,3 +851,64 @@ fn an_acceptance_wakes_the_requester_through_its_mailbox_wait() {
     assert_eq!(chats[0]["request"], "accepted", "{chats}");
     let _ = target;
 }
+#[test]
+fn a_vote_reaches_the_poll_author_and_every_member() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    alice.after_sign_in().unwrap();
+    bob.after_sign_in().unwrap();
+    let found = alice.mobile_find("@bob:chat.example").unwrap();
+    let target = found["chats"][0]["id"].as_str().unwrap().to_owned();
+    alice.mobile_request(&target, "send").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    let source = bob.mobile_state().unwrap()["chats"][0]["id"].as_str().unwrap().to_owned();
+    bob.mobile_request(&source, "accept").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    alice.mobile_request(&target, "refresh").unwrap();
+    alice.mobile_contact_sync(true).unwrap();
+    let run = |store: &mut ClientStore, value: Value| -> Value {
+        let reply: Value = serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"].clone()
+    };
+    let sync = |store: &mut ClientStore| {
+        for _ in 0..3 {
+            let reply: Value = serde_json::from_str(&store.mobile_command(r#"{"command":"sync","interactive":true}"#)).unwrap();
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+    };
+    let request = "93".repeat(32);
+    run(&mut alice, json!({"command":"post","peer":target,"request":request,"timestamp":now,"rich":true,"text":"poll::Lunch?\n- Soup\n- Salad;"}));
+    sync(&mut alice);
+    sync(&mut bob);
+    let chat = bob.mobile_state().unwrap()["chats"][0]["id"].as_str().unwrap().to_owned();
+    let timeline = run(&mut bob, json!({"command":"timeline","peer":chat}));
+    let message = timeline["messages"].as_array().unwrap().iter().find(|m| m["parts"][0]["kind"] == "poll").cloned().expect("poll reached bob");
+    let poll = &message["parts"][0];
+    assert_eq!(poll["items"][1]["enabled"], true, "{poll}");
+    run(&mut bob, json!({"command":"card_action","peer":chat,"author":message["author"],"message":message["id"],"card":poll["id"],"choices":[poll["items"][1]["id"]],"timestamp":now+1}));
+    sync(&mut bob);
+    sync(&mut alice);
+    let timeline = run(&mut alice, json!({"command":"timeline","peer":target}));
+    let poll = timeline["messages"].as_array().unwrap().iter().find(|m| m["parts"][0]["kind"] == "poll").unwrap()["parts"][0].clone();
+    assert_eq!(poll["items"][1]["count"], 1, "{poll}");
+    // A close that stopped after its closure went out resumes with the ballot pages and drops the draft.
+    let conversation = alice.mobile_conversation(&target).unwrap();
+    let card = alice.mobile_card_reference(conversation, super::super::reference(message["author"].as_str().unwrap(), message["id"].as_str().unwrap()).unwrap(), id(poll["id"].as_str().unwrap()).unwrap()).unwrap();
+    let close = alice.prepare_poll_close(conversation, card, now + 2).unwrap();
+    let sigil_protocol::text::action::Change::ClosePoll(closure) = &close.change else { panic!("not a closure") };
+    assert!(closure.pages() >= 1);
+    alice.require_action(conversation, &close).unwrap();
+    alice.mobile_action(&target, &transport::hex(&close.id().unwrap()), now + 2, crate::conversations::Action::Post {
+        body: crate::conversations::Body::Rich(close.to_bytes().unwrap()), reply: None, thread: None, expires_at: None, view_once: false }).unwrap();
+    assert!(alice.poll_close_draft(conversation, card).unwrap().is_some());
+    let ask = json!({"command":"poll_close","peer":chat,"author":message["author"],"message":message["id"],"card":poll["id"],"timestamp":now+3});
+    let refused: Value = serde_json::from_str(&bob.mobile_command(&ask.to_string())).unwrap();
+    assert_eq!(refused["ok"], false, "{refused}");
+    run(&mut alice, json!({"command":"poll_close","peer":target,"author":message["author"],"message":message["id"],"card":poll["id"],"timestamp":now+3}));
+    assert!(alice.poll_close_draft(conversation, card).unwrap().is_none());
+    sync(&mut alice);
+    sync(&mut bob);
+    let timeline = run(&mut bob, json!({"command":"timeline","peer":chat}));
+    let poll = timeline["messages"].as_array().unwrap().iter().find(|m| m["parts"][0]["kind"] == "poll").unwrap()["parts"][0].clone();
+    assert_eq!((poll["closed"].clone(), poll["items"][1]["enabled"].clone(), poll["items"][1]["count"].clone()), (json!(true), json!(false), json!(1)), "{poll}");
+}
