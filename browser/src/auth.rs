@@ -172,3 +172,38 @@ async fn complete() -> Result<(), JsValue> {
     }
     Ok(())
 }
+
+// Kotlin/Wasm rejects another window's Window object, so the SSO popup lives here.
+thread_local! {static POPUP:RefCell<Option<web_sys::Window>>=const{RefCell::new(None)};}
+/// Opens a blank popup inside the click so blockers allow it.
+#[wasm_bindgen]
+pub fn sso_open() -> bool {
+    sso_close();
+    let popup = web_sys::window().and_then(|w| w.open_with_url_and_target("about:blank", "_blank").ok().flatten());
+    let opened = popup.is_some();
+    POPUP.with(|slot| *slot.borrow_mut() = popup);
+    opened
+}
+/// Sends the popup to the provider, or opens a new one when it was blocked or closed.
+#[wasm_bindgen]
+pub fn sso_navigate(url: &str) -> bool {
+    if !url.starts_with("https://") {
+        return false;
+    }
+    let live = POPUP.with(|slot| slot.borrow().as_ref().filter(|p| !p.closed().unwrap_or(true)).cloned());
+    match live {
+        Some(popup) => {
+            let _ = popup.set_opener(&JsValue::NULL);
+            popup.location().set_href(url).is_ok() && popup.focus().is_ok()
+        }
+        None => web_sys::window()
+            .and_then(|w| w.open_with_url_and_target_and_features(url, "_blank", "noopener,noreferrer").ok())
+            .is_some(),
+    }
+}
+#[wasm_bindgen]
+pub fn sso_close() {
+    if let Some(popup) = POPUP.with(|slot| slot.borrow_mut().take()) {
+        let _ = popup.close();
+    }
+}

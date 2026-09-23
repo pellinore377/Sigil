@@ -91,7 +91,6 @@ private val stamped=setOf("post","place","group_create","react","pin","read","ma
     var recordingJob by remember {mutableStateOf<Job?>(null)}
     var fileNext by remember {mutableStateOf(0L)}
     var authorization by remember {mutableStateOf<String?>(null)}
-    var ssoWindow by remember {mutableStateOf<org.w3c.dom.Window?>(null)}
     val timezone=remember {runCatching {BrowserIntl.DateTimeFormat().resolvedOptions().timeZone}.getOrDefault("UTC")}
     val dateOrder=remember {runCatching{dateOrder()}.getOrDefault("day")}
     val screens=rememberSaveableStateHolder()
@@ -293,7 +292,7 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
             val active=browserDocument.visibilityState=="visible" || calls.visible!=null
             val nudged=withTimeoutOrNull(if(active && state.phase=="connected") foregroundSyncWait(nextSync,BrowserDate.now().toLong(),if(calls.visible!=null)250 else 1000) else 1500){wake.receive();true}==true
             if(browserDocument.visibilityState=="visible" && state.phase=="oidc") {
-                try {mutex.withLock {refresh();if(state.phase in setOf("connected","recover","username")){authorization=null;ssoWindow=null}}}
+                try {mutex.withLock {refresh();if(state.phase in setOf("connected","recover","username")&&authorization!=null){authorization=null;browserSsoClose()}}}
                 catch(cancelled:CancellationException){throw cancelled}
                 catch(_:Exception){}
             }
@@ -476,8 +475,8 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
                 scope.launch{try{webNotificationsDisable().awaitBrowser<JsAny?>();mutex.withLock{execute("browser_push",mapOf("action" to "disable"));notificationStatus()};fileNext=0;fileWake.trySend(Unit);wake.trySend(Unit)}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){state=state.copy(issue="Could not finish disabling notifications. Try again.")}finally{state=state.copy(busy=false)}};return@command
             }
             // Opened inside the click so popup blockers allow it; navigated once the core returns the URL.
-            "oidc"->if(ready && !state.busy){ssoWindow?.takeUnless{it.closed}?.close();ssoWindow=window.open("about:blank","_blank")?.also{it.opener=null}}
-            "oidc_reopen"->{authorization?.let {url->ssoWindow?.takeUnless{it.closed}?.let{it.location.href=url;it.focus()} ?: window.open(url,"_blank","noopener,noreferrer")};return@command}
+            "oidc"->if(ready && !state.busy)browserSsoOpen()
+            "oidc_reopen"->{authorization?.let {browserSsoNavigate(it)};return@command}
             "passkey_recover","passkey_create"->{
                 if(!ready || state.busy)return@command
                 state=state.copy(busy=true,issue=null)
@@ -598,8 +597,8 @@ state=StateDecoder.state(execute("state"),state,::clock);if(state.phase=="connec
                         if(name in setOf("storage","recovery_policy"))storage(value)
                         if(name in setOf("recover","reset_identity")){fileNext=0;fileWake.trySend(Unit)}
                         if(name in setOf("account_access","acknowledge_access","oidc_account","callback")){account(value);accessNext=0}
-                        value.optional("authorization_url")?.let {url->authorization=url;ssoWindow?.takeUnless{it.closed}?.location?.href=url}
-                        if(name=="cancel_login"){authorization=null;ssoWindow?.takeUnless{it.closed}?.close();ssoWindow=null}
+                        value.optional("authorization_url")?.let {url->authorization=url;browserSsoNavigate(url)}
+                        if(name=="cancel_login"){authorization=null;browserSsoClose()}
                         value.optional("open")?.let {state=state.copy(selected=it);viewportEnd=0;timelineWant=0;timelineReloadAt=Int.MAX_VALUE}
                         if(name in setOf("post","edit","file_send")) {state=state.copy(sent=state.sent+1,sentText=(fields["text"]?:fields["caption"]) as? String,sentMessage=if(name=="post")Json.parseToJsonElement(raw).jsonObject.string("request")else null);post=null}
                         if(name in setOf("photo_publish","photo_retry","photo_cancel"))photoRevision++
@@ -611,7 +610,7 @@ if(name=="contact_policy")state=state.copy(allowRequests=value.bool("enabled"))
                         if(name=="post"){val flush=execute("flush");if(flush.long("sent")>0)timeline();flush.optional("issue")?.let {syncIssue=it;state=state.copy(issue=workNotices.update(state.issue,"sync",it))}}
                     }
                 }
-            }}catch(e:Exception) {if(name=="oidc"){ssoWindow?.takeUnless{it.closed}?.close();ssoWindow=null};state=state.copy(searching=if(name in setOf("search","search_more"))false else state.searching,issue=e.message?:"Could not complete this action. Your draft is preserved.")}
+            }}catch(e:Exception) {if(name=="oidc")browserSsoClose();state=state.copy(searching=if(name in setOf("search","search_more"))false else state.searching,issue=e.message?:"Could not complete this action. Your draft is preserved.")}
             finally {state=state.copy(busy=false,discovering=false);if(name=="post")sending=false;if(name=="group_create")creatingGroup=false;if(name !in setOf("open","older","latest","timeline_filter","search","search_more","discover","storage","devices","profile"))wake.trySend(Unit)}
         }
     }
