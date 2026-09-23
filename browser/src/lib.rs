@@ -8,6 +8,7 @@ use wasm_bindgen::{prelude::*, JsCast};
 mod auth;
 mod passkey;
 mod passkey_codec;
+mod passkey_window;
 mod camera;
 mod location;
 mod call;
