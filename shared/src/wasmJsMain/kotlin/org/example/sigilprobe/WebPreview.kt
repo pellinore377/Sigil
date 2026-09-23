@@ -16,19 +16,31 @@ import kotlin.js.*
     companion object {fun now():Double}
 }
 private fun context(source:String,timezone:String)=buildJsonObject {put("source",source);put("now",(WebDate.now()/1000).toLong());put("timezone",timezone)}.toString()
+private fun seeded(query:String):List<ChatMessage> {
+    val raw=query.removePrefix("?").split('&').firstOrNull {it.startsWith("seed=")}?.removePrefix("seed=") ?: return emptyList()
+    val json=runCatching {kotlin.io.encoding.Base64.UrlSafe.withPadding(kotlin.io.encoding.Base64.PaddingOption.ABSENT_OPTIONAL).decode(raw).decodeToString()}.getOrNull() ?: return emptyList()
+    return runCatching {Json.parseToJsonElement(json).jsonArray.mapIndexedNotNull {i,item->
+        val source=item.jsonObject["text"]?.jsonPrimitive?.content ?: return@mapIndexedNotNull null
+        val mine=item.jsonObject["mine"]?.jsonPrimitive?.booleanOrNull ?: true
+        val parts=Json.parseToJsonElement(rustPlayground(context(source,"UTC"))).jsonArray.mapIndexed {j,p->ContentDecoder.part(p.toString()) {WebDate(it*1000.0).toLocaleString()}.copy(id="seed-$i-$j")}
+        ChatMessage("seed-$i",if(mine)"local" else "maya","",mine,"","sent",false,emptyList(),emptyList(),null,true,timestamp=(WebDate.now()/1000).toLong()-60*i,parts=parts,peer="preview")
+    }}.getOrDefault(emptyList())
+}
 private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(context(source,"UTC"))) {WebDate(it*1000.0).toLocaleString()}}.getOrNull()
 
 @Composable internal fun WebPreview() {
     var materialsReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { try { initializeMaterialWasm().awaitBrowser<kotlin.js.JsAny?>(); materialsReady = initializeMaterialGpu().awaitBrowser<kotlin.js.JsBoolean>().toBoolean() } catch (_: Exception) {} }
     DisposableEffect(Unit) { onDispose { runCatching { browserMaterialShutdown() } } }
+    // Automated design reviews preload messages: ?dark=1&seed=<base64url JSON [{"text":…,"mine":bool}]>.
+    val query=remember {window.location.search}
     var narrow by remember {mutableStateOf(true)}
-    var dark by remember {mutableStateOf(false)}
+    var dark by remember {mutableStateOf(query.contains("dark=1"))}
     var sans by remember {mutableStateOf(false)}
     var error by remember {mutableStateOf("")}
     var sent by remember {mutableStateOf(0L)}
     var sentText by remember {mutableStateOf<String?>(null)}
-    var messages by remember {mutableStateOf(emptyList<ChatMessage>())}
+    var messages by remember {mutableStateOf(seeded(query))}
     var selected by remember {mutableStateOf<String?>("preview")}
     var category by remember {mutableStateOf("Timeline")}
     var thread by remember {mutableStateOf<ThreadTarget?>(null)}
