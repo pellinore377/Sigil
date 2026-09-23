@@ -20,6 +20,30 @@ struct Host {
 }
 thread_local! {static HOST:RefCell<Option<Host>>=const {RefCell::new(None)};}
 thread_local! {static WATCH:RefCell<Option<web_sys::AbortController>>=const {RefCell::new(None)};}
+/// One tab owns browser storage; a newer tab asks the others to step aside.
+struct Owner {
+    _channel: web_sys::BroadcastChannel,
+    _handler: Closure<dyn FnMut(MessageEvent)>,
+}
+thread_local! {static OWNER:RefCell<Option<Owner>>=const {RefCell::new(None)};}
+fn claim_ownership() -> Result<(), JsValue> {
+    if OWNER.with(|slot| slot.borrow().is_some()) {
+        return Ok(());
+    }
+    let channel = web_sys::BroadcastChannel::new("sigil-owner-v1")?;
+    let handler = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+        if event.data().as_string().as_deref() == Some("release") {
+            shutdown();
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().replace("/inactive");
+            }
+        }
+    });
+    channel.set_onmessage(Some(handler.as_ref().unchecked_ref()));
+    channel.post_message(&JsValue::from_str("release"))?;
+    OWNER.with(|slot| *slot.borrow_mut() = Some(Owner { _channel: channel, _handler: handler }));
+    Ok(())
+}
 fn shutdown() {
     crate::files::clear_media_cache();
     WATCH.with(|slot| {
@@ -57,6 +81,7 @@ pub async fn start_browser() -> Result<(), JsValue> {
     if HOST.with(|slot| slot.borrow().is_some()) {
         return Err(fail("Browser client already started"));
     }
+    claim_ownership()?;
     let options = WorkerOptions::new();
     options.set_type(WorkerType::Module);
     let channel = web_sys::MessageChannel::new()?;

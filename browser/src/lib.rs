@@ -62,9 +62,18 @@ pub async fn worker_start() -> Result<(), JsValue> {
         .directory("sigil-device-data")
         .initial_capacity(8)
         .build();
-    let pool = sqlite_wasm_vfs::sahpool::install::<BrowserOs>(&options, false)
-        .await
-        .map_err(|_| fail("Browser storage is unavailable or another Sigil tab owns it"))?;
+    // A tab that was asked to step aside releases storage shortly after.
+    let mut attempt = 0;
+    let pool = loop {
+        match sqlite_wasm_vfs::sahpool::install::<BrowserOs>(&options, false).await {
+            Ok(pool) => break pool,
+            Err(_) if attempt < 20 => {
+                attempt += 1;
+                <BrowserOs as rsqlite_vfs::OsCallback>::sleep(Duration::from_millis(250));
+            }
+            Err(_) => return Err(fail("Browser storage is unavailable. Close other Sigil tabs, or restart the browser.")),
+        }
+    };
     if vault::removing().await? {
         pool.clear_all()
             .await

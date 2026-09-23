@@ -50,6 +50,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/preview", get(index))
         .route("/messenger", get(index))
         .route("/auth/browser",get(browser_callback))
+        .route("/inactive",get(inactive))
         .nest_service("/web", ServeDir::new(directory).precompressed_gzip())
         .route("/setup/v0/status", get(status))
         .route("/setup/v0/claim", post(claim))
@@ -430,6 +431,11 @@ async fn oidc_unlink(
     }
 }
 
+async fn inactive()->Html<&'static str> {
+    Html(r#"<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sigil</title><style>
+body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:#f4f4f4;color:#222;font-family:Georgia,serif}main{max-width:28rem;text-align:center}h1{font-size:2.5rem;font-weight:400;margin:16px 0}p{font-size:1.15rem;line-height:1.5}a{display:inline-block;padding:12px 20px;border-radius:16px;background:#dedede;color:inherit;text-decoration:none}@media(prefers-color-scheme:dark){body{background:#141414;color:#eee}a{background:#333}}
+</style></head><body><main><h1>Sigil</h1><p>Sigil is open in another tab.</p><a href="/">Use Sigil here</a></main></body></html>"#)
+}
 async fn browser_callback()->Html<&'static str> {
     Html(r#"<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sigil</title><style>
 @font-face{font-family:Sigil;src:url('/web/composeResources/sigil.shared.generated.resources/font/newsreader.ttf')}*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;padding:24px;background:#f4f4f4;color:#222;font-family:Sigil,Georgia,serif}main{max-width:28rem;text-align:center}img{width:48px;height:80px;object-fit:contain}h1{font-size:2.5rem;font-weight:400;margin:16px 0}p{font-size:1.15rem;line-height:1.5}a{display:inline-block;padding:12px 20px;border-radius:16px;background:#dedede;color:inherit;text-decoration:none}a:hover{background:#ccc}@media(prefers-color-scheme:dark){body{background:#141414;color:#eee}img{filter:invert(1)}a{background:#333}a:hover{background:#444}}
