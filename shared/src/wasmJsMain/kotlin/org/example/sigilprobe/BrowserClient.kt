@@ -17,6 +17,9 @@ import kotlin.js.*
 @JsName("file_metadata") external fun browserFileMetadata(file:JsAny):String
 @JsName("file_slice") external fun browserFileSlice(file:JsAny,index:Int):Promise<JsAny>
 @JsName("file_stage") external fun browserFileStage(request:String,index:Int,bytes:JsAny):Promise<JsAny>
+@JsName("sso_open") external fun browserSsoOpen():Boolean
+@JsName("sso_navigate") external fun browserSsoNavigate(url:String):Boolean
+@JsName("sso_close") external fun browserSsoClose()
 @JsName("file_read") external fun browserFileRead(peer:String,author:String,message:String,index:Int):Promise<JsAny>
 @JsName("release_bytes") external fun browserReleaseBytes(bytes:JsAny)
 @JsName("file_url") external fun browserFileUrl(peer:String,author:String,message:String,draft:String,length:Double,mediaType:String):Promise<JsString>
