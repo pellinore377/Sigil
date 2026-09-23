@@ -6,6 +6,9 @@ import kotlin.js.*
 @JsName("start_browser") external fun startBrowser():Promise<JsAny>
 @JsName("browser_command") external fun browserCommand(request:String):Promise<JsString>
 @JsName("request_id") external fun browserRequestId():String
+@JsName("passkey_supported") external fun browserPasskeySupported():Boolean
+@JsName("passkey_get") external fun browserPasskeyGet(request:String):Promise<JsString>
+@JsName("passkey_create") external fun browserPasskeyCreate(options:String):Promise<JsString>
 @JsName("mailbox_watch") external fun browserMailboxWatch():Promise<JsBoolean>
 @JsName("camera_start") external fun browserCameraStart(video:org.w3c.dom.HTMLVideoElement):Promise<JsAny>
 @JsName("camera_stop") external fun browserCameraStop()
