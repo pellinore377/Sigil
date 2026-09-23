@@ -62,11 +62,23 @@ pub(crate) fn native_frame(sender:&str, frame:&JsValue, rotation:u16, _token:u32
         v.attach()?;
         let (Some(canvas),Some(staging))=(&v.canvas,&v.staging) else{return Ok(())};
         let started=js_sys::Date::now();
+        let options=object(serde_json::json!({"willReadFrequently":true}))?;
+        // A verified hardware frame is drawn directly; the caller closes it.
+        if let Some(video)=get(frame,"video").ok().filter(|v|v.is_object()) {
+            let width=number(&video,"displayWidth").unwrap_or(0.0);let height=number(&video,"displayHeight").unwrap_or(0.0);
+            if width<1.0 || height<1.0 || width*height>3840.0*2160.0 {return Err(fail("Invalid video frame"));}
+            let turned=rotation==90||rotation==270;let (cw,ch)=if turned{(height,width)}else{(width,height)};
+            if canvas.width()!=cw as u32{canvas.set_width(cw as u32);}if canvas.height()!=ch as u32{canvas.set_height(ch as u32);}
+            let ctx=canvas.get_context("2d")?.ok_or_else(||fail("Missing canvas"))?.dyn_into::<CanvasRenderingContext2d>()?;
+            ctx.save();ctx.translate(cw/2.0,ch/2.0)?;ctx.rotate(f64::from(rotation)*std::f64::consts::PI/180.0)?;
+            let painted=invoke(&ctx,"drawImage",&[video,(-width/2.0).into(),(-height/2.0).into(),width.into(),height.into()]);ctx.restore();painted?;
+            v.record(started,"hardware");
+            return Ok(());
+        }
         let width=number(frame,"displayWidth").unwrap_or(0.0);let height=number(frame,"displayHeight").unwrap_or(0.0);
         let pixels=get(frame,"pixels")?.dyn_into::<Uint8Array>()?;
         if width<1.0 || height<1.0 || width*height>3840.0*2160.0 || f64::from(pixels.length())!=width*height*4.0 {return Err(fail("Invalid video pixels"));}
         if staging.width()!=width as u32{staging.set_width(width as u32);}if staging.height()!=height as u32{staging.set_height(height as u32);}
-        let options=object(serde_json::json!({"willReadFrequently":true}))?;
         let raw=staging.get_context_with_context_options("2d",&options)?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
         let image=Reflect::construct(&get(&js_sys::global(),"ImageData")?.dyn_into::<js_sys::Function>()?,&js_sys::Array::of3(&js_sys::Uint8ClampedArray::new(&pixels.buffer()),&width.into(),&height.into()))?;
         invoke(&raw,"putImageData",&[image,0.into(),0.into()])?;
@@ -75,16 +87,21 @@ pub(crate) fn native_frame(sender:&str, frame:&JsValue, rotation:u16, _token:u32
         let ctx=canvas.get_context_with_context_options("2d",&options)?.unwrap().dyn_into::<CanvasRenderingContext2d>()?;
         ctx.save();ctx.translate(cw/2.0,ch/2.0)?;ctx.rotate(f64::from(rotation)*std::f64::consts::PI/180.0)?;
         let painted=invoke(&ctx,"drawImage",&[staging.clone().into(),(-width/2.0).into(),(-height/2.0).into(),width.into(),height.into()]);ctx.restore();painted?;
-        if v.last_frame>0.0 {v.gap=v.gap.max(started-v.last_frame);}
-        v.last_frame=started;
-        if v.report_at==0.0 {v.report_at=started;}
-        v.displayed+=1;v.draw_max=v.draw_max.max(js_sys::Date::now()-started);
-        if started-v.report_at>=5000.0 {
-            web_sys::console::log_1(&format!("SigilTiming video display fps={:.1} gap_ms={:.0} draw_ms={:.0} mode=software",f64::from(v.displayed)*1000.0/(started-v.report_at),v.gap,v.draw_max).into());
-            v.displayed=0;v.gap=0.0;v.draw_max=0.0;v.report_at=started;
-        }
+        v.record(started,"software");
         Ok(())
     })
+}
+impl NativeViewer {
+    fn record(&mut self, started: f64, mode: &str) {
+        if self.last_frame>0.0 {self.gap=self.gap.max(started-self.last_frame);}
+        self.last_frame=started;
+        if self.report_at==0.0 {self.report_at=started;}
+        self.displayed+=1;self.draw_max=self.draw_max.max(js_sys::Date::now()-started);
+        if started-self.report_at>=5000.0 {
+            web_sys::console::log_1(&format!("SigilTiming video display fps={:.1} gap_ms={:.0} draw_ms={:.0} mode={mode}",f64::from(self.displayed)*1000.0/(started-self.report_at),self.gap,self.draw_max).into());
+            self.displayed=0;self.gap=0.0;self.draw_max=0.0;self.report_at=started;
+        }
+    }
 }
 impl Drop for Capture {
     fn drop(&mut self) {

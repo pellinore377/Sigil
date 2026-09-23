@@ -81,8 +81,13 @@ pub async fn start_browser() -> Result<(), JsValue> {
             let valid=valid && get(&data,"until").ok().and_then(|v|v.as_f64()).is_some_and(|until|js_sys::Date::now()<until);
             if valid { let _=crate::rtc::receive_decoded_video(&data); }
             let _=crate::set(&data,"video_ack",&true.into());
-            if let (Some(worker), Ok(pixels)) = (crate::host::worker(), get(&frame,"pixels").and_then(|p|p.dyn_into::<js_sys::Uint8Array>())) {
-                let _=worker.post_message_with_transfer(&data,&js_sys::Array::of1(&pixels.buffer()));
+            // Hardware frames are drawn and closed here; the worker only needs the acknowledgement.
+            if let Ok(video)=get(&frame,"video") { if video.is_object() { let _=crate::rtc::invoke(&video,"close",&[]); let _=crate::set(&data,"frame",&JsValue::UNDEFINED); } }
+            if let Some(worker)=crate::host::worker() {
+                match get(&frame,"pixels").and_then(|p|p.dyn_into::<js_sys::Uint8Array>()) {
+                    Ok(pixels) => { let _=worker.post_message_with_transfer(&data,&js_sys::Array::of1(&pixels.buffer())); }
+                    Err(_) => { let _=worker.post_message(&data); }
+                }
             }
             return;
         }
