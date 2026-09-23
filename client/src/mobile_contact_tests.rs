@@ -384,7 +384,8 @@ fn altered_requests_never_create_peers_or_transfer_trust() {
             [key.as_slice()],
         )
         .unwrap();
-    assert!(matches!(bob.contact(key), Err(Error::InvalidStore)));
+    // The column only schedules work: editing it can bring work forward, nothing more.
+    assert_eq!(bob.contact(key).unwrap().work_at, 1);
 }
 #[test]
 fn acknowledged_decision_retries_after_its_local_commit_fails() {
@@ -822,4 +823,31 @@ fn a_recovered_device_lists_every_accepted_contact_without_searching() {
             .any(|chat| chat["address"] == "@bob:chat.example"),
         "{chats}"
     );
+}
+#[test]
+fn an_acceptance_wakes_the_requester_through_its_mailbox_wait() {
+    let (_dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
+    alice.after_sign_in().unwrap();
+    bob.after_sign_in().unwrap();
+    let found = alice.mobile_find("@bob:chat.example").unwrap();
+    let target = found["chats"][0]["id"].as_str().unwrap().to_owned();
+    alice.mobile_request(&target, "send").unwrap();
+    let (network, after) = bob.mailbox_watch().unwrap();
+    assert!(network.mailbox_wait(after, 2).unwrap());
+    let run = |store: &mut ClientStore| {
+        let value: Value =
+            serde_json::from_str(&store.mobile_command(r#"{"command":"sync","interactive":true}"#)).unwrap();
+        assert_eq!(value["ok"], true, "{value}");
+    };
+    run(&mut bob);
+    let source = bob.mobile_state().unwrap()["chats"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(bob.mobile_state().unwrap()["chats"][0]["request"], "incoming");
+    bob.mobile_request(&source, "accept").unwrap();
+    // A busy server may return an empty wait at once; the signal waits for the next one.
+    let (network, after) = alice.mailbox_watch().unwrap();
+    assert!((0..3).any(|_| network.mailbox_wait(after, 5).unwrap()));
+    run(&mut alice);
+    let chats = alice.mobile_state().unwrap()["chats"].clone();
+    assert_eq!(chats[0]["request"], "accepted", "{chats}");
+    let _ = target;
 }
