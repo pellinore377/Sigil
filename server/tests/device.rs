@@ -271,9 +271,32 @@ fn link_proof_for(
         joining_signature,
     }
 }
+fn account_key() -> &'static IdentityKey {
+    static KEY: std::sync::OnceLock<IdentityKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| IdentityKey::generate().unwrap())
+}
+fn endorsement(binding: &SignedBinding) -> String {
+    let device = sigil_crypto::link::fingerprint(&binding.binding).unwrap();
+    hex(&sigil_crypto::account::endorse(account_key(), &device).unwrap())
+}
+fn publish_key(store: &mut Store, token: &str, sponsor: &SignedBinding) {
+    store
+        .publish_account_key(
+            token,
+            sigil_protocol::accounts::PublishAccountKey {
+                public: hex(&account_key().public_key()),
+                bundle: None,
+                endorsement: endorsement(sponsor),
+            },
+            1000,
+        )
+        .unwrap();
+}
 fn link_request(proof: &sigil_protocol::link::Proof) -> sigil_protocol::link::Authorization {
     sigil_protocol::link::Authorization {
         proof: hex(&proof.to_bytes().unwrap()),
+        endorsement: endorsement(&proof.joining),
+        secrets: "00".repeat(40),
     }
 }
 #[test]
@@ -287,6 +310,7 @@ fn linking_authorization_checks_signatures_scope_atomicity_exact_retries_and_res
     store
         .publish_device_binding(alice, request(&proof.sponsor), 1000)
         .unwrap();
+    publish_key(&mut store, alice, &proof.sponsor);
     let encoded = proof.to_bytes().unwrap();
     assert_eq!(
         sigil_protocol::link::Proof::from_bytes(&encoded).unwrap(),
@@ -382,6 +406,7 @@ fn cancellation_is_sponsor_scoped_and_wins_a_race_with_link_authorization() {
     store
         .publish_device_binding(alice, request(&proof.sponsor), 1000)
         .unwrap();
+    publish_key(&mut store, alice, &proof.sponsor);
     store
         .cancel_device_link(&users[1].0, &hex(&proof.transcript.sponsor_challenge), 1000)
         .unwrap();
@@ -429,6 +454,7 @@ fn cancelling_a_live_link_retires_the_joined_devices_mail_and_prekeys() {
     store
         .publish_device_binding(alice, request(&proof.sponsor), 1000)
         .unwrap();
+    publish_key(&mut store, alice, &proof.sponsor);
     let joined = store
         .authorize_device_link(alice, link_request(&proof), 1000)
         .unwrap();

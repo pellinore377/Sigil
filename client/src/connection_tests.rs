@@ -407,6 +407,7 @@ fn lost_phone_history_recovers_over_https_with_per_record_restart_progress() {
         )
         .unwrap();
     let reauthorized = replacement.enroll_online().unwrap();
+    crate::account::tests::activate(&mut replacement, &mut source);
     assert_eq!(reauthorized.account_id, session.account_id);
     assert_ne!(reauthorized.device_id, session.device_id);
     replacement
@@ -446,7 +447,7 @@ fn lost_phone_history_recovers_over_https_with_per_record_restart_progress() {
     assert!(
         matches!(replacement.recovery_record([17; 32]).unwrap().content, Content::Retained(bytes) if bytes.as_slice() == [17; 100])
     );
-    for table in ["sessions", "identity", "prekeys", "inbox", "outbox"] {
+    for table in ["sessions", "prekeys", "inbox", "outbox"] {
         assert_eq!(
             replacement
                 .db
@@ -599,6 +600,7 @@ fn trusted_checkpoint_repair(published: bool) {
         )
         .unwrap();
     replacement.enroll_online().unwrap();
+    crate::account::tests::activate(&mut replacement, &mut store);
     let mut wrong_scope = open(&dir.path().join("wrong-scope.db"));
     wrong_scope
         .configure_recovery(
@@ -630,7 +632,6 @@ fn trusted_checkpoint_repair(published: bool) {
         replacement.recovery_status(),
         Err(Error::NotFound)
     ));
-    assert!(store.reconcile_restored_recovery().is_err());
     retained.revision = 2;
     retained.content = Content::Deleted;
     store.retain_recovery_record(&retained).unwrap();
@@ -716,11 +717,9 @@ fn trusted_checkpoint_repair(published: bool) {
         Content::Deleted
     ));
     for table in [
-        "identity",
         "sessions",
         "prekeys",
         "peers",
-        "own_device_binding",
         "inbox",
         "outbox",
     ] {
@@ -791,6 +790,7 @@ fn trusted_checkpoint_repair(published: bool) {
         )
         .unwrap();
     lagging.enroll_online().unwrap();
+    crate::account::tests::activate(&mut lagging, &mut store);
     lagging
         .configure_recovery(
             "chat.example",

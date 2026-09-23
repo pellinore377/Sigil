@@ -265,6 +265,10 @@ impl Proof {
 #[serde(deny_unknown_fields)]
 pub struct Authorization {
     pub proof: String,
+    /// Hex account-key endorsement of the joining binding.
+    pub endorsement: String,
+    /// Hex account secrets sealed for the joining device; opaque to the server.
+    pub secrets: String,
 }
 impl Authorization {
     pub fn parse(&self) -> Result<Proof, &'static str> {

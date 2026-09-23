@@ -11,7 +11,9 @@ struct Snapshot {
     username: String,
     account: Id,
     blocked: bool,
-    anchors: Vec<peers::ContactAnchor>,
+    /// Pinned account key; its endorsements decide device trust after import.
+    account_key: Id,
+    verified: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,17 +34,17 @@ pub(super) fn publish(
     if !contact.accepted() {
         return Ok(());
     }
-    let anchors = peers::contact_anchors(tx, key, &contact.server, contact.account)?;
-    if anchors.is_empty() {
+    let Some(pin) = crate::account::pin(tx, key, &contact.server, &contact.account)? else {
         return Ok(());
-    }
+    };
     let data = Zeroizing::new(
         serde_json::to_vec(&Snapshot {
             server: contact.server.clone(),
             username: contact.username.clone(),
             account: contact.account,
             blocked: contact.blocked,
-            anchors,
+            account_key: pin.key,
+            verified: pin.verified,
         })
         .map_err(|_| Error::InvalidStore)?,
     );
@@ -102,7 +104,8 @@ pub(super) fn publish(
     Ok(())
 }
 
-// Only authenticated same-account live synchronization imports trust, never archive recovery.
+// Imports from same-account devices and from the recovery archive, which the recovery
+// secret authenticates exactly as it does the account key itself.
 pub(crate) fn receive(
     tx: &rusqlite::Transaction<'_>,
     key: &StorageKey,
@@ -166,27 +169,8 @@ pub(crate) fn receive(
         || !sigil_protocol::accounts::valid_username(&snapshot.username)
         || event::account_reference(&snapshot.server, &snapshot.account) != reference
         || reference == author
-        || snapshot.anchors.is_empty()
-        || snapshot.anchors.len() > 64
     {
         return Err(Error::InvalidEvent);
-    }
-    let mut devices = std::collections::BTreeSet::new();
-    for anchor in &snapshot.anchors {
-        let bytes = sigil_protocol::device::Statement {
-            statement: anchor.statement.clone(),
-        }
-        .bytes()
-        .map_err(|_| Error::InvalidEvent)?;
-        let signed = peers::parse(&bytes)?;
-        let b = &signed.binding;
-        if b.server != snapshot.server
-            || b.username != snapshot.username
-            || b.account != snapshot.account
-            || !devices.insert(b.device)
-        {
-            return Err(Error::InvalidEvent);
-        }
     }
     if tx.query_row("SELECT count(*) FROM mobile_contacts", [], |r| {
         r.get::<_, u32>(0)
@@ -194,11 +178,17 @@ pub(crate) fn receive(
     {
         return Err(Error::Limit);
     }
-    for anchor in &snapshot.anchors {
-        let id = peers::import_contact_anchor(tx, key, anchor)?;
-        if snapshot.blocked {
-            peers::block(tx, key, &id, true)?;
-        }
+    if crate::account::pin(tx, key, &snapshot.server, &snapshot.account)?.is_none() {
+        crate::account::save_pin(
+            tx,
+            key,
+            &snapshot.server,
+            &snapshot.account,
+            &crate::account::Pin {
+                key: snapshot.account_key,
+                verified: snapshot.verified,
+            },
+        )?;
     }
     let contact = Contact {
         server: snapshot.server,

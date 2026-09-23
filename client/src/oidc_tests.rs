@@ -16,6 +16,9 @@ fn parameter<'a>(text: &'a str, key: &str) -> &'a str {
         .unwrap()
         .1
 }
+fn mobile_raw(client: &mut ClientStore, request: serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(&client.mobile_command(&request.to_string())).unwrap()
+}
 fn mobile(client: &mut ClientStore, request: serde_json::Value) -> serde_json::Value {
     let result: serde_json::Value =
         serde_json::from_str(&client.mobile_command(&request.to_string())).unwrap();
@@ -85,7 +88,6 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
             &[CA.to_vec()],
             Some("carol"),
             "Synthetic",
-            false,
         )
         .unwrap();
     let previous = load(&client.db, &client.key).unwrap().0;
@@ -261,7 +263,8 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
     }
     assert_eq!(client.connection_session().unwrap(), session);
     assert_eq!(client.own_device_binding().unwrap(), identity);
-    assert!(client.restart_oidc_recovery().is_err());
+    client.ensure_account_key_online().unwrap();
+    let code = client.recovery_code().unwrap();
     let mut replacement = ClientStore::open(
         &dir.path().join("replacement.db"),
         StorageKey::new(sigil_crypto::Secret32::from_bytes([39; 32])).unwrap(),
@@ -274,17 +277,9 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
             &[CA.to_vec()],
             None,
             "Replacement",
-            false,
         )
         .unwrap();
-    let before = load(&replacement.db, &replacement.key).unwrap().1;
-    let denied: serde_json::Value = serde_json::from_str(&replacement.mobile_command(r#"{"command":"recover_account","server":"chat.example","method":"sso","confirm_replacement":false}"#)).unwrap();
-    assert_eq!(denied["ok"], false);
-    assert_eq!(load(&replacement.db, &replacement.key).unwrap().1, before);
-    let started = mobile(
-        &mut replacement,
-        json!({"command":"recover_account","server":"chat.example","method":"sso","confirm_replacement":true}),
-    );
+    let started = serde_json::to_value(replacement.start_oidc_online().unwrap()).unwrap();
     let query = started["authorization_url"]
         .as_str()
         .unwrap()
@@ -311,8 +306,13 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
         &mut replacement,
         json!({"command":"callback","request_id":request,"completion":completion}),
     );
+    // Signing in to an existing account waits for recovery and revokes nothing.
+    assert_eq!(recovered["phase"], "recover");
+    assert!(replacement.connection_session().unwrap().is_none());
+    let wrong = mobile_raw(&mut replacement, json!({"command":"recover","code":"00".repeat(32)}));
+    assert_eq!(wrong["ok"], false);
+    let recovered = mobile(&mut replacement, json!({"command":"recover","code":code}));
     assert_eq!(recovered["phase"], "connected");
-    assert_eq!(recovered["recover_history"], true);
     let recovered_session = replacement.connection_session().unwrap().unwrap();
     assert_eq!(
         recovered_session.account_id,
@@ -323,10 +323,5 @@ fn native_oidc_https_enrollment_survives_restarts_and_local_commit_failure() {
         session.as_ref().unwrap().device_id
     );
     assert_ne!(replacement.own_device_binding().unwrap(), identity);
-    let inventory = replacement.devices_online(None).unwrap();
-    assert!(inventory
-        .devices
-        .iter()
-        .any(|device| device.id == session.as_ref().unwrap().device_id && device.revoked));
-    assert!(client.connected_client().unwrap().session().is_err());
+    assert!(client.connected_client().unwrap().session().is_ok());
 }

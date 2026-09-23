@@ -228,6 +228,7 @@ fn canonical_direct_delivery_is_atomic_restartable_and_recoverable_on_a_fresh_de
         )
         .unwrap();
     let enrolled = restored.enroll_online().unwrap();
+    crate::account::tests::activate(&mut restored, &mut bob);
     assert_eq!(enrolled.account_id, original.account_id);
     assert_ne!(enrolled.device_id, original.device_id);
     configure(&mut restored, 8);
@@ -242,7 +243,7 @@ fn canonical_direct_delivery_is_atomic_restartable_and_recoverable_on_a_fresh_de
     }
     assert!(complete);
     assert!(retained(&restored, id) == text);
-    for table in ["sessions", "identity", "peers", "prekeys", "push_state"] {
+    for table in ["sessions", "peers", "prekeys", "push_state"] {
         assert_eq!(count(&restored, table), 0, "{table}")
     }
     let mut tombstone = alice.recovery_record(id).unwrap();

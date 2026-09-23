@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod account_key;
 mod accounts;
 pub mod admin;
 mod admin_routes;
@@ -216,6 +217,7 @@ fn application_with_log(
         )
         .merge(push_routes::client())
         .merge(link::routes())
+        .merge(account_key::routes())
         .merge(link_relay::routes())
         .merge(admin.layer(RequestBodyLimitLayer::new(MAX_ADMIN_BODY)))
         .merge(enrollment::routes().layer(RequestBodyLimitLayer::new(MAX_ADMIN_BODY)))
@@ -470,7 +472,6 @@ async fn readiness(State(state): State<AppState>) -> Response {
 /// The status a store failure answers with, for routes that report several outcomes in one body.
 pub(crate) fn store_status(value: &StoreError) -> StatusCode {
     match value {
-        StoreError::DeviceLinkRequired => StatusCode::PRECONDITION_REQUIRED,
         StoreError::Forbidden => StatusCode::FORBIDDEN,
         StoreError::Unauthorized => StatusCode::UNAUTHORIZED,
         StoreError::AlreadyExists | StoreError::Conflict => StatusCode::CONFLICT,
@@ -482,11 +483,6 @@ pub(crate) fn store_status(value: &StoreError) -> StatusCode {
 }
 fn store_error(value: StoreError) -> Response {
     match value {
-        StoreError::DeviceLinkRequired => error(
-            StatusCode::PRECONDITION_REQUIRED,
-            "device_link_required",
-            "Link an existing device or use recovery before adding this device",
-        ),
         StoreError::Forbidden => error(
             StatusCode::FORBIDDEN,
             "sender_not_allowed",

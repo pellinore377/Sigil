@@ -891,6 +891,7 @@ fn queued_receipt_polling_needs_no_new_send_authorization_but_new_submissions_do
         address: "@alice:chat.example".into(),
         device_label: "Synthetic".into(),
         expires_at: 3000,
+        pending: false,
     };
     let request = mailbox::Submit {
         recipient_device: "03".repeat(32),

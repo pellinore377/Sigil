@@ -195,7 +195,9 @@ pub(crate) async fn limit(State(state): State<AppState>, mut request: Request, n
     // Resolve the stable device ID before allocating a limiter entry. Random bad
     // tokens cannot grow the map, and credential rotation does not reset a budget.
     let device = match with_store(state.clone(), move |store| {
-        authorize(&store.0, &credential, now()?)
+        let now = now()?;
+        authorize(&store.0, &credential, now)
+            .or_else(|_| crate::account_key::authorize_pending(&store.0, &credential, now))
     })
     .await
     {

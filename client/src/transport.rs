@@ -14,6 +14,18 @@ fn cancelled(tx: &Transaction<'_>, key: &StorageKey, session: &Id, id: &Id) -> R
 pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+pub(super) fn unhex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
+        .collect()
+}
 fn metadata(recipient: &Id, expires: u64) -> [u8; 40] {
     let mut bytes = [0; 40];
     bytes[..32].copy_from_slice(recipient);

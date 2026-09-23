@@ -456,7 +456,7 @@ impl ClientStore {
                         Error::Expired => {}
                         other => return Err(other),
                     }
-                    if now - intent.started >= 604800 {
+                    if now.saturating_sub(intent.started) >= 604800 {
                         self.advance_send_claim(&fingerprint, id, &mut intent, &mut expected, now)?;
                     }
                     let claim = work_id(&fingerprint, &id, intent.generation, b"claim");

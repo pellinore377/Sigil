@@ -761,3 +761,65 @@ fn linking_recovers_an_existing_outgoing_conversation() {
     );
     assert!(!browser.peer(peer.id).unwrap().trusted);
 }
+#[test]
+fn a_recovered_device_lists_every_accepted_contact_without_searching() {
+    let (dir, fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    alice.after_sign_in().unwrap();
+    bob.after_sign_in().unwrap();
+    let found = alice.mobile_find("@bob:chat.example").unwrap();
+    let target = found["chats"][0]["id"].as_str().unwrap().to_owned();
+    alice.mobile_request(&target, "send").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    let source = bob.mobile_state().unwrap()["chats"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    bob.mobile_request(&source, "accept").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    alice.mobile_request(&target, "refresh").unwrap();
+    alice.mobile_contact_sync(true).unwrap();
+    assert!(alice.contact_for(&target).unwrap().accepted());
+    let head = alice.prepare_recovery_upload(now).unwrap();
+    let mut uploaded = false;
+    for _ in 0..64 {
+        if alice.upload_recovery_step().unwrap() == Some(head) {
+            uploaded = true;
+            break;
+        }
+    }
+    assert!(uploaded);
+    let code = alice.recovery_code().unwrap();
+    let account = alice.connection_session().unwrap().unwrap().account_id;
+    let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+    let invite = server.invite_reauthorization(&account, 60, now).unwrap();
+    let mut laptop = open(&dir.path().join("laptop.db"));
+    laptop
+        .prepare_enrollment(
+            "chat.example",
+            fixture.port(),
+            &[crate::network::tests::CA.to_vec()],
+            &invite.secret,
+            "Synthetic laptop",
+            true,
+        )
+        .unwrap();
+    laptop.enroll_online().unwrap();
+    laptop.recover_with_code_online(&code).unwrap();
+    let mut restored = false;
+    for _ in 0..64 {
+        if laptop.download_recovery_step(true).unwrap() == Some(head) {
+            restored = true;
+            break;
+        }
+    }
+    assert!(restored);
+    let chats = laptop.mobile_state().unwrap()["chats"].clone();
+    assert!(
+        chats
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|chat| chat["address"] == "@bob:chat.example"),
+        "{chats}"
+    );
+}

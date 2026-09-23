@@ -16,11 +16,35 @@ use serde::Deserialize;
 use tower_http::{limit::RequestBodyLimitLayer, services::ServeDir};
 
 const COOKIE: &str = "__Host-sigil-admin";
+/// Lets the Android app use passkeys for this host. `SIGIL_ANDROID_APPS` holds
+/// `package=SHA256:FINGERPRINT` pairs separated by commas; unset serves nothing.
+async fn asset_links() -> Response {
+    let Ok(apps) = std::env::var("SIGIL_ANDROID_APPS") else {
+        return axum::http::StatusCode::NOT_FOUND.into_response();
+    };
+    let targets: Vec<_> = apps
+        .split(',')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .filter(|(package, fingerprint)| {
+            !package.is_empty()
+                && package.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+                && fingerprint.bytes().all(|b| b.is_ascii_hexdigit() || b == b':')
+        })
+        .map(|(package, fingerprint)| {
+            serde_json::json!({
+                "relation": ["delegate_permission/common.handle_all_urls", "delegate_permission/common.get_login_creds"],
+                "target": {"namespace": "android_app", "package_name": package, "sha256_cert_fingerprints": [fingerprint.to_ascii_uppercase()]}
+            })
+        })
+        .collect();
+    Json(targets).into_response()
+}
 pub(crate) fn routes() -> Router<AppState> {
     let directory = std::env::var("SIGIL_WEB_DIR")
         .unwrap_or_else(|_| "shared/build/dist/wasmJs/productionExecutable".into());
     Router::new()
         .route(sigil_protocol::discovery::PATH, get(discovery))
+        .route("/.well-known/assetlinks.json", get(asset_links))
         .route("/", get(index))
         .route("/admin", get(index))
         .route("/preview", get(index))

@@ -792,7 +792,7 @@ impl ClientStore {
         )? {
             return Err(Error::Conflict);
         }
-        if target.query_row("SELECT EXISTS(SELECT 1 FROM archive) OR EXISTS(SELECT 1 FROM archive_records) OR EXISTS(SELECT 1 FROM archive_objects) OR EXISTS(SELECT 1 FROM archive_import) OR EXISTS(SELECT 1 FROM archive_pages) OR EXISTS(SELECT 1 FROM identity) OR EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM prekeys) OR EXISTS(SELECT 1 FROM inbox) OR EXISTS(SELECT 1 FROM outbox) OR EXISTS(SELECT 1 FROM peers) OR EXISTS(SELECT 1 FROM own_device_binding)", [], |r| r.get::<_, bool>(0))? {
+        if target.query_row("SELECT EXISTS(SELECT 1 FROM archive) OR EXISTS(SELECT 1 FROM archive_records) OR EXISTS(SELECT 1 FROM archive_objects) OR EXISTS(SELECT 1 FROM archive_import) OR EXISTS(SELECT 1 FROM archive_pages) OR EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM prekeys) OR EXISTS(SELECT 1 FROM inbox) OR EXISTS(SELECT 1 FROM outbox) OR EXISTS(SELECT 1 FROM peers)", [], |r| r.get::<_, bool>(0))? {
             return Err(Error::Conflict);
         }
         // A new transport identity must authorize repair from its own response.

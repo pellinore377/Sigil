@@ -7,6 +7,21 @@ impl ClientStore {
     pub fn reconcile_own_devices_online(&mut self) -> Result<usize, Error> {
         let session = self.connection_session()?.ok_or(Error::Unprepared)?;
         let client = self.connected_client()?;
+        self.ensure_account_key_online()?;
+        // Sibling devices are trusted exactly when the account key endorsed them.
+        let (username, server) = session
+            .address
+            .strip_prefix('@')
+            .and_then(|v| v.split_once(':'))
+            .ok_or(Error::InvalidStore)?;
+        let directory = client.contact_directory(username)?;
+        self.reconcile_contact_trust(
+            &directory,
+            (server, username, id(&session.account_id)?),
+            true,
+            None,
+            conversations::now(),
+        )?;
         let mut after: Option<String> = None;
         let mut revoked = Vec::new();
         for _ in 0..64 {

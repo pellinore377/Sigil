@@ -68,13 +68,26 @@ enum Command {
         replace: Option<bool>,
     },
     CancelLogin {},
-    RecoverAccount {
-        server: String,
-        method: String,
-        invitation: Option<Zeroizing<String>>,
-        confirm_replacement: bool,
-        label: Option<String>,
+    PasskeyRequest {},
+    Recover {
+        credential: Option<String>,
+        prf: Option<Zeroizing<String>>,
+        code: Option<Zeroizing<String>>,
     },
+    ResetIdentity {
+        confirm: bool,
+    },
+    PasskeyCreateOptions {},
+    PasskeyAdd {
+        credential: String,
+        salt: String,
+        prf: Zeroizing<String>,
+        label: String,
+    },
+    PasskeyRemove {
+        credential: String,
+    },
+    RecoveryCode {},
     AccountAccess {},
     AcknowledgeAccess {
         configuration_revision: u64,
@@ -122,14 +135,6 @@ enum Command {
     SignOut {},
     Storage {},
     Diagnostics {},
-    RecoveryGenerate {},
-    RecoveryRestore {
-        secret: Zeroizing<String>,
-        accept_unanchored: bool,
-    },
-    RecoveryEnable {
-        secret: Zeroizing<String>,
-    },
     RecoveryPolicy {
         days: Option<u32>,
     },
@@ -319,7 +324,6 @@ enum Command {
         server: String,
         username: Option<String>,
         label: String,
-        replace_devices: bool,
     },
     Resume {},
     Callback {
@@ -499,7 +503,7 @@ fn public_peer(peer: &Peer) -> Value {
 }
 fn error_message(error: &Error) -> String {
     match error {
-        Error::Network(network::Error::Status { code:428,.. }) => "This account already has a device. Link another device, or recover the account if your devices are lost.",
+        Error::RecoveryMismatch => "That passkey or recovery code doesn't belong to this account.",
         Error::Network(network::Error::Status { code: 401, .. }) => {
             "Sign-in expired or access was revoked."
         }
@@ -585,6 +589,11 @@ impl ClientStore {
     fn mobile_state(&mut self) -> Result<Value, Error> {
         let whole = crate::clock::Instant::now();
         let phase = self.enrollment_kind()?;
+        if phase == "recover" {
+            let session = self.profile_session()?.ok_or(Error::Unprepared)?;
+            return Ok(json!({"phase":phase,"server":self.enrollment_server()?,"address":session.address,
+                "passkeys":self.pending_passkeys().unwrap_or(0)}));
+        }
         if phase != "connected" {
             return Ok(json!({"phase":phase,"server":self.enrollment_server()?}));
         }
@@ -662,7 +671,7 @@ impl ClientStore {
         Ok(
             json!({"phase":phase,"address":session.address,"device":session.device_id,"fingerprint":transport::hex(&fingerprint),"chats":chats,"invitations":invitations,
                 "profile_avatar":avatar,"photo_pending":self.photo_upload_pending()?,
-                "recover_history":self.needs_history_recovery()?,
+                "account_recovery":self.account_recovery_view()?,
                 "read_receipts":prefs.read_receipts,"typing_indicators":prefs.typing_indicators,"presence_sharing":prefs.presence_sharing,
                 "collections_enabled":prefs.collections_enabled,"ui":prefs.ui,"collections":prefs.collections.iter().map(|(id,name)|json!({"id":transport::hex(id),"name":name,"icon":prefs.ui.get(&format!("collection_icon.{}",transport::hex(id))).map(String::as_str).unwrap_or("folder")})).collect::<Vec<_>>()}),
         )
@@ -738,43 +747,45 @@ impl ClientStore {
                 self.cancel_unused_enrollment()?;
                 self.mobile_state()
             }
-            Command::RecoverAccount {
-                server,
-                method,
-                invitation,
-                confirm_replacement,
-                label,
+            Command::PasskeyRequest {} => self.passkey_request(),
+            Command::Recover {
+                credential,
+                prf,
+                code,
             } => {
-                let label = label.as_deref().unwrap_or("Android");
-                if !confirm_replacement {
+                match (credential, prf, code) {
+                    (Some(credential), Some(prf), None) => {
+                        self.recover_with_passkey_online(&credential, &prf)?
+                    }
+                    (None, None, Some(code)) => self.recover_with_code_online(&code)?,
+                    _ => return Err(Error::InvalidEvent),
+                }
+                self.after_sign_in()?;
+                self.mobile_state()
+            }
+            Command::ResetIdentity { confirm } => {
+                if !confirm {
                     return Err(Error::InvalidEvent);
                 }
-                let server = login_server(&server)?;
-                if self.enrollment_server()?.is_some_and(|old| old != server) {
-                    return Err(Error::Conflict);
-                }
-                if method == "sso" {
-                    if self.enrollment_kind()? == "oidc" {
-                        self.restart_oidc_recovery()?;
-                    } else {
-                        self.cancel_unused_enrollment()?;
-                        self.prepare_oidc_enrollment(&server, 443, &[], None, label, true)?;
-                    }
-                    serde_json::to_value(self.start_oidc_online()?).map_err(|_| Error::InvalidStore)
-                } else if method == "invitation" {
-                    let invitation = invitation.ok_or(Error::InvalidEvent)?;
-                    if !sigil_protocol::accounts::valid_credential(&invitation) {
-                        return Err(Error::InvalidEvent);
-                    }
-                    self.cancel_unused_enrollment()?;
-                    self.prepare_enrollment(&server, 443, &[], &invitation, label, true)?;
-                    self.enroll_online()?;
-                    self.publish_device_binding_online()?;
-                    self.mobile_state()
-                } else {
-                    Err(Error::InvalidEvent)
-                }
+                self.reset_identity_online()?;
+                self.after_sign_in()?;
+                self.mobile_state()
             }
+            Command::PasskeyCreateOptions {} => self.passkey_create_options(),
+            Command::PasskeyAdd {
+                credential,
+                salt,
+                prf,
+                label,
+            } => {
+                self.passkey_add_online(&credential, &salt, &prf, &label)?;
+                self.mobile_state()
+            }
+            Command::PasskeyRemove { credential } => {
+                self.passkey_remove_online(&credential)?;
+                self.mobile_state()
+            }
+            Command::RecoveryCode {} => Ok(json!({"code": self.recovery_code()?})),
             Command::AccountAccess {} => self.mobile_account_access(),
             Command::AcknowledgeAccess {
                 configuration_revision,
@@ -863,31 +874,6 @@ impl ClientStore {
             }
             Command::Storage {} => self.mobile_storage(),
             Command::Diagnostics {} => self.mobile_diagnostics(),
-            Command::RecoveryGenerate {} => self.mobile_recovery_generate(),
-            Command::RecoveryRestore {
-                secret,
-                accept_unanchored,
-            } => {
-                let secret = Zeroizing::new(id(&secret)?);
-                self.begin_history_recovery_online(
-                    Secret32::from_bytes(*secret),
-                    accept_unanchored,
-                )?;
-                self.mobile_storage()
-            }
-            Command::RecoveryEnable { secret } => {
-                let binding = peers::parse(&self.own_device_binding()?)?.binding;
-                let secret = Zeroizing::new(id(&secret)?);
-                if *secret == [0; 32] {
-                    return Err(Error::InvalidEvent);
-                }
-                self.configure_recovery(
-                    &binding.server,
-                    binding.account,
-                    Secret32::from_bytes(*secret),
-                )?;
-                self.mobile_storage()
-            }
             Command::RecoveryPolicy { days } => {
                 self.set_recovery_policy(recovery::RecoveryPolicy { history_days: days })?;
                 self.mobile_storage()
@@ -1487,9 +1473,7 @@ impl ClientStore {
             }
             Command::Username { username } => {
                 self.choose_registration_username(&username)?;
-                if self.enrollment_kind()? == "connected" {
-                    self.publish_device_binding_online()?;
-                }
+                self.after_sign_in()?;
                 self.mobile_state()
             }
             Command::Discover { server } => {
@@ -1503,7 +1487,7 @@ impl ClientStore {
                 password,
             } => {
                 self.sign_in_password_online(&server, 443, &[], &username, &password)?;
-                self.publish_device_binding_online()?;
+                self.after_sign_in()?;
                 self.mobile_state()
             }
             Command::Enroll {
@@ -1513,23 +1497,15 @@ impl ClientStore {
             } => {
                 self.prepare_enrollment(&server, 443, &[], &invitation, &label, false)?;
                 self.enroll_online()?;
-                self.publish_device_binding_online()?;
+                self.after_sign_in()?;
                 self.mobile_state()
             }
             Command::Oidc {
                 server,
                 username,
                 label,
-                replace_devices,
             } => {
-                self.prepare_oidc_enrollment(
-                    &server,
-                    443,
-                    &[],
-                    username.as_deref(),
-                    &label,
-                    replace_devices,
-                )?;
+                self.prepare_oidc_enrollment(&server, 443, &[], username.as_deref(), &label)?;
                 Ok(serde_json::to_value(self.start_oidc_online()?)
                     .map_err(|_| Error::InvalidStore)?)
             }
@@ -1545,7 +1521,7 @@ impl ClientStore {
                 } else {
                     self.enroll_online()?;
                 }
-                self.publish_device_binding_online()?;
+                self.after_sign_in()?;
                 self.mobile_state()
             }
             Command::Callback {
@@ -1561,7 +1537,7 @@ impl ClientStore {
                 if self.finish_oidc_online()?.is_none() {
                     return self.mobile_state();
                 }
-                self.publish_device_binding_online()?;
+                self.after_sign_in()?;
                 self.mobile_state()
             }
             Command::CallStart {

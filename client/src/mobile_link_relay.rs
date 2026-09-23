@@ -33,6 +33,15 @@ struct Code {
     offer: String,
     expires: u64,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Join {
+    server: String,
+    id: String,
+    secret: Zeroizing<Id>,
+    token: Zeroizing<String>,
+    expires: u64,
+}
 fn random() -> Result<Id, Error> {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes).map_err(|_| sigil_crypto::Error::Entropy)?;
@@ -65,6 +74,48 @@ impl Relay {
             "sigil:link:v1:relay:{}",
             serde_json::to_string(&code).map_err(|_| Error::InvalidStore)?
         ))
+    }
+    /// Shown by an existing device so a new one needs no server address.
+    pub fn join_code(&self) -> Result<String, Error> {
+        let code = Join {
+            server: self.server.clone(),
+            id: self.id.clone(),
+            secret: self.secret.clone(),
+            token: self.phone.clone(),
+            expires: self.expires,
+        };
+        Ok(format!(
+            "sigil:link:v1:join:{}",
+            serde_json::to_string(&code).map_err(|_| Error::InvalidStore)?
+        ))
+    }
+    pub fn scan_join(text: &str, now: u64) -> Result<Self, Error> {
+        let raw = text
+            .strip_prefix("sigil:link:v1:join:")
+            .filter(|t| t.len() <= 1000)
+            .ok_or(Error::InvalidEvent)?;
+        let code: Join = serde_json::from_str(raw).map_err(|_| Error::InvalidEvent)?;
+        if !sigil_protocol::valid_server_name(&code.server)
+            || !sigil_protocol::accounts::valid_credential(&code.id)
+            || !sigil_protocol::accounts::valid_credential(&code.token)
+            || *code.secret == [0; 32]
+        {
+            return Err(Error::InvalidEvent);
+        }
+        if code.expires <= now || code.expires > now.saturating_add(600) {
+            return Err(Error::Expired);
+        }
+        Ok(Self {
+            server: code.server,
+            id: code.id,
+            secret: code.secret,
+            token: code.token,
+            phone: Zeroizing::new(String::new()),
+            expires: code.expires,
+            outgoing: None,
+            offer: String::new(),
+            registered: true,
+        })
     }
     pub fn scan(text: &str, server: &str, now: u64) -> Result<(Self, String), Error> {
         if text.len() > 4400 {

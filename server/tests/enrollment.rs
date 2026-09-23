@@ -562,7 +562,7 @@ fn recover(store: &mut Store, secret: &str, token: &str, now: u64) -> Result<Ses
 }
 
 #[test]
-fn reauthorization_preserves_account_but_replaces_device_and_authorization() {
+fn reauthorization_admits_a_pending_device_without_touching_others() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sigil.db");
     let mut store = configured(&path);
@@ -601,9 +601,11 @@ fn reauthorization_preserves_account_but_replaces_device_and_authorization() {
     assert_eq!(restored.account_id, alice.account_id);
     assert_eq!(restored.address, alice.address);
     assert_ne!(restored.device_id, alice.device_id);
-    assert!(store.session(&old, NOW).is_err());
-    assert!(store.session(&second_token, NOW).is_err());
+    assert!(restored.pending);
+    assert!(store.session(&old, NOW).is_ok());
+    assert!(store.session(&second_token, NOW).is_ok());
     assert!(store.session(&bob_token, NOW).is_ok());
+    assert!(store.session(&replacement, NOW).is_err());
     assert!(recover(
         &mut store,
         &invitation.secret,
@@ -633,8 +635,9 @@ fn reauthorization_preserves_account_but_replaces_device_and_authorization() {
     assert_eq!(
         Store::open(&path)
             .unwrap()
-            .session(&replacement, NOW)
-            .unwrap(),
+            .pending_state(&replacement, NOW)
+            .unwrap()
+            .session,
         restored
     );
 }
@@ -680,7 +683,7 @@ fn reauthorization_rejects_wrong_invitation_expiry_cancellation_and_disabled_acc
 }
 
 #[test]
-fn reauthorization_failure_rolls_back_revocations_and_preserves_invitation() {
+fn reauthorization_failure_preserves_invitation() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sigil.db");
     let mut store = configured(&path);
@@ -692,7 +695,7 @@ fn reauthorization_failure_rolls_back_revocations_and_preserves_invitation() {
         .unwrap();
     assert!(recover(&mut store, &invitation.secret, &token, NOW).is_err());
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("CREATE TRIGGER fail_replacement BEFORE INSERT ON devices BEGIN SELECT RAISE(ABORT,'synthetic storage failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER fail_replacement BEFORE INSERT ON pending_devices BEGIN SELECT RAISE(ABORT,'synthetic storage failure'); END;").unwrap();
     let replacement = random_secret().unwrap();
     assert!(recover(&mut store, &invitation.secret, &replacement, NOW).is_err());
     assert!(store.session(&token, NOW).is_ok());
@@ -779,15 +782,15 @@ fn reauthorization_crosses_retained_device_history_without_revalidating_old_cred
     let replacement_token = random_secret().unwrap();
     let replacement = recover(&mut store, &invitation.secret, &replacement_token, NOW).unwrap();
     assert_eq!(replacement.account_id, alice.account_id);
-    assert!(store.session(&token, NOW).is_err());
+    assert!(store.session(&token, NOW).is_ok());
     drop(store);
-    let store = Store::open(&path).unwrap();
-    assert_eq!(store.session(&replacement_token, NOW).unwrap(), replacement);
-    assert!(store.session(&token, NOW).is_err());
+    let mut store = Store::open(&path).unwrap();
+    assert_eq!(store.pending_state(&replacement_token, NOW).unwrap().session, replacement);
+    assert!(store.session(&token, NOW).is_ok());
     assert_eq!(
         db.query_row("SELECT count(*) FROM devices", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        257
+        256
     );
 }
 
@@ -859,13 +862,14 @@ async fn http_reauthorization_requires_admin_and_shares_enrollment_rate_budget()
         )
         .await
         .0,
-        401
+        200
     );
+    assert_eq!(session["pending"], true);
     assert_eq!(
         request(
             &app,
             "GET",
-            "/client/v0/session",
+            "/client/v0/pending",
             Some(&replacement),
             serde_json::Value::Null
         )
@@ -916,6 +920,7 @@ fn device_inventory_is_account_scoped_paginated_and_retains_revocation_history()
         let invitation = store
             .invite_reauthorization(&alice.account_id, 60, NOW)
             .unwrap();
+        store.revoke_device(&token, &current, NOW).unwrap();
         token = random_secret().unwrap();
         current = recover(&mut store, &invitation.secret, &token, NOW)
             .unwrap()

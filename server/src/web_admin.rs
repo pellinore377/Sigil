@@ -420,7 +420,6 @@ impl Store {
                 request_id: id.clone(),
                 secret: random()?,
                 username: None,
-                replace_devices: false,
             },
             None,
             now,

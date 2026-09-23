@@ -457,6 +457,7 @@ fn authorized_fresh_import_resumes_but_equal_history_does_not_echo_another_snaps
         )
         .unwrap();
     fresh.enroll_online().unwrap();
+    crate::account::tests::activate(&mut fresh, &mut source);
     configure(&mut fresh);
     assert!(matches!(
         fresh.download_recovery_step(false),
@@ -483,7 +484,7 @@ fn authorized_fresh_import_resumes_but_equal_history_does_not_echo_another_snaps
         RecoveryProgress::Idle
     );
     assert_eq!(fresh.recovery_status().unwrap().anchor, Some(head));
-    for table in ["sessions", "identity", "prekeys", "peers"] {
+    for table in ["sessions", "prekeys", "peers"] {
         assert_eq!(
             fresh
                 .db
@@ -534,6 +535,7 @@ fn media_reference_index_is_rekeyed_on_history_handoff_and_imported_deletion_is_
         )
         .unwrap();
     destination.enroll_online().unwrap();
+    crate::account::tests::activate(&mut destination, &mut source);
     source.copy_recovery_history_to(&mut destination).unwrap();
     let Content::File(bytes) = &retained.content else {
         panic!("missing file")

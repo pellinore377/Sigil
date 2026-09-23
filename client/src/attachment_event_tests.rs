@@ -118,6 +118,7 @@ fn recovery_media_is_reencrypted_republished_and_survives_original_removal() {
         )
         .unwrap();
     restored.enroll_online().unwrap();
+    crate::account::tests::activate(&mut restored, &mut bob);
     configure(&mut restored, 8);
     for _ in 0..16 {
         if restored.download_recovery_step(true).unwrap() == Some(head) {
@@ -444,6 +445,7 @@ fn fresh_device_recovers_file_key_and_downloads_media_without_restoring_sessions
     let invite = server
         .invite_reauthorization(&original.account_id, 60, now)
         .unwrap();
+    let recovery = crate::account::tests::secret(&mut bob);
     drop(bob);
     let path = dir.path().join("fresh.db");
     let open = || {
@@ -465,6 +467,7 @@ fn fresh_device_recovers_file_key_and_downloads_media_without_restoring_sessions
         )
         .unwrap();
     let enrolled = fresh.enroll_online().unwrap();
+    crate::account::tests::activate_with(&mut fresh, &recovery);
     assert_eq!(enrolled.account_id, original.account_id);
     assert_ne!(enrolled.device_id, original.device_id);
     configure(&mut fresh, 8);
@@ -505,7 +508,7 @@ fn fresh_device_recovers_file_key_and_downloads_media_without_restoring_sessions
         recovered.completed_chunk(file, 0, now).unwrap().as_slice(),
         b"media"
     );
-    for table in ["sessions", "identity", "prekeys", "peers"] {
+    for table in ["sessions", "prekeys", "peers"] {
         assert_eq!(
             fresh
                 .db

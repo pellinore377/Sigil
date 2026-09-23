@@ -654,12 +654,80 @@ impl HttpsClient {
             200,
         )
     }
+    pub fn pending(&self) -> Result<accounts::PendingState, Error> {
+        let state: accounts::PendingState = self.json(
+            self.request(Method::GET, "/client/v0/pending", None::<&()>)?,
+            200,
+            65536,
+        )?;
+        if !state.session.pending
+            || state.session.address.rsplit_once(':').is_none_or(|(_, s)| s != self.server)
+            || state.wraps.len() > accounts::MAX_RECOVERY_WRAPS
+        {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(state)
+    }
+    pub fn activate_pending(&self, request: &accounts::Activate) -> Result<accounts::Session, Error> {
+        self.session_response(
+            self.request(Method::POST, "/client/v0/pending/activate", Some(request))?,
+            200,
+        )
+    }
+    pub fn reset_identity(&self, request: &accounts::ResetIdentity) -> Result<accounts::Session, Error> {
+        self.session_response(
+            self.request(Method::POST, "/client/v0/pending/reset", Some(request))?,
+            200,
+        )
+    }
+    pub fn account_key(&self) -> Result<accounts::AccountKey, Error> {
+        self.json(
+            self.request(Method::GET, "/client/v0/account-key", None::<&()>)?,
+            200,
+            4096,
+        )
+    }
+    pub fn publish_account_key(&self, request: &accounts::PublishAccountKey) -> Result<(), Error> {
+        self.empty(self.request(Method::PUT, "/client/v0/account-key", Some(request))?)
+    }
+    pub fn recovery_wraps(&self) -> Result<accounts::RecoveryWraps, Error> {
+        let wraps: accounts::RecoveryWraps = self.json(
+            self.request(Method::GET, "/client/v0/recovery-wraps", None::<&()>)?,
+            200,
+            65536,
+        )?;
+        if wraps.wraps.len() > accounts::MAX_RECOVERY_WRAPS {
+            return Err(Error::InvalidResponse);
+        }
+        Ok(wraps)
+    }
+    pub fn put_recovery_wrap(&self, wrap: &accounts::RecoveryWrap) -> Result<(), Error> {
+        self.empty(self.request(
+            Method::PUT,
+            &format!("/client/v0/recovery-wraps/{}", wrap.id),
+            Some(wrap),
+        )?)
+    }
+    pub fn delete_recovery_wrap(&self, id: &str) -> Result<(), Error> {
+        if id.is_empty() || id.len() > 2046 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::Configuration);
+        }
+        self.empty(self.request(
+            Method::DELETE,
+            &format!("/client/v0/recovery-wraps/{id}"),
+            None::<&()>,
+        )?)
+    }
     pub fn authorize_device_link(
         &self,
         proof: &sigil_protocol::link::Proof,
+        endorsement: &[u8; 64],
+        secrets: &[u8],
     ) -> Result<accounts::Session, Error> {
         let request = sigil_protocol::link::Authorization {
             proof: super::transport::hex(&proof.to_bytes().map_err(|_| Error::Configuration)?),
+            endorsement: super::transport::hex(endorsement),
+            secrets: super::transport::hex(secrets),
         };
         let session = self.session_response(
             self.request(Method::POST, "/client/v0/device-links", Some(&request))?,
@@ -675,13 +743,15 @@ impl HttpsClient {
         }
         Ok(session)
     }
-    pub fn own_device_link(&self) -> Result<sigil_protocol::link::Proof, Error> {
+    /// The sponsor's proof plus the account secrets it sealed for this device.
+    pub fn own_device_link(&self) -> Result<(sigil_protocol::link::Proof, Vec<u8>), Error> {
         let request: sigil_protocol::link::Authorization = self.json(
             self.request(Method::GET, "/client/v0/device-link", None::<&()>)?,
             200,
-            4096,
+            8192,
         )?;
-        request.parse().map_err(|_| Error::InvalidResponse)
+        let secrets = super::transport::unhex(&request.secrets).ok_or(Error::InvalidResponse)?;
+        Ok((request.parse().map_err(|_| Error::InvalidResponse)?, secrets))
     }
     pub fn cancel_device_link(&self, challenge: &[u8; 32]) -> Result<(), Error> {
         self.empty(self.request(

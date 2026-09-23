@@ -9,18 +9,41 @@ impl ClientStore {
         if scanned.is_some_and(|v| v.len() > 4400) {
             return Err(Error::Limit);
         }
+        let mut bootstrap = None;
+        let mut server = server.map(str::to_owned);
+        if action == "join_scan" && self.link_flow()?.is_none() {
+            let code = relay::Relay::scan_join(scanned.ok_or(Error::InvalidEvent)?, conversations::now())?;
+            server = Some(code.server.clone());
+            bootstrap = Some(code);
+        }
+        let action = if action == "join_scan" { "join" } else { action };
         if action == "join" && self.link_flow()?.is_none() {
-            let host = super::super::login_server(server.ok_or(Error::InvalidEvent)?)?;
+            let host = super::super::login_server(server.as_deref().ok_or(Error::InvalidEvent)?)?;
             let (port, roots) = relay::endpoint();
             let methods = network::HttpsClient::login_methods(&host, port, &roots)?;
             self.link_step("join", None)?;
             let mut flow = self.link_flow()?.ok_or(Error::Unprepared)?;
             let offer = self.prepare_device_link_offer(flow.attempt, conversations::now())?;
             flow.relay = Some(relay::Relay::new(methods.server_name, offer.expires_at)?);
+            flow.bootstrap = bootstrap;
             self.save_link_flow(&flow)?;
-        } else if action == "sponsor" {
-            self.link_step("sponsor", None)?;
+        } else if action == "sponsor" || action == "sponsor_show" {
+            if self.link_flow()?.is_none() {
+                self.link_step("sponsor", None)?;
+            }
+            if action == "sponsor_show" {
+                let mut flow = self.link_flow()?.ok_or(Error::Unprepared)?;
+                if flow.bootstrap.is_none() && flow.relay.is_none() {
+                    let session = self.connection_session()?.ok_or(Error::Unprepared)?;
+                    let server = session.address.rsplit_once(':').ok_or(Error::InvalidStore)?.1;
+                    let code = relay::Relay::new(server.into(), conversations::now() + 600)?;
+                    code.reserve(&code.network()?)?;
+                    flow.bootstrap = Some(code);
+                    self.save_link_flow(&flow)?;
+                }
+            }
         }
+        let action = if action == "sponsor_show" { "sponsor" } else { action };
         let Some(mut flow) = self.link_flow()? else {
             return Ok(json!({"stage":"none"}));
         };
@@ -75,7 +98,7 @@ impl ClientStore {
                 return Err(Error::InvalidEvent);
             }
             self.link_step("confirm", None)?;
-        } else if !matches!(action, "join" | "sponsor" | "poll" | "retry") {
+        } else if !matches!(action, "join" | "sponsor" | "poll" | "retry" | "join_scan" | "sponsor_show") {
             return Err(Error::InvalidEvent);
         }
         self.advance_link()?;
@@ -89,6 +112,18 @@ impl ClientStore {
         if flow.stage == "authorize" || flow.stage == "cancelling" {
             self.link_step("retry", None)?;
             return Ok(());
+        }
+        if flow.sponsor && flow.relay.is_none() && flow.stage == "scan_offer" {
+            if let Some(code) = flow.bootstrap.as_ref() {
+                if let Some(packet) = code.exchange(&code.network()?, false)? {
+                    let text = code.open(&packet, true)?;
+                    let session = self.connection_session()?.ok_or(Error::Unprepared)?;
+                    let server = session.address.rsplit_once(':').ok_or(Error::InvalidStore)?.1;
+                    let (relay, _) = relay::Relay::scan(&text, server, conversations::now())?;
+                    flow.relay = Some(relay);
+                    self.save_link_flow(&flow)?;
+                }
+            }
         }
         let Some(relay) = flow.relay.as_ref() else {
             if !flow.sponsor && flow.stage == "show_response" {
@@ -105,6 +140,15 @@ impl ClientStore {
             relay.reserve(&network)?;
             flow.relay.as_mut().unwrap().registered = true;
             self.save_link_flow(&flow)?;
+        }
+        // A joiner that scanned the other device's code hands it this device's code.
+        if !flow.sponsor && flow.stage == "show_offer" {
+            if let Some(mut code) = flow.bootstrap.take() {
+                code.seal(&flow.relay.as_ref().unwrap().code(flow.qr.clone())?, true)?;
+                code.exchange(&code.network()?, false)?;
+                flow.bootstrap = Some(code);
+                self.save_link_flow(&flow)?;
+            }
         }
         if flow.sponsor && flow.stage == "scan_offer" {
             let offer = flow.relay.as_ref().unwrap().offer.clone();
@@ -150,6 +194,19 @@ impl ClientStore {
         };
         let Some(relay) = flow.relay.as_ref() else {
             let mut value = self.link_step("status", None)?;
+            if let (true, "scan_offer", Some(code)) = (flow.sponsor, flow.stage.as_str(), flow.bootstrap.as_ref()) {
+                let text = Zeroizing::new(code.join_code()?);
+                let qr = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M)
+                    .map_err(|_| Error::Limit)?;
+                value["stage"] = json!("show_join");
+                value["width"] = json!(qr.width());
+                value["cells"] = json!(qr
+                    .to_colors()
+                    .into_iter()
+                    .map(|c| if c == qrcode::Color::Dark { '1' } else { '0' })
+                    .collect::<String>());
+                return Ok(value);
+            }
             if flow.stage == "done" || (flow.sponsor && flow.stage == "scan_offer") {
                 return Ok(value);
             }
@@ -195,6 +252,7 @@ impl ClientStore {
         value.as_object_mut().unwrap().remove("cells");
         value.as_object_mut().unwrap().remove("width");
         match flow.stage.as_str() {
+            "show_offer" if flow.bootstrap.is_some() => value["stage"] = json!("wait_approval"),
             "show_offer" if relay.registered => {
                 let code = Zeroizing::new(relay.code(flow.qr)?);
                 let qr = qrcode::QrCode::with_error_correction_level(
@@ -301,5 +359,56 @@ mod tests {
             browser.mobile_link("poll", None, None).unwrap()["stage"],
             "done"
         );
+    }
+    #[test]
+    fn a_new_device_scans_the_existing_devices_code_and_inherits_the_account() {
+        let (dir, fixture, invitation, now) = crate::connection::tests::setup();
+        relay::TEST_ENDPOINT.with(|v| {
+            *v.borrow_mut() = Some((fixture.port(), vec![crate::network::tests::CA.to_vec()]))
+        });
+        let _endpoint = Endpoint;
+        let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+        let mut policy = server.administration_policy().unwrap();
+        policy.public_origin = Some(format!("https://chat.example:{}", fixture.port()));
+        server.configure_administration(policy).unwrap();
+        let mut laptop = open(&dir.path().join("laptop.db"));
+        crate::connection::tests::prepare(&mut laptop, &fixture, &invitation.secret);
+        laptop.enroll_online().unwrap();
+        laptop.ensure_account_key_online().unwrap();
+        let shown = laptop.mobile_link("sponsor_show", None, None).unwrap();
+        assert_eq!(shown["stage"], "show_join");
+        assert!(shown["width"].as_u64().unwrap() <= 177);
+        let code = laptop.link_flow().unwrap().unwrap().bootstrap.unwrap().join_code().unwrap();
+        let mut phone = open(&dir.path().join("phone.db"));
+        assert!(phone.mobile_link("join_scan", Some("sigil:link:v1:join:{}"), None).is_err());
+        let waiting = phone.mobile_link("join_scan", Some(&code), None).unwrap();
+        assert_eq!(waiting["stage"], "wait_approval");
+        assert!(waiting.get("cells").is_none());
+        assert_eq!(laptop.mobile_link("poll", None, None).unwrap()["stage"], "exchanging");
+        let emoji = phone.mobile_link("poll", None, None).unwrap()["emoji"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            laptop.mobile_link("poll", None, None).unwrap()["stage"],
+            "confirm_sponsor"
+        );
+        assert_eq!(
+            laptop.mobile_link("confirm", Some(&emoji), None).unwrap()["stage"],
+            "done"
+        );
+        assert_eq!(phone.mobile_link("poll", None, None).unwrap()["stage"], "done");
+        assert_eq!(server.admin_diagnostics(now).unwrap()["devices"], 2);
+        assert_eq!(phone.recovery_code().unwrap(), laptop.recovery_code().unwrap());
+        // The server listed the phone as endorsed, so the laptop trusts it without review.
+        laptop.reconcile_own_devices_online().unwrap();
+        let session = phone.connection_session().unwrap().unwrap();
+        let peer = laptop
+            .peer(crate::peers::reference(
+                "chat.example",
+                &crate::connection::decode_id(&session.device_id).unwrap(),
+            ))
+            .unwrap();
+        assert!(peer.trusted);
     }
 }

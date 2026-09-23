@@ -11,6 +11,9 @@ mod transport_flow;
 struct Flow {
     #[serde(default)]
     relay: Option<relay::Relay>,
+    /// The existing device's code a camera-only joiner scanned, or the one it shows.
+    #[serde(default)]
+    bootstrap: Option<relay::Relay>,
     attempt: Id,
     sponsor: bool,
     stage: String,
@@ -86,6 +89,7 @@ impl ClientStore {
             getrandom::fill(&mut attempt).map_err(|_| sigil_crypto::Error::Entropy)?;
             let initial = Flow {
                 relay: None,
+                bootstrap: None,
                 attempt,
                 sponsor,
                 stage: if sponsor {

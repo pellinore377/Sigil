@@ -242,12 +242,7 @@ impl Store {
             .settings
             .ok_or(StoreError::Unauthorized)?
             .server_name;
-        let expires_at = now
-            .checked_add(DEVICE_LIFETIME)
-            .filter(|v| *v <= i64::MAX as u64)
-            .ok_or(StoreError::InvalidData)?;
         let mut account_id = random_secret().map_err(|_| StoreError::InvalidData)?;
-        let device_id = random_secret().map_err(|_| StoreError::InvalidData)?;
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -262,26 +257,11 @@ impl Store {
         if oidc.as_ref().is_some_and(|v| v.3 != reauthorize) {
             return Err(StoreError::Unauthorized);
         }
-        let replacement_allowed: Option<bool> = tx
-            .query_row(
-                "SELECT replace_devices FROM oidc_grants WHERE token_hash=?1 AND expires>?2",
-                (digest(&request.invitation).as_slice(), now as i64),
-                |r| r.get(0),
-            )
-            .optional()?;
         let username = match (&invitation, &oidc) {
             (Some(name), None) => name.clone(),
             (None, Some((_, _, name, _))) => name.clone(),
             _ => return Err(StoreError::Unauthorized),
         };
-        let duplicate: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM devices WHERE token_hash = ?1)",
-            [digest(&request.device_credential).as_slice()],
-            |r| r.get(0),
-        )?;
-        if duplicate {
-            return Err(StoreError::AlreadyExists);
-        }
         if reauthorize {
             account_id = tx
                 .query_row(
@@ -291,17 +271,6 @@ impl Store {
                 )
                 .optional()?
                 .ok_or(StoreError::Unauthorized)?;
-            if replacement_allowed == Some(false) {
-                let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM devices WHERE account_id=?1 AND revoked=0 AND expires_at>?2)", (&account_id,now as i64), |r|r.get(0))?;
-                if active {
-                    return Err(StoreError::Conflict);
-                }
-            }
-            tx.execute(
-                "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
-                [&account_id],
-            )?;
-            retire_account_delivery(&tx, &account_id)?;
         } else {
             crate::admin::register(&tx, now, oidc.is_some())?;
             let exists: bool = tx.query_row(
@@ -317,8 +286,13 @@ impl Store {
                 (&account_id, &username),
             )?;
         }
-        crate::storage_budget::reserve(&tx, &account_id, crate::storage_budget::DEVICE, now)?;
-        tx.execute("INSERT INTO devices(id, account_id, label, token_hash, expires_at) VALUES(?1, ?2, ?3, ?4, ?5)", (&device_id, &account_id, &request.device_label, digest(&request.device_credential).as_slice(), expires_at as i64))?;
+        let (device_id, expires_at, pending) = crate::account_key::admit(
+            &tx,
+            &account_id,
+            &request.device_label,
+            &request.device_credential,
+            now,
+        )?;
         tx.execute(
             "DELETE FROM invitations WHERE token_hash = ?1",
             [digest(&request.invitation).as_slice()],
@@ -337,6 +311,7 @@ impl Store {
             device_id,
             device_label: request.device_label,
             expires_at,
+            pending,
         })
     }
 
@@ -351,7 +326,7 @@ impl Store {
             .server_name;
         self.0.query_row("SELECT a.id, a.username, d.id, d.label, d.expires_at FROM devices d JOIN accounts a ON a.id = d.account_id WHERE d.token_hash = ?1 AND d.revoked = 0 AND a.disabled = 0 AND d.expires_at > ?2", (digest(credential).as_slice(), now as i64), |r| {
             let username: String = r.get(1)?;
-            Ok(Session { account_id: r.get(0)?, address: format!("@{username}:{server_name}"), device_id: r.get(2)?, device_label: r.get(3)?, expires_at: r.get::<_, i64>(4)? as u64 })
+            Ok(Session { account_id: r.get(0)?, address: format!("@{username}:{server_name}"), device_id: r.get(2)?, device_label: r.get(3)?, expires_at: r.get::<_, i64>(4)? as u64, pending: false })
         }).optional()?.ok_or(StoreError::Unauthorized)
     }
 

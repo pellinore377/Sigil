@@ -34,16 +34,14 @@ impl ClientStore {
             _ => Err(Error::InvalidEvent),
         }
     }
-    pub(super) fn mobile_recovery_generate(&self) -> Result<Value, Error> {
-        self.connected_client()?;
-        match self.recovery_status() {
-            Err(Error::Unprepared | Error::NotFound) => (),
-            Ok(_) => return Err(Error::Conflict),
-            Err(error) => return Err(error),
+    /// A connected device publishes its binding and, once, the account key.
+    pub(super) fn after_sign_in(&mut self) -> Result<(), Error> {
+        if self.enrollment_kind()? != "connected" {
+            return Ok(());
         }
-        let mut secret = Zeroizing::new([0; 32]);
-        getrandom::fill(secret.as_mut()).map_err(|_| sigil_crypto::Error::Entropy)?;
-        Ok(json!({"secret": transport::hex(secret.as_ref())}))
+        self.publish_device_binding_online()?;
+        self.ensure_account_key_online()?;
+        self.ensure_backup()
     }
     pub(super) fn mobile_devices(&self, cursor: Option<String>) -> Result<Value, Error> {
         if cursor.as_ref().is_some_and(|value| value.len() > 2048) {

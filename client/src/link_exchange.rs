@@ -479,7 +479,23 @@ impl ClientStore {
         let proof = Proof::from_bytes(saved.proof.as_ref().ok_or(Error::Unprepared)?)
             .map_err(|_| Error::InvalidStore)?;
         self.publish_device_binding_online()?;
-        let receipt = self.connected_client()?.authorize_device_link(&proof)?;
+        let transcript = proof.transcript.clone();
+        let key = IdentityKey::open_checkpoint(
+            &self.key,
+            saved.key.as_ref().ok_or(Error::Cancelled)?,
+            &crate::binding(32, &own, &attempt),
+        )?;
+        let (endorsement, secrets) = self.link_secrets(&proof.joining.binding)?;
+        let sealed = frame(
+            &key,
+            &transcript.provisioning_key,
+            &confirmation(&transcript)?,
+            2,
+            &secrets,
+        )?;
+        let receipt = self
+            .connected_client()?
+            .authorize_device_link(&proof, &endorsement, &sealed)?;
         let tx = self
             .db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -521,7 +537,13 @@ impl ClientStore {
             roots,
         )?;
         let session = client.session()?;
-        let proof = client.own_device_link()?;
+        let (proof, sealed) = client.own_device_link()?;
+        let (peer, digest, secrets) = unframe(&pending.secrets.as_ref().ok_or(Error::Cancelled)?.0, &sealed, 2)?;
+        if saved.proposal.get(8..40) != Some(peer.as_slice())
+            || digest != confirmation(&proof.transcript)?
+        {
+            return Err(Error::Conflict);
+        }
         if proof
             .transcript
             .to_bytes()
@@ -580,6 +602,7 @@ impl ClientStore {
         current.completed = true;
         save(&tx, &self.key, &own, &id, &current, true)?;
         tx.commit()?;
+        self.adopt_link_secrets(&secrets)?;
         Ok(session)
     }
 }

@@ -5,7 +5,6 @@ pub struct Start {
     pub request_id: String,
     pub secret: String,
     pub username: Option<String>,
-    pub replace_devices: bool,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -28,7 +27,6 @@ pub enum Progress {
     Failed,
     Linked,
     UsernameRequired,
-    Access { expires_at: u64 },
     Ready { reauthorize: bool, expires_at: u64 },
 }
 

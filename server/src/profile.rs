@@ -136,14 +136,15 @@ mod tests {
             .unwrap();
         assert_eq!(renewed.account_id, original.account_id);
         assert_eq!(renewed.address, original.address);
-        assert!(store.update_profile(&alice, saved.clone(), now).is_err());
+        assert!(renewed.pending);
+        assert!(store.profile(&replacement, now).is_err());
         drop(store);
         let mut store = Store::open(&dir.path().join("sigil.db")).unwrap();
-        assert_eq!(store.profile(&replacement, now).unwrap(), saved);
+        assert_eq!(store.profile(&alice, now).unwrap(), saved);
         assert_eq!(
             store
                 .update_profile(
-                    &replacement,
+                    &alice,
                     Profile {
                         revision: 1,
                         display_name: String::new()
@@ -159,7 +160,7 @@ mod tests {
     fn schema_28_migrates_without_changing_existing_accounts() {
         let (dir, store, alice, _, now) = crate::admin::tests::setup();
         let before = store.session(&alice, now).unwrap();
-        store.0.execute_batch("DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; ALTER TABLE oidc_grants DROP COLUMN replace_devices; DROP TABLE account_profiles; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; ALTER TABLE web_owner DROP COLUMN suggested_name; DROP TABLE IF EXISTS push_android; DROP TABLE link_relay; PRAGMA user_version=28;").unwrap();
+        store.0.execute_batch("DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; DROP TABLE account_profiles; DROP TABLE oidc_fallback_ack; DROP TABLE oidc_transition; ALTER TABLE web_owner DROP COLUMN suggested_name; DROP TABLE IF EXISTS push_android; DROP TABLE link_relay; PRAGMA user_version=28;").unwrap();
         drop(store);
         let store = Store::open(&dir.path().join("sigil.db")).unwrap();
         assert_eq!(store.session(&alice, now).unwrap(), before);
