@@ -284,8 +284,14 @@ impl HttpsClient {
             let _ = response.body_mut().with_config().limit(SMALL as u64).read_to_vec();
             return Err(error);
         }
+        let signalled = response
+            .headers()
+            .contains_key(sigil_protocol::mailbox::SIGNAL_HEADER);
+        if signalled {
+            crate::CONTACT_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let bytes = self.response_bytes(response, 200, MAILBOX_RESPONSE, "application/json")?;
-        Ok(bytes.contains(&b'{'))
+        Ok(signalled || bytes.contains(&b'{'))
     }
     pub(crate) fn api_origin(&self) -> Result<String, Error> {
         if !self.discover {

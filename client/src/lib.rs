@@ -77,6 +77,8 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
+/// Set when the server reports a contact request or reply outside the mailbox.
+pub(crate) static CONTACT_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub const DATABASE_VERSION: u32 = 86;
 #[derive(Debug)]
 pub enum Error {
