@@ -78,6 +78,8 @@ fn utility_results_are_fixed_validated_and_never_executed() {
         "qr::wifi::SyntheticNetwork::redact::secret;",
         "qr::text::redact::secret;",
         "roll::2d6, 1d20;",
+        "roll::2d6, d20;",
+        "roll::d100;",
         "pick::food;",
         "pick::flip;",
         "pick::number::-5--1;",
@@ -114,6 +116,14 @@ fn utility_results_are_fixed_validated_and_never_executed() {
             }
         }
     }
+    let Parsed::Card(card) = parse_card("pick::number::100-1;", origin(), Default::default()).unwrap().content else {
+        panic!("reversed number range");
+    };
+    let structured::Construct::Utility(utility::Utility::Random(utility::Randomizer::Number { min, max, selected })) = card.content else {
+        panic!("reversed number range");
+    };
+    assert_eq!((min, max), (1, 100));
+    assert!((1..=100).contains(&selected));
     for source in [
         "calc::1/0;",
         "math::\\input{file};",

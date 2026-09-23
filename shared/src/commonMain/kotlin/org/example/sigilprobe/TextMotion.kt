@@ -82,7 +82,7 @@ internal fun ChatMessage.messageMotionDuration()=parts.maxOfOrNull {p->
             s.current?.let {add(it.description)};addAll(s.days.map {it.description});addAll(s.hours.map {it.description})
         }
     }
-    maxOf(if(p.chart!=null)ChartMotionMillis else 0,p.utility?.motion?.let(::randomizerDuration) ?: 0,texts.maxOfOrNull {t->t.motion.maxOfOrNull {if(it.kind=="typewriter" && it.stagger>0)minOf(it.duration,it.stagger*it.units.size) else it.duration} ?: 0} ?: 0)
+    maxOf(if(p.chart!=null)ChartMotionMillis else 0,if(p.diagram!=null)DiagramMotionMillis else 0,if(p.utility?.kind=="progress")ProgressMotionMillis else 0,if(p.table!=null)TableMotionMillis else 0,if(p.utility?.kind=="rating")RatingMotionMillis else 0,p.utility?.motion?.let(::randomizerDuration) ?: 0,texts.maxOfOrNull {t->t.motion.maxOfOrNull {if(it.kind=="typewriter" && it.stagger>0)minOf(it.duration,it.stagger*it.units.size) else it.duration} ?: 0} ?: 0)
 } ?: 0
 internal fun ChatMessage.hasMessageMotion()=messageMotionDuration()>0
 

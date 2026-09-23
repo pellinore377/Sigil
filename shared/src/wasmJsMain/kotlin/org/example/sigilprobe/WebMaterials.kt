@@ -15,6 +15,7 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import org.w3c.dom.HTMLCanvasElement
 
+private var workerWarm=false
 internal object WebMaterials:MaterialPlatform {
     override val available=true
     @Composable override fun Object(kind:Int,sides:Int,face:Int,rotation:FloatArray?,label:String?,modifier:Modifier,progress:Float) {
@@ -34,6 +35,8 @@ internal object WebMaterials:MaterialPlatform {
             put("rotation",rotation?.let {JsonArray(it.map(::JsonPrimitive))} ?: JsonNull)
             put("style",JsonArray(style.map(::JsonPrimitive)))
         }.toString()
+        // A draft preview starts the physics worker, so a send does not pay its cold start.
+        if(timeline==null)LaunchedEffect(Unit) {if(!workerWarm) {workerWarm=true;try {browserMaterialRecord("[]").awaitBrowser<kotlin.js.JsString>()}catch(cancelled:CancellationException){throw cancelled}catch(_:Throwable){}}}
         var failed by remember {mutableStateOf(false)}
         val canvas=remember {(document.createElement("canvas") as HTMLCanvasElement).apply {width=if(kind==2)130 else 192;height=192;setAttribute("style","display:block;width:100%;height:100%;pointer-events:none");setAttribute("data-sigil-material","canvas");if(timeline!=null)this.style.setProperty("clip-path","inset(100%)")}}
         LaunchedEffect(canvas, timeline, occlusion, density, active) {
@@ -59,6 +62,7 @@ internal object WebMaterials:MaterialPlatform {
                 if (value != previous) { canvas.style.setProperty("clip-path", value); previous = value }
             }
         }
+        val drawn by rememberUpdatedState(LocalMaterialDrawn.current)
         val opacity=LocalMaterialOpacity.current
         SideEffect {canvas.style.opacity=opacity.coerceIn(0f,1f).toString()}
         val holder=remember {arrayOf<BrowserMaterialView?>(null)}
@@ -73,6 +77,7 @@ internal object WebMaterials:MaterialPlatform {
                 val view=holder[0] ?: BrowserMaterialView(canvas).also{holder[0]=it}
                 withTimeout(5000){while(!view.draw(frame)){delay(16)}}
                 rendered[0]=frame
+                drawn?.invoke()
                 // The display canvas keeps exact final pixels; the bounded GPU
                 // pool belongs to moving/new objects, not settled history rows.
                 if(progress>=1f){view.free();holder[0]=null}

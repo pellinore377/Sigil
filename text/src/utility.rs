@@ -108,7 +108,12 @@ pub(crate) fn dice_plan(source: &str, limits: CardLimits) -> Result<Vec<(usize, 
     let mut total = 0usize;
     for group in source.split(',') {
         let (count, sides) = group.trim().split_once('d').ok_or(Error::Invalid)?;
-        let count = count.parse::<usize>().map_err(|_| Error::Invalid)?;
+        // "d20" is the standard shorthand for one die.
+        let count = if count.is_empty() {
+            1
+        } else {
+            count.parse::<usize>().map_err(|_| Error::Invalid)?
+        };
         let sides = sides.parse::<u32>().map_err(|_| Error::Invalid)?;
         total = total.checked_add(count).ok_or(Error::Limit)?;
         if count == 0 || total > limits.items || !(2..=limits.dice_sides).contains(&sides) {
@@ -576,10 +581,10 @@ pub(crate) fn parse(lines: &[&str], limits: CardLimits) -> Result<Utility, Error
                     .find('-')
                     .ok_or(Error::Invalid)?
                     + 1;
-                Randomizer::number(
-                    range[..at].parse().map_err(|_| Error::Invalid)?,
-                    range[at + 1..].parse().map_err(|_| Error::Invalid)?,
-                )?
+                let a: i64 = range[..at].parse().map_err(|_| Error::Invalid)?;
+                let b: i64 = range[at + 1..].parse().map_err(|_| Error::Invalid)?;
+                // A reversed range is the same range.
+                Randomizer::number(a.min(b), a.max(b))?
             } else if let Some(options) = category(source) {
                 Randomizer::pick(
                     Some(source.into()),

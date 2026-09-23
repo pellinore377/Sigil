@@ -8,7 +8,7 @@ data class ObjectStyle(val color:Int=0x7038ba,val second:Int=0x7038ba,val ink:In
     internal fun encode()=listOf(accentText(color),accentText(second),accentText(ink),roughness,transmission,absorption,roundness,engraving,inclusions,border,texture,followBody).joinToString(",")
 }
 internal fun defaultObjectStyle(kind:Int)=when(kind) {
-    1->ObjectStyle(0xd49e47,0xd49e47,0xb88030,followBody=false)
+    1->ObjectStyle(0x454542,0x454542,0xffcc80,followBody=false)
     2->ObjectStyle(0x302947,0x5e3875,0xe3c788,followBody=false)
     else->ObjectStyle(roundness=.055f)
 }

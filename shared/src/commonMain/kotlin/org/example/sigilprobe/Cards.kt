@@ -30,6 +30,7 @@ internal val LocalBubbleCue=staticCompositionLocalOf<MutableFloatState?> {null}
 
 @Composable
 internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, command: Command?, bareObjects: Boolean = false) {
+    if (!bareObjects && message.inlineMathLine()) { InlineMathMessage(message, analyze); return }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = if (bareObjects && message.mine) Alignment.End else Alignment.Start) {
         message.parts.forEachIndexed { index,part ->
             if (part.kind == "text") {

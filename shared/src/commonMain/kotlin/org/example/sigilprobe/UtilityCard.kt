@@ -38,22 +38,22 @@ internal fun utilityAction(value: UtilityContent) = when (value.kind) { "qr" -> 
 @Composable
 internal fun UtilityCard(value: UtilityContent) {
     if (value.kind == "art") { AsciiArt(RichText(value.display)); return }
-    var swapped by remember(value) { mutableStateOf(false) }
+    if (value.kind == "progress") { ProgressCard(value); return }
+    if (value.kind == "rating") { RatingCard(value); return }
+    if (value.kind == "random") { NumberPickCard(value); return }
+    when (value.kind) { "calculation" -> { CalculationCard(value); return }; "conversion" -> { ConversionCard(value); return }; "math" -> { MathCard(value); return } }
     val clipboard = LocalClipboardManager.current
     val clock=LocalTextMotion.current?.clock
     val motion=LocalMotion.current
     val animate=LocalAppearance.current.messageEffects && !motion.reduced
     val objectMessage=value.motion?.kind in listOf("dice","coin","choice")
     // These carry a figure, not a block: the bubble must shrink to it instead of holding a 200.dp floor.
-    val hug = value.kind in listOf("rating","calculation","conversion","math","qr","swatch","keys")
-    val inlineResult = value.kind in listOf("calculation","conversion")
-    // An inline formula belongs to the sentence around it, so it drops the type indicator and sits on the text line.
-    val inlineMath = value.kind == "math" && !value.block
+    val hug = value.kind in listOf("rating","qr","swatch","keys")
     fun resultAlpha()=if(animate && value.motion!=null && (clock?.elapsed ?: 12000f)<(clock?.duration(randomizerDuration(value.motion)) ?: randomizerDuration(value.motion)))0f else 1f
     val label = utilityLabel(value)
     val action = utilityAction(value)
     val icon = when (value.kind) {
-        "calculation" -> "calculate"; "conversion" -> "swap_horiz"; "math" -> "functions"; "qr" -> "qr_code"
+        "qr" -> "qr_code"
         "dice" -> "casino"; "pick" -> if (value.motion?.kind == "coin") "toll" else "playing_cards"; "random" -> "numbers"; "swatch" -> "palette"
         "keys" -> "keyboard"; "rating" -> "star"; "progress" -> "data_usage"; "quote" -> "format_quote"; else -> "data_object"
     }
@@ -62,80 +62,49 @@ internal fun UtilityCard(value: UtilityContent) {
         if(value.kind == "quote") { QuoteBody(value); return }
         if(value.kind == "keys") { KeysBody(value); return }
         if(objectMessage) {
-            RandomizerStage(value.motion!!,false,value.rich)
-            if(value.motion.kind=="dice" && value.motion.dice.size>1) {
-                val alpha by androidx.compose.animation.core.animateFloatAsState(resultAlpha(),motion.tween(MotionMillis),label="Dice total")
-                Text(if(value.motion.result.isNotEmpty())"Total · ${value.motion.result}" else value.display,Modifier.fillMaxWidth().graphicsLayer {this.alpha=alpha},textAlign=androidx.compose.ui.text.style.TextAlign.End,style=MaterialTheme.typography.labelLarge)
-            }
-            if(value.details.size>6)Text("6 of ${value.details.size} dice shown",style=MaterialTheme.typography.labelSmall)
+            RandomizerStage(value.motion!!,false,value.rich,if(value.motion.kind=="choice")choiceDescription(value) else null)
+            RandomizerCaption(value,resultAlpha()>0f)
             value.secondary?.let {RichMessageText(it,style=MaterialTheme.typography.bodyMedium)}
             return
         }
-        if (value.kind == "math") {
-            val render = LocalMathContent.current
-            val line = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toDp() }
-            // The formula hugs its own width; a fillMaxWidth box would pad a short expression out to the card cap.
-            if (render != null && value.mathml != null) render(value.mathml, value.display, Modifier.heightIn(max = if (value.block) line * 5 else line * 2))
-            else SelectionContainer { Text(value.display, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = LocalCodeFont.current), maxLines = if (value.block) 5 else 1, overflow = TextOverflow.Ellipsis) }
-        } else {
-            value.motion?.let {RandomizerStage(it,false,value.rich)}
-            if(value.kind=="dice" && value.details.size>6)Text("6 of ${value.details.size} dice shown",style=MaterialTheme.typography.labelSmall)
-            if (value.kind == "swatch") {
-                val rgba = value.rgba ?: 0L
-                val color = Color((rgba shr 24 and 255).toInt(), (rgba shr 16 and 255).toInt(), (rgba shr 8 and 255).toInt(), (rgba and 255).toInt())
-                val ink = LocalContentColor.current
-                val chip = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toDp() }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Canvas(Modifier.size(chip * 1.6f, chip).clip(RoundedCornerShape(5.dp)).semantics { contentDescription = "Color sample ${value.display}" }) {
-                        // The checker only earns its place behind a translucent colour; otherwise it shows as a fringe.
-                        if ((rgba and 255L) < 255L) {
-                            val side = size.height / 2
-                            for (y in 0..(size.height / side).toInt()) for (x in 0..(size.width / side).toInt())
-                                drawRect(ink.copy(alpha = if ((x + y) % 2 == 0) .06f else .16f), androidx.compose.ui.geometry.Offset(x * side, y * side), androidx.compose.ui.geometry.Size(side, side))
-                        }
-                        drawRect(color)
+        value.motion?.let {RandomizerStage(it,false,value.rich)}
+        if(value.kind=="dice" && value.details.size>6)Text("6 of ${value.details.size} dice shown",style=MaterialTheme.typography.labelSmall)
+        if (value.kind == "swatch") {
+            val rgba = value.rgba ?: 0L
+            val color = Color((rgba shr 24 and 255).toInt(), (rgba shr 16 and 255).toInt(), (rgba shr 8 and 255).toInt(), (rgba and 255).toInt())
+            val ink = LocalContentColor.current
+            val chip = with(LocalDensity.current) { MaterialTheme.typography.bodyLarge.lineHeight.toDp() }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Canvas(Modifier.size(chip * 1.6f, chip).clip(RoundedCornerShape(5.dp)).semantics { contentDescription = "Color sample ${value.display}" }) {
+                    // The checker only earns its place behind a translucent colour; otherwise it shows as a fringe.
+                    if ((rgba and 255L) < 255L) {
+                        val side = size.height / 2
+                        for (y in 0..(size.height / side).toInt()) for (x in 0..(size.width / side).toInt())
+                            drawRect(ink.copy(alpha = if ((x + y) % 2 == 0) .06f else .16f), androidx.compose.ui.geometry.Offset(x * side, y * side), androidx.compose.ui.geometry.Size(side, side))
                     }
-                    Text(value.display, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    drawRect(color)
                 }
+                Text(value.display, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            if (value.kind == "rating") {
-                val filled = (value.ratio ?: 0f).coerceIn(0f, 1f) * 5
-                Row(Modifier.clearAndSetSemantics { contentDescription = value.display }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    repeat(5) { star -> Glyph("star", 20, filled = filled - star >= .5f) }
-                    Text(value.display, style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                }
-            }
-            if (inlineResult) {
-                val code = MaterialTheme.typography.bodyLarge.copy(fontFamily = LocalCodeFont.current)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    if (value.kind == "calculation") value.rich?.let { RichMessageText(it, style = code) }
-                    else Text(if (swapped) value.alternate else value.display, style = code, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("=", style = MaterialTheme.typography.bodyLarge)
-                    Text(if (value.kind == "calculation") value.display else if (swapped) value.display else value.alternate,
-                        style = MaterialTheme.typography.titleMedium.copy(fontFamily = LocalCodeFont.current), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-            }
-            if (!inlineResult) value.rich?.let { RichMessageText(it,Modifier.graphicsLayer {alpha=resultAlpha()},
-                if (value.kind == "progress") MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyLarge) }
-            if (!inlineResult && value.kind !in listOf("rating","swatch") && value.display.isNotEmpty() && !(value.kind=="random" && value.motion!=null) && value.motion?.kind!="coin") Text(if (swapped) value.alternate else value.display, modifier=Modifier.graphicsLayer {alpha=resultAlpha()},
-                style = if (value.kind in listOf("random", "progress")) MaterialTheme.typography.headlineMedium.copy(fontFamily = LocalCodeFont.current) else MaterialTheme.typography.bodyLarge,
-                maxLines = 3, overflow = TextOverflow.Ellipsis)
-            if (!inlineResult && value.alternate.isNotEmpty()) Text(if (swapped) value.display else value.alternate, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            if (value.kind != "rating") value.ratio?.let { ratio ->
-                val ink = LocalContentColor.current
-                Canvas(Modifier.fillMaxWidth().height(8.dp).semantics { progressBarRangeInfo = ProgressBarRangeInfo(ratio.coerceIn(0f, 1f), 0f..1f) }) {
-                    drawRoundRect(ink.copy(alpha = .15f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2))
-                    drawRoundRect(ink, size = size.copy(width = size.width * ratio.coerceIn(0f, 1f)), cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2))
-                }
-            }
-            value.secondary?.let { RichMessageText(it, style = MaterialTheme.typography.bodyMedium) }
         }
+        value.rich?.let { RichMessageText(it,Modifier.graphicsLayer {alpha=resultAlpha()},MaterialTheme.typography.bodyLarge) }
+        if (value.kind !in listOf("rating","swatch") && value.display.isNotEmpty() && !(value.kind=="random" && value.motion!=null) && value.motion?.kind!="coin") Text(value.display, modifier=Modifier.graphicsLayer {alpha=resultAlpha()},
+            style = if (value.kind == "random") MaterialTheme.typography.headlineMedium.copy(fontFamily = LocalCodeFont.current) else MaterialTheme.typography.bodyLarge,
+            maxLines = 3, overflow = TextOverflow.Ellipsis)
+        if (value.alternate.isNotEmpty()) Text(value.alternate, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        if (value.kind !in listOf("rating","progress")) value.ratio?.let { ratio ->
+            val ink = LocalContentColor.current
+            Canvas(Modifier.fillMaxWidth().height(8.dp).semantics { progressBarRangeInfo = ProgressBarRangeInfo(ratio.coerceIn(0f, 1f), 0f..1f) }) {
+                drawRoundRect(ink.copy(alpha = .15f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2))
+                drawRoundRect(ink, size = size.copy(width = size.width * ratio.coerceIn(0f, 1f)), cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2))
+            }
+        }
+        value.secondary?.let { RichMessageText(it, style = MaterialTheme.typography.bodyMedium) }
     }
     Column(Modifier.widthIn(min = if (hug) Dp.Unspecified else 200.dp, max = 280.dp).animateContentSize(motion.tween(MotionMillis)), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if(!objectMessage && !inlineMath)Row(if (hug) Modifier else Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        if(!objectMessage)Row(if (hug) Modifier else Modifier.fillMaxWidth(), verticalAlignment=Alignment.CenterVertically, horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             Glyph(icon, 20)
             Text(label, if (hug) Modifier else Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-            if (value.kind == "conversion") SigilIconButton({ swapped = !swapped }) { Glyph("swap_horiz", 24, "Swap display") }
             value.copy?.let { copy -> SigilIconButton({clipboard.setText(AnnotatedString(copy))}) {Glyph("content_copy",24,"Copy $action")} }
         }
         body()

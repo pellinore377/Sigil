@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInWindow
@@ -48,16 +49,20 @@ import org.sigil.*
     else Box(modifier.onGloballyPositioned {bounds=it.boundsInWindow()}.clearAndSetSemantics {}) {
         if(visible && looked) {
             val image=snapshot
-            if(image!=null) Image(image.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.FillBounds)
+            val drawn=LocalMaterialDrawn.current
+            val opacity=LocalMaterialOpacity.current.coerceIn(0f,1f)
+            if(image!=null)Image(image.asImageBitmap(),null,Modifier.fillMaxSize().reportDrawn(drawn).alpha(opacity),contentScale=ContentScale.FillBounds)
             else {
                 // The surface renders unseen; every frame is mirrored into a bitmap drawn here, in the page, so the glass sees it too.
                 var live by remember {mutableStateOf<android.graphics.Bitmap?>(null)}
                 AndroidView(factory={MessageMaterialView(it,256,if(cache!=null)({rendered,image->capture(rendered,image)})else null,{live=it}){failed=true}},update={it.update(frame,true)},onRelease={it.close()},modifier=Modifier.fillMaxSize().alpha(0f))
-                live?.let {Image(it.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.FillBounds)}
+                live?.let {Image(it.asImageBitmap(),null,Modifier.fillMaxSize().reportDrawn(drawn).alpha(opacity),contentScale=ContentScale.FillBounds)}
             }
         }
     }
 }
+// Reports once the bitmap is actually drawn, not merely composed; sits outside the alpha so a held object still reports.
+private fun Modifier.reportDrawn(drawn:(()->Unit)?)=if(drawn==null)this else drawWithContent {drawContent();drawn()}
 internal object AndroidMaterials:MaterialPlatform {
     override val available get()=MaterialNative.available
     @Composable override fun Object(kind:Int,sides:Int,face:Int,rotation:FloatArray?,label:String?,modifier:Modifier,progress:Float) = MaterialObject(kind,sides,face,rotation,label,modifier,progress)
