@@ -110,6 +110,8 @@ impl Peer {
         engine.register_default_codecs().unwrap();
         let mut settings = SettingEngine::default();
         settings.set_multicast_dns_mode(rtc::ice::mdns::MulticastDnsMode::Disabled);
+        // Resent video arrives hundreds of packets late after a stall; accept it once, as Chrome does.
+        settings.set_srtp_replay_protection_window(1024);
         settings.set_lite(lite);
         if relay {
             settings.set_relay_acceptance_min_wait(Some(Duration::ZERO));

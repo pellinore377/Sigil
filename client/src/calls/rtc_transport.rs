@@ -655,6 +655,8 @@ impl ClientStore {
             .with(NackResponderBuilder::new().build());
         let mut settings = SettingEngine::default();
         settings.set_multicast_dns_mode(rtc::ice::mdns::MulticastDnsMode::Disabled);
+        // Resent video arrives hundreds of packets late after a stall; accept it once, as Chrome does.
+        settings.set_srtp_replay_protection_window(1024);
         let (gathered, gather_rx) = mpsc::channel(1);
         let (packets, packet_rx) = mpsc::channel(512);
         let connection = Arc::new(AtomicU8::new(0));

@@ -4,6 +4,8 @@
 !vendor/
 !vendor/ece-native/
 !vendor/ece-native/**
+!vendor/str0m/
+!vendor/str0m/**
 !core/
 !core/Cargo.toml
 !core/src/

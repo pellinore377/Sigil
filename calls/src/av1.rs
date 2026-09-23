@@ -114,8 +114,9 @@ impl<T> Default for Reorder<T> {
     fn default() -> Self { Self { next: None, held: Default::default(), since: 0.0, filled: 0, filled_ms: 0.0, given_up: 0, stale: 0 } }
 }
 impl<T> Reorder<T> {
-    pub const WAIT_MS: f64 = 80.0;
-    const HOLD: usize = 12;
+    /// Covers a sub-second stall plus the retransmission round trip that repairs it.
+    pub const WAIT_MS: f64 = 400.0;
+    const HOLD: usize = 60;
     /// `at` is a monotonic clock in milliseconds. Returns frames ready to decode, in order.
     pub fn accept(&mut self, number: u32, key: bool, frame: T, at: f64) -> Vec<T> {
         let mut ready = Vec::new();
@@ -320,13 +321,13 @@ mod tests {
         assert!(order.accept(3, false, 3, 60.0).is_empty());
         // 6 never arrives: after the wait, 7 onward release and the decoder sees the gap.
         assert!(order.accept(7, false, 7, 66.0).is_empty());
-        assert!(order.accept(8, false, 8, 100.0).is_empty());
-        assert_eq!(order.accept(9, false, 9, 150.0), [7, 8, 9]);
+        assert!(order.accept(8, false, 8, 300.0).is_empty());
+        assert_eq!(order.accept(9, false, 9, 470.0), [7, 8, 9]);
         // A restarted sender's keyframe is accepted despite its lower number.
-        assert_eq!(order.accept(1, true, 101, 160.0), [101]);
-        assert_eq!(order.accept(2, false, 102, 176.0), [102]);
+        assert_eq!(order.accept(1, true, 101, 475.0), [101]);
+        assert_eq!(order.accept(2, false, 102, 476.0), [102]);
         // A long hole releases once too many frames are held.
-        for n in 4..16 { assert!(order.accept(n, false, 100 + n, 180.0).is_empty()); }
-        assert_eq!(order.accept(16, false, 116, 181.0), (104..=116).collect::<Vec<_>>());
+        for n in 4..64 { assert!(order.accept(n, false, 100 + n, 480.0).is_empty()); }
+        assert_eq!(order.accept(64, false, 164, 481.0), (104..=164).collect::<Vec<_>>());
     }
 }
