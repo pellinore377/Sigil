@@ -17,12 +17,59 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 mod pacing;
 /// Half a second of 60 fps video: beyond this the decoder cannot keep up, so start over.
 const BACKLOG: usize = 30;
+/// A 1920x1080 solid red AV1 keyframe. Some drivers report hardware decoding yet return black
+/// or unreadable frames, so hardware is used only after it reproduces this picture.
+const PROBE: &[u8] = &[0x12, 0x00, 0x0a, 0x0b, 0x00, 0x00, 0x00, 0x42, 0xab, 0xbf, 0xc3, 0x73, 0x2b, 0xe4, 0x01, 0x32, 0x35, 0x10, 0x00, 0x90, 0x00, 0x00, 0x00, 0xa0, 0x00, 0x20, 0x01, 0xc5, 0x78, 0xa6, 0xff, 0x6d, 0x77, 0xe4, 0xdd, 0xa0, 0xf2, 0x10, 0x2d, 0x8e, 0x2f, 0xb5, 0x48, 0x18, 0xcc, 0xfd, 0xa6, 0x04, 0xb4, 0x92, 0x22, 0xdb, 0x28, 0x00, 0xdf, 0x75, 0x08, 0xee, 0xec, 0x52, 0x71, 0x8e, 0x8c, 0x27, 0x2b, 0x72, 0x4a, 0x46, 0x53, 0x7e];
+/// Hardware decoding: 0 untested, 1 verified, 2 unusable.
+static HARDWARE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+fn hardware() -> bool { HARDWARE.load(std::sync::atomic::Ordering::Relaxed) == 1 }
+fn verify_hardware() {
+    if HARDWARE.compare_exchange(0, 3, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed).is_err() { return; }
+    spawn_local(async {
+        let works = probe().await.unwrap_or(false);
+        HARDWARE.store(if works { 1 } else { 2 }, std::sync::atomic::Ordering::Relaxed);
+        crate::transform::timing(format!("SigilTiming video hardware decode verified={works}"));
+    });
+}
+async fn probe() -> Result<bool, JsValue> {
+    let output: Rc<RefCell<Option<JsValue>>> = Rc::default();
+    let sink = output.clone();
+    let on_output = Closure::<dyn FnMut(JsValue)>::new(move |frame: JsValue| {
+        if let Some(old) = sink.borrow_mut().replace(frame) { close(&old); }
+    });
+    let on_error = Closure::<dyn FnMut(JsValue)>::new(|_: JsValue| {});
+    let options = js_sys::Object::new();
+    set(&options, "output", on_output.as_ref())?;
+    set(&options, "error", on_error.as_ref())?;
+    let decoder = construct("VideoDecoder", &options)?;
+    let checked = async {
+        invoke(&decoder, "configure", &[object(serde_json::json!({"codec":"av01.0.08M.08","hardwareAcceleration":"prefer-hardware","optimizeForLatency":true}))?])?;
+        let chunk = object(serde_json::json!({"type":"key","timestamp":0}))?;
+        set(&chunk, "data", &Uint8Array::from(PROBE))?;
+        invoke(&decoder, "decode", &[construct("EncodedVideoChunk", &chunk)?])?;
+        JsFuture::from(invoke(&decoder, "flush", &[])?.unchecked_into::<js_sys::Promise>()).await?;
+        let Some(frame) = output.borrow_mut().take() else { return Ok(false) };
+        let rgba = object(serde_json::json!({"format":"RGBA"}))?;
+        let size = invoke(&frame, "allocationSize", &[rgba.clone()]).ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        let copied = if size == 1920 * 1080 * 4 {
+            let pixels = Uint8Array::new_with_length(size);
+            let done = JsFuture::from(js_sys::Promise::resolve(&invoke(&frame, "copyTo", &[pixels.clone().into(), rgba])?)).await;
+            let at = ((540 * 1920 + 960) * 4) as u32;
+            done.is_ok() && pixels.get_index(at) > 180 && pixels.get_index(at + 1) < 90 && pixels.get_index(at + 2) < 90
+        } else { false };
+        close(&frame);
+        Ok::<bool, JsValue>(copied)
+    }.await;
+    close(&decoder);
+    checked
+}
 thread_local! {
     static NEXT: Cell<u32> = const {Cell::new(0)};
     static LIVE: RefCell<HashMap<u32, Weak<RefCell<State>>>> = RefCell::new(HashMap::new());
 }
 struct State {
     decoder: Option<JsValue>,
+    hardware: bool,
     pixels: Option<Uint8Array>,
     failed: bool,
     waiting: bool,
@@ -155,6 +202,19 @@ fn post(s: &mut State, id: u32, frame: Frame) {
     let message = object(
         serde_json::json!({"video_frame":true,"id":id,"call":s.call,"sender":s.sender,"generation":s.generation,"rotation":frame.rotation,"revision":frame.revision,"until":crate::media_worker::deadline()}),
     );
+    // Verified hardware frames go to the page as they are: copying them out would read back
+    // the GPU surface the page is about to draw anyway.
+    if s.hardware {
+        let sent = message.and_then(|message| {
+            let image = object(serde_json::json!({}))?;
+            set(&image, "video", &frame.value)?;
+            set(&message, "frame", &image)?;
+            js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>()
+                .post_message_with_transfer(&message, &Array::of1(&frame.value))
+        });
+        if sent.is_ok() { s.waiting = true; s.posted += 1; } else { close(&frame.value); }
+        return;
+    }
     let width = get(&frame.value, "visibleRect")
         .and_then(|v| get(&v, "width"))
         .ok()
@@ -243,12 +303,14 @@ fn present(s: &mut State, id: u32, at: f64) {
 }
 impl Decoder {
     pub(crate) fn new(call: String, sender: String, generation: u64) -> Self {
+        verify_hardware();
         let id = NEXT.with(|n| {
             n.set(n.get().wrapping_add(1));
             n.get()
         });
         let state = Rc::new(RefCell::new(State {
             decoder: None,
+            hardware: false,
             pixels: None,
             failed: false,
             waiting: false,
@@ -325,6 +387,8 @@ impl Decoder {
                 let mut s = s.borrow_mut();
                 crate::transform::timing(format!("SigilTiming video decoder input key={} bytes={} stamp_gap_us={}", s.last_input.0, s.last_input.1, s.last_input.2));
                 crate::transform::timing(format!("SigilTiming video decoder recent={:?}",s.recent));
+                // A hardware decoder that fails on real frames is not used again this session.
+                if s.hardware { HARDWARE.store(2, std::sync::atomic::Ordering::Relaxed); }
                 s.failed = true;
             }
         });
@@ -526,7 +590,7 @@ impl Decoder {
                     &d,
                     "configure",
                     &[object(
-                        serde_json::json!({"codec":"av01.0.08M.08","hardwareAcceleration":"prefer-software","optimizeForLatency":true}),
+                        serde_json::json!({"codec":"av01.0.08M.08","hardwareAcceleration":if hardware() {"prefer-hardware"} else {"prefer-software"},"optimizeForLatency":true}),
                     )?],
                 ) {
                     close(&d);
@@ -544,6 +608,7 @@ impl Decoder {
                 }
             };
             s.decoder = Some(d);
+            s.hardware = hardware();
         }
         s.output_wait.get_or_insert_with(now);
         s.last_input = (key, encoded.len(), s.last_stamp.map_or(0, |last| timestamp as i64 - last as i64));
