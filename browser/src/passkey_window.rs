@@ -7,16 +7,13 @@ use wasm_bindgen::{prelude::*, JsCast};
 use web_sys::{BroadcastChannel, MessageEvent};
 
 const CHANNEL: &str = "sigil-passkey-v1";
-thread_local! {static WINDOW:RefCell<Option<web_sys::Window>>=const{RefCell::new(None)};}
-
-/// Opens the passkey window inside the click so popup blockers allow it.
+/// Opens the passkey window inside the click so popup blockers allow it. The isolated
+/// messenger cannot keep a handle to it, so the windows only exchange messages.
 #[wasm_bindgen]
 pub fn passkey_window_open() -> bool {
-    let window = web_sys::window()
-        .and_then(|w| w.open_with_url_and_target_and_features("/passkey", "sigil-passkey", "popup,width=460,height=560").ok().flatten());
-    let opened = window.is_some();
-    WINDOW.with(|slot| *slot.borrow_mut() = window);
-    opened
+    web_sys::window()
+        .and_then(|w| w.open_with_url_and_target_and_features("/passkey", "sigil-passkey", "popup,width=460,height=560").ok())
+        .is_some()
 }
 
 fn message(kind: &str, id: &str, body: &str) -> Result<JsValue, JsValue> {
@@ -44,6 +41,11 @@ pub async fn passkey_window_run(kind: String, request: String) -> Result<String,
             (Some("ready"), _) => {
                 let _ = output.post_message(&offer);
             }
+            (Some("cancel"), _) => {
+                if let Some(send) = reply.borrow_mut().take() {
+                    let _ = send.send(Err("The passkey window was closed.".into()));
+                }
+            }
             (Some("done"), Some(id)) if id == expected => {
                 let result = match value["error"].as_str() {
                     Some(error) => Err(error.to_owned()),
@@ -58,26 +60,19 @@ pub async fn passkey_window_run(kind: String, request: String) -> Result<String,
     });
     channel.set_onmessage(Some(handler.as_ref().unchecked_ref()));
     channel.post_message(&message(&kind, &id, &request)?)?;
-    // Closing the window without finishing cancels.
     let watcher = send.clone();
-    let poll = Closure::<dyn FnMut()>::new(move || {
-        let closed = WINDOW.with(|slot| slot.borrow().as_ref().is_none_or(|w| w.closed().unwrap_or(true)));
-        if closed {
-            if let Some(send) = watcher.borrow_mut().take() {
-                let _ = send.send(Err("The passkey window was closed.".into()));
-            }
+    let expire = Closure::<dyn FnMut()>::new(move || {
+        if let Some(send) = watcher.borrow_mut().take() {
+            let _ = send.send(Err("The passkey request timed out.".into()));
         }
     });
     let window = web_sys::window().ok_or_else(|| fail("Missing window"))?;
-    let timer = window.set_interval_with_callback_and_timeout_and_arguments_0(poll.as_ref().unchecked_ref(), 500)?;
+    let timer = window.set_timeout_with_callback_and_timeout_and_arguments_0(expire.as_ref().unchecked_ref(), 300_000)?;
     let result = receive.await.unwrap_or_else(|_| Err("The passkey request stopped.".into()));
-    window.clear_interval_with_handle(timer);
+    window.clear_timeout_with_handle(timer);
     channel.set_onmessage(None);
     channel.close();
-    drop((handler, poll));
-    if let Some(popup) = WINDOW.with(|slot| slot.borrow_mut().take()) {
-        let _ = popup.close();
-    }
+    drop((handler, expire));
     result.map_err(|error| fail(&error))
 }
 
@@ -100,6 +95,12 @@ pub async fn passkey_window() -> Result<(), JsValue> {
         }
     });
     channel.set_onmessage(Some(handler.as_ref().unchecked_ref()));
+    // Closing this window before finishing tells the messenger at once.
+    let leaving = channel.clone();
+    let on_leave = Closure::<dyn FnMut()>::new(move || {
+        let _ = leaving.post_message(&JsValue::from_str(r#"{"kind":"cancel"}"#));
+    });
+    window.add_event_listener_with_callback("pagehide", on_leave.as_ref().unchecked_ref())?;
     channel.post_message(&JsValue::from_str(r#"{"kind":"ready"}"#))?;
     let raw = receive.await.map_err(|_| fail("No passkey request"))?;
     let request: serde_json::Value = serde_json::from_str(&raw).map_err(|_| fail("Invalid passkey request"))?;
@@ -132,9 +133,10 @@ pub async fn passkey_window() -> Result<(), JsValue> {
         Ok(value) => serde_json::json!({"kind": "done", "id": id, "body": value}),
         Err(error) => serde_json::json!({"kind": "done", "id": id, "error": error.as_string().or_else(|| get(error, "message").ok().and_then(|m| m.as_string())).unwrap_or_else(|| "The passkey step failed.".into())}),
     };
+    window.remove_event_listener_with_callback("pagehide", on_leave.as_ref().unchecked_ref())?;
     channel.post_message(&JsValue::from_str(&reply.to_string()))?;
     channel.close();
-    drop((handler, on_click));
+    drop((handler, on_click, on_leave));
     let _ = window.close();
     Ok(())
 }
