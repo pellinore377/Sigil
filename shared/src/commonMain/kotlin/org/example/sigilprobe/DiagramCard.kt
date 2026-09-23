@@ -606,70 +606,89 @@ internal fun DiagramContent.mindTree(): MindTree {
     return MindTree(root, parent, depth, order, family, children[root], children.map { it.filter { c -> parent[c] >= 0 && c in kept } })
 }
 
-// A branch grown away from the root along one axis: its children stack across that axis on the far side, each grown the same way.
-// Positions are top-left corners inside the block, for growth right or down; left and up mirror them.
+// How a branch's topics continue: beyond it across the card, in a row beyond it, or stacked beyond it and indented like a list.
+private enum class MindGrowth { Beside, Row, Stack }
+
+// A branch grown away from the root: main runs away from the root, cross along the side. Positions are (main, cross) top-left corners
+// for growth right or down with a stack indented toward larger cross; the caller mirrors them.
 private class MindBlock(val main: Float, val cross: Float, val at: Map<Int, Pair<Float, Float>>)
 
-private fun MindTree.grow(n: Int, sideways: Boolean, sizes: List<IntSize>, gap: Float): MindBlock {
+private fun MindTree.grow(n: Int, growth: MindGrowth, sizes: List<IntSize>, gap: Float): MindBlock {
+    val sideways = growth == MindGrowth.Beside
     val a = (if (sideways) sizes[n].width else sizes[n].height).toFloat(); val b = (if (sideways) sizes[n].height else sizes[n].width).toFloat()
-    val kids = children[n].map { grow(it, sideways, sizes, gap) }
+    val kids = children[n].map { grow(it, growth, sizes, gap) }
     if (kids.isEmpty()) return MindBlock(a, b, mapOf(n to (0f to 0f)))
+    val at = mutableMapOf(n to (0f to 0f))
+    if (growth == MindGrowth.Stack) {
+        val indent = b / 2 + gap * 1.5f; var m = a + gap
+        kids.forEach { k -> k.at.forEach { (t, p) -> at[t] = m + p.first to indent + p.second }; m += k.main + gap }
+        return MindBlock(m - gap, max(b, indent + kids.maxOf { it.cross }), at)
+    }
     val stack = kids.sumOf { it.cross.toDouble() }.toFloat() + gap * (kids.size - 1)
     val cross = max(b, stack); val reach = a + gap * if (sideways) 3f else 2.5f
-    val at = mutableMapOf(n to (0f to (cross - b) / 2))
+    at[n] = 0f to (cross - b) / 2
     var c = (cross - stack) / 2
-    kids.forEach { k -> k.at.forEach { (m, p) -> at[m] = reach + p.first to c + p.second }; c += k.cross + gap }
+    kids.forEach { k -> k.at.forEach { (t, p) -> at[t] = reach + p.first to c + p.second }; c += k.cross + gap }
     return MindBlock(reach + kids.maxOf { it.main }, cross, at)
 }
 
 // The reference mind map: the central topic in the middle, branches clockwise above, right, below and left of it, and each branch's topics
-// continuing outward on its far side. Every split of the branches between the four sides is tried; the one that fits the width
-// with the central topic nearest the middle wins. Null marks a topic the card has no room for.
+// continuing outward on its far side, spread where the card has room and stacked where it is narrow. Every split of the branches between
+// the four sides is tried; the one that fits the width with the central topic nearest the middle wins. Null marks a topic with no room.
 internal fun MindTree.arrange(sizes: List<IntSize>, width: Int, gap: Float, step: Float = 4f): List<Rect?> {
     val rootSize = sizes[root]
     val half = Offset(rootSize.width / 2f, rootSize.height / 2f)
-    val across = branches.map { grow(it, true, sizes, gap) }; val upright = branches.map { grow(it, false, sizes, gap) }
-    fun layout(up: Int, right: Int, down: Int): Map<Int, Rect> {
+    val grown = MindGrowth.entries.associateWith { g -> branches.map { grow(it, g, sizes, gap) } }
+    fun layout(up: Int, right: Int, down: Int, sides: MindGrowth, rows: MindGrowth): Map<Int, Rect> {
         val out = mutableMapOf(root to Rect(-half, half))
-        fun put(block: MindBlock, x: Float, y: Float, sideways: Boolean, flip: Boolean) = block.at.forEach { (n, p) ->
+        // Places a block with its top-left at (x, y); flip mirrors the growth, mirror the stack's indent.
+        fun put(block: MindBlock, x: Float, y: Float, growth: MindGrowth, flip: Boolean, mirror: Boolean) = block.at.forEach { (n, p) ->
             val w = sizes[n].width.toFloat(); val h = sizes[n].height.toFloat()
+            val sideways = growth == MindGrowth.Beside
             var px = if (sideways) p.first else p.second; var py = if (sideways) p.second else p.first
             if (flip) { if (sideways) px = block.main - px - w else py = block.main - py - h }
+            if (mirror && !sideways) px = block.cross - px - w
             out[n] = Rect(Offset(x + px, y + py), Size(w, h))
         }
+        fun wide(k: MindBlock, g: MindGrowth) = if (g == MindGrowth.Beside) k.main else k.cross
+        fun tall(k: MindBlock, g: MindGrowth) = if (g == MindGrowth.Beside) k.cross else k.main
         val reach = gap * 3
         fun column(range: IntRange, leftward: Boolean) {
-            val blocks = range.map { across[it] }.let { if (leftward) it.reversed() else it }
-            var y = -(blocks.sumOf { it.cross.toDouble() }.toFloat() + gap * (blocks.size - 1).coerceAtLeast(0)) / 2
-            blocks.forEach { k -> put(k, if (leftward) -half.x - reach - k.main else half.x + reach, y, true, leftward); y += k.cross + gap }
+            val blocks = range.map { grown.getValue(sides)[it] }.let { if (leftward) it.reversed() else it }
+            var y = -(blocks.sumOf { tall(it, sides).toDouble() }.toFloat() + gap * (blocks.size - 1).coerceAtLeast(0)) / 2
+            blocks.forEach { k -> put(k, if (leftward) -half.x - reach - wide(k, sides) else half.x + reach, y, sides, leftward, leftward); y += tall(k, sides) + gap }
         }
         column(up until up + right, false); column(up + right + down until branches.size, true)
-        val sides = out.values.filter { it != out[root] }
+        val flank = out.values.filter { it != out[root] }
         fun row(range: IntRange, upward: Boolean) {
-            val blocks = range.map { upright[it] }.let { if (upward) it else it.reversed() }
+            val blocks = range.map { grown.getValue(rows)[it] }.let { if (upward) it else it.reversed() }
             if (blocks.isEmpty()) return
             val total = blocks.sumOf { it.cross.toDouble() }.toFloat() + gap * (blocks.size - 1)
             // A row clears the root, and any side column it reaches over.
-            val blocking = sides.filter { it.right > -total / 2 - gap && it.left < total / 2 + gap }
+            val blocking = flank.filter { it.right > -total / 2 - gap && it.left < total / 2 + gap }
             val edge = if (upward) min(-half.y, blocking.minOfOrNull { it.top } ?: 0f) - gap * 2.5f else max(half.y, blocking.maxOfOrNull { it.bottom } ?: 0f) + gap * 2.5f
             var x = -total / 2
-            blocks.forEach { k -> put(k, x, if (upward) edge - k.main else edge, false, upward); x += k.cross + gap }
+            // A stack indents away from the centre; a lone one above leans left and below leans right, turning around the root.
+            blocks.forEach { k -> val mid = x + k.cross / 2; put(k, x, if (upward) edge - k.main else edge, rows, upward, if (abs(mid) < 1f) upward else mid < 0); x += k.cross + gap }
         }
         row(0 until up, true); row(up + right until up + right + down, false)
         return out
     }
     var best: Map<Int, Rect>? = null; var score = Float.MAX_VALUE; var narrowest: Map<Int, Rect>? = null; var least = Float.MAX_VALUE
     val n = branches.size
+    for (sides in listOf(MindGrowth.Beside, MindGrowth.Stack)) for (rows in listOf(MindGrowth.Row, MindGrowth.Stack))
     for (up in 0..n) for (right in 0..n - up) for (down in 0..n - up - right) {
         val left = n - up - right - down
         if (n >= 2 && listOf(up, right, down, left).count { it > 0 } < 2) continue
-        val placed = layout(up, right, down)
+        if ((sides == MindGrowth.Stack && right + left == 0) || (rows == MindGrowth.Stack && up + down == 0)) continue
+        val placed = layout(up, right, down, sides, rows)
         val l = placed.values.minOf { it.left }; val r = placed.values.maxOf { it.right }
         val t = placed.values.minOf { it.top }; val b = placed.values.maxOf { it.bottom }
         if (r - l < least) { least = r - l; narrowest = placed }
         if (r - l > width) continue
-        // The height the card needs with the central topic centred, and a lighter pull toward horizontal balance.
-        val cost = 2 * max(-t, b) + .5f * abs(r + l) + .25f * abs(up - down) * gap
+        // The height the card needs with the central topic centred, a lighter pull toward balance, and a nudge toward spreading out.
+        val stacked = (if (sides == MindGrowth.Stack) 1 else 0) + (if (rows == MindGrowth.Stack) 1 else 0)
+        val cost = 2 * max(-t, b) + .5f * abs(r + l) + .25f * abs(up - down) * gap + stacked * gap * 2
         if (cost < score) { score = cost; best = placed }
     }
     val chosen = best ?: narrowest!!.let { placed ->
@@ -786,8 +805,16 @@ private fun mindLayout(key: Any, make: () -> List<Rect?>): List<Rect?> =
     mindLayouts.remove(key)?.also { mindLayouts[key] = it } ?: make().also { mindLayouts[key] = it; if (mindLayouts.size > 32) mindLayouts.remove(mindLayouts.keys.first()) }
 
 // A connector leaves the parent's facing side and lands square on the child's, bending once like a hand-drawn branch.
-internal fun mindLink(from: Rect, to: Rect): List<Offset> {
+internal fun mindLink(from: Rect, to: Rect, others: List<Rect> = emptyList()): List<Offset> {
     val d = to.center - from.center
+    // A stacked topic hangs off a line dropped from its parent's centre and hooks into its near side, as in a list.
+    val beyond = to.top >= from.bottom || to.bottom <= from.top
+    val aside = to.left >= from.center.x + 4f || to.right <= from.center.x - 4f
+    if (beyond && aside) {
+        val a = Offset(from.center.x, if (d.y > 0) from.bottom else from.top); val corner = Offset(from.center.x, to.center.y)
+        val b = Offset(if (to.left >= from.center.x) to.left else to.right, to.center.y)
+        if (others.none { segmentHits(a, corner, it) || segmentHits(corner, b, it) }) return listOf(a, corner, corner, b)
+    }
     val sideways = abs(d.x) / ((from.width + to.width) / 2) > abs(d.y) / ((from.height + to.height) / 2)
     if (sideways) {
         val s = if (d.x > 0) 1f else -1f
@@ -858,7 +885,7 @@ private fun DiagramMindMap(diagram: DiagramContent, elapsed: () -> Float, base: 
         val rects = raw.map { it?.translate(shift) }
         val height = placed.maxOf { it.bottom } - top
         drawn.set(shown.filter { it != tree.root && rects[it] != null && rects[tree.parent[it]] != null }.map { n ->
-            DiagramStroke(mindLink(rects[tree.parent[n]]!!, rects[n]!!), true, false, tree.depth[n] * 2 - 1, arc = true,
+            DiagramStroke(mindLink(rects[tree.parent[n]]!!, rects[n]!!, shown.mapNotNull { k -> rects[k]?.takeIf { k != n && k != tree.parent[n] }?.inflate(-1f) }), true, false, tree.depth[n] * 2 - 1, arc = true,
                 color = hue(n), width = if (tree.depth[n] == 1) 2.5.dp else 1.5.dp)
         })
         val missing = diagram.nodes.size - hidden.size - shown.count { rects[it] != null }
