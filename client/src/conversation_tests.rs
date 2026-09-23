@@ -1378,6 +1378,7 @@ fn recovery_restores_conversation_deletions_drafts_and_counters_on_a_fresh_devic
         )
         .unwrap();
     recovered.enroll_online().unwrap();
+    crate::account::tests::activate(&mut recovered, &mut a);
     recovered
         .configure_recovery(
             &own.server,
@@ -1412,7 +1413,7 @@ fn recovery_restores_conversation_deletions_drafts_and_counters_on_a_fresh_devic
     let preferences = recovered.conversation_preferences(conv).unwrap();
     assert_eq!(preferences.drafts.len(), 1);
     assert_eq!(preferences.drafts[0].text, "recover this draft");
-    for table in ["identity", "sessions", "peers", "prekeys"] {
+    for table in ["sessions", "peers", "prekeys"] {
         assert_eq!(
             recovered
                 .db

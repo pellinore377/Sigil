@@ -144,9 +144,9 @@ impl ClientStore {
         let ids: Vec<Vec<u8>> = self
             .db
             .prepare(
-                "SELECT id FROM retry_requests WHERE finished=0 AND id>?1 ORDER BY id LIMIT 16",
+                "SELECT id FROM retry_requests WHERE finished=0 AND id>?1 AND id NOT IN (SELECT id FROM retry_backoff WHERE until>?2) ORDER BY id LIMIT 16",
             )?
-            .query_map([after.as_slice()], |r| r.get(0))?
+            .query_map((after.as_slice(), now as i64), |r| r.get(0))?
             .collect::<Result<_, _>>()?;
         let mut attempts = Vec::new();
         let mut next = [0; 32];
@@ -155,6 +155,22 @@ impl ClientStore {
             let result = self.resume_retry_online(id, now);
             // A 404/507 is about that one recipient; only wider outages stop the batch.
             let stop = matches!(&result, Err(Error::Network(e)) if !crate::outbound::recipient_specific(e));
+            // A request whose peer stays unreachable for five minutes waits longer each
+            // time instead of claiming that peer's prekeys on every pass.
+            let unreachable = matches!(
+                &result,
+                Err(Error::Unprepared) | Err(Error::Network(network::Error::Status { code: 403, .. }))
+            );
+            if result.is_ok() {
+                self.db.execute("DELETE FROM retry_backoff WHERE id=?1", [id.as_slice()])?;
+            } else if unreachable {
+                self.db.execute(
+                    "INSERT INTO retry_backoff VALUES(?1,?2,0,0) ON CONFLICT(id) DO UPDATE SET
+                     attempts=CASE WHEN ?2-since>=300 THEN min(attempts+1,6) ELSE 0 END,
+                     until=CASE WHEN ?2-since>=300 THEN ?2+(60<<min(attempts,6)) ELSE 0 END",
+                    (id.as_slice(), now as i64),
+                )?;
+            }
             attempts.push(RetryAttempt { id, result });
             next = id;
             if stop {

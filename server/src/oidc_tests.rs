@@ -110,7 +110,6 @@ impl Idp {
             request_id: random_secret().unwrap(),
             secret: random_secret().unwrap(),
             username: username.map(str::to_owned),
-            replace_devices: replace,
         };
         let started = store.oidc_start(request.clone(), link, now).unwrap();
         let url = openidconnect::url::Url::parse(&started.authorization_url).unwrap();
@@ -338,18 +337,6 @@ fn oidc_proof_link_login_and_recovery_never_inherit_device_identity() {
     ));
     assert!(store.oidc_claim(&state, now).unwrap().is_none());
     assert_eq!(idp.requests.load(Ordering::SeqCst), 1);
-    let (request, state) = idp.start(&mut store, None, None, false, now);
-    let completion = authenticate(&mut store, &state, now);
-    assert!(store
-        .oidc_finish(
-            Finish {
-                completion: completion.clone(),
-                request_id: request.request_id,
-                secret: request.secret
-            },
-            now
-        )
-        .is_err());
     let (request, state) = idp.start(&mut store, None, None, true, now);
     let completion = authenticate(&mut store, &state, now);
     assert!(matches!(
@@ -383,7 +370,8 @@ fn oidc_proof_link_login_and_recovery_never_inherit_device_identity() {
         .unwrap();
     assert_eq!(before.account_id, session.account_id);
     assert_ne!(before.device_id, session.device_id);
-    assert!(store.session(&alice, now).is_err());
+    assert!(session.pending);
+    assert!(store.session(&alice, now).is_ok());
     assert_eq!(
         store
             .0
@@ -984,7 +972,8 @@ fn oidc_retirement_preserves_accounts_and_requires_current_user_acknowledgements
     assert_eq!(new.account_id, a.account_id);
     assert_eq!(new.address, a.address);
     assert_ne!(new.device_id, a.device_id);
-    assert!(store.session(&alice, now).is_err());
+    assert!(new.pending);
+    assert!(store.session(&alice, now).is_ok());
     assert_eq!(
         store
             .0
@@ -1165,44 +1154,21 @@ fn sso_uses_verified_profile_and_bound_account_without_revoking_devices() {
         secret: request.secret.clone(),
         completion: Some(completion.secret.clone()),
     };
-    assert!(store.oidc_finish(finish(), now).is_err());
-    assert_eq!(store.session(&alice, now).unwrap(), old);
-    store
-        .0
-        .execute(
-            "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
-            [&old.account_id],
-        )
-        .unwrap();
     assert!(matches!(
         store.oidc_finish(finish(), now).unwrap(),
-        Progress::Access { .. }
+        Progress::Ready { reauthorize: true, .. }
     ));
-    // A device appearing after authentication must not be revoked by grant redemption.
-    store
-        .0
-        .execute(
-            "UPDATE devices SET revoked=0,token_hash=?2 WHERE id=?1",
-            (&old.device_id, digest(&alice).as_slice()),
-        )
-        .unwrap();
-    let enroll = || sigil_protocol::accounts::Enrollment {
+    let enroll = sigil_protocol::accounts::Enrollment {
         invitation: request.secret.clone(),
         device_credential: "cd".repeat(32),
         device_label: "New phone".into(),
     };
-    assert!(store.reauthorize(enroll(), now).is_err());
-    assert_eq!(store.session(&alice, now).unwrap(), old);
-    store
-        .0
-        .execute(
-            "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
-            [&old.account_id],
-        )
-        .unwrap();
-    let session = store.reauthorize(enroll(), now).unwrap();
+    let session = store.reauthorize(enroll, now).unwrap();
+    assert!(session.pending);
     assert_eq!(session.account_id, old.account_id);
     assert_eq!(session.address, old.address);
+    assert_eq!(store.session(&alice, now).unwrap(), old);
+    assert!(store.session(&"cd".repeat(32), now).is_err());
 }
 
 #[test]
@@ -1260,7 +1226,7 @@ fn sso_registration_name_requires_callback_proof_and_retries_without_duplicate_a
 fn messenger_callback_target_is_durable_and_does_not_replace_completion_proof() {
     let _guard=crate::egress::tests::NETWORK.lock().unwrap();
     let idp=Idp::new();let (_dir,mut store,_,_,now)=crate::admin::tests::setup();enable(&mut store,&idp);
-    let request=Start {request_id:random_secret().unwrap(),secret:random_secret().unwrap(),username:Some("browser_user".into()),replace_devices:false};
+    let request=Start {request_id:random_secret().unwrap(),secret:random_secret().unwrap(),username:Some("browser_user".into())};
     let started=store.oidc_browser_start(request.clone(),None,now).unwrap();
     assert!(matches!(store.oidc_start(request.clone(),None,now),Err(StoreError::Conflict)));
     assert_eq!(store.oidc_browser_start(request.clone(),None,now).unwrap().authorization_url,started.authorization_url);

@@ -498,7 +498,7 @@ fn directory_is_authenticated_and_schema_32_requests_remain_valid() {
     let directory = store.contact_directory(&bob, "alice", now).unwrap();
     assert!(directory.account.valid_for("alice", "chat.example"));
     assert_eq!(directory.bindings, vec![request.binding.clone()]);
-    assert!(directory.links.is_empty());
+    assert!(directory.endorsements.iter().all(String::is_empty));
     store
         .discovery_preference(
             &alice,

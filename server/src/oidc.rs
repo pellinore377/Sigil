@@ -63,7 +63,6 @@ struct Flow {
     username: Option<String>,
     #[serde(default)]
     suggested_username: Option<String>,
-    replace_devices: bool,
     link_device: Option<String>,
     nonce: Zeroizing<String>,
     verifier: Zeroizing<String>,
@@ -285,8 +284,8 @@ fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool
         let link_device = link
             .map(|c| crate::prekeys::authorize(&tx, c, now))
             .transpose()?;
-        if link_device.is_some() && (request.username.is_some() || request.replace_devices) {
-            return Err(StoreError::Invalid("linking cannot replace devices"));
+        if link_device.is_some() && request.username.is_some() {
+            return Err(StoreError::Invalid("linking cannot choose a username"));
         }
         let hash = crate::push_config::hash(b"Sigil/OIDC/start/v0", &(&request, &link_device))?;
         tx.execute("DELETE FROM oidc_flows WHERE expires<=?1", [sql(now)?])?;
@@ -342,7 +341,6 @@ fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool
             browser,
             suggested_username: None,
             username: request.username,
-            replace_devices: request.replace_devices,
             link_device,
             nonce: Zeroizing::new(nonce),
             verifier,
@@ -501,15 +499,7 @@ fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool
         }
         let bound:Option<(String,bool)>=tx.query_row("SELECT a.username,a.disabled FROM oidc_bindings b JOIN accounts a ON a.id=b.account WHERE b.issuer=?1 AND b.subject=?2",(&issuer,&subject),|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
         let (username, reauthorize) = match bound {
-            Some((name, false)) if flow.username.as_ref().is_none_or(|u| u == &name) => {
-                if !flow.replace_devices {
-                    let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM devices d JOIN accounts a ON a.id=d.account_id WHERE a.username=?1 AND d.revoked=0 AND d.expires_at>?2)", (&name,sql(now)?), |r|r.get(0))?;
-                    if active {
-                        return Err(StoreError::DeviceLinkRequired);
-                    }
-                }
-                (name, true)
-            }
+            Some((name, false)) if flow.username.as_ref().is_none_or(|u| u == &name) => (name, true),
             Some(_) => return Err(StoreError::Forbidden),
             None if !crate::oidc_transition::state(&tx)?.1
                 && crate::admin::policy(&tx)?.registration
@@ -542,7 +532,7 @@ fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool
             }
             tx.execute("DELETE FROM oidc_grants WHERE expires<=?1", [sql(now)?])?;
             tx.execute(
-                "INSERT INTO oidc_grants VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO oidc_grants VALUES(?1,?2,?3,?4,?5,?6)",
                 (
                     digest(&request.secret).as_slice(),
                     issuer,
@@ -550,7 +540,6 @@ fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool
                     username,
                     reauthorize,
                     sql(expires)?,
-                    flow.replace_devices,
                 ),
             )?;
             tx.execute(
@@ -559,11 +548,6 @@ fn oidc_begin_for(&mut self,request:Start,link:Option<&str>,now:u64,profile:bool
             )?;
         }
         tx.commit()?;
-        if reauthorize && !flow.replace_devices {
-            return Ok(Progress::Access {
-                expires_at: expires,
-            });
-        }
         Ok(Progress::Ready {
             reauthorize,
             expires_at: expires,

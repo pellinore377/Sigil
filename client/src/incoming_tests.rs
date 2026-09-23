@@ -807,13 +807,13 @@ pub(crate) fn approve_changed_binding(store: &mut ClientStore, original: &[u8]) 
         binding.username.as_str(),
         binding.account,
     );
-    let review = store
-        .reconcile_contact_trust(&replacement, address, true, None, 1)
-        .unwrap()
-        .unwrap();
-    store
-        .reconcile_contact_trust(&replacement, address, true, Some(review), 1)
-        .unwrap();
+    // The account key vouches for the changed binding; no review is needed.
+    assert_eq!(
+        store
+            .reconcile_contact_trust(&replacement, address, true, None, 1)
+            .unwrap(),
+        None
+    );
 }
 
 #[test]

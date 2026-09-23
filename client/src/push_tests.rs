@@ -716,6 +716,7 @@ fn scheduled_completion_failure_keeps_progress_and_scope_rebinding_fails() {
         )
         .unwrap();
     fresh.enroll_online().unwrap();
+    crate::account::tests::activate(&mut fresh, &mut client);
     assert!(!fresh.push_state().unwrap().configured);
     fresh
         .db

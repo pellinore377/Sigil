@@ -12,6 +12,7 @@ fn own() -> accounts::Session {
         device_id: "02".repeat(32),
         device_label: "Synthetic".into(),
         expires_at: 3000,
+        pending: false,
     }
 }
 fn queue() -> Queue {

@@ -1,5 +1,4 @@
 use crate::{
-    auth::{digest, random_secret},
     push_config::sql,
     store::{Store, StoreError},
     web_admin::{hash_password, verify_password},
@@ -16,7 +15,6 @@ pub(crate) const MIGRATION: &str = "
 CREATE TABLE password_policy(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL,enabled INTEGER NOT NULL,login_after INTEGER NOT NULL);
 INSERT INTO password_policy VALUES(1,0,0,0);
 CREATE TABLE account_passwords(account TEXT PRIMARY KEY REFERENCES accounts(id),hash TEXT NOT NULL);
-ALTER TABLE oidc_grants ADD COLUMN replace_devices INTEGER NOT NULL DEFAULT 1;
 ";
 #[cfg(test)]
 #[path = "password_login_tests.rs"]
@@ -127,32 +125,27 @@ impl Store {
                 Err(StoreError::Unauthorized)
             };
         }
+        if let Ok(state) = self.pending_state(&value.device_credential, now) {
+            return if state.session.account_id == account {
+                Ok(state.session)
+            } else {
+                Err(StoreError::Unauthorized)
+            };
+        }
         let server = self
             .configuration()?
             .settings
             .ok_or(StoreError::Unauthorized)?
             .server_name;
-        let expires = now
-            .checked_add(30 * 24 * 3600)
-            .ok_or(StoreError::InvalidData)?;
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let active: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM devices WHERE account_id=?1 AND revoked=0 AND expires_at>?2)", (&account,sql(now)?), |r|r.get(0))?;
-        if active {
-            return Err(StoreError::DeviceLinkRequired);
-        }
-        let device = random_secret().map_err(|_| StoreError::InvalidData)?;
-        crate::storage_budget::reserve(&tx, &account, crate::storage_budget::DEVICE, now)?;
-        tx.execute(
-            "INSERT INTO devices(id,account_id,label,token_hash,expires_at) VALUES(?1,?2,?3,?4,?5)",
-            (
-                &device,
-                &account,
-                &value.device_label,
-                digest(&value.device_credential).as_slice(),
-                sql(expires)?,
-            ),
+        let (device, expires, pending) = crate::account_key::admit(
+            &tx,
+            &account,
+            &value.device_label,
+            &value.device_credential,
+            now,
         )?;
         tx.commit()?;
         Ok(Session {
@@ -161,6 +154,7 @@ impl Store {
             device_id: device,
             device_label: value.device_label,
             expires_at: expires,
+            pending,
         })
     }
 }

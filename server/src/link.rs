@@ -29,6 +29,7 @@ impl Store {
     ) -> Result<Session, StoreError> {
         let proof = authorization.parse().map_err(StoreError::Invalid)?;
         let bytes = proof.to_bytes().map_err(StoreError::Invalid)?;
+        let secrets = crate::account_key::unhex(&authorization.secrets, 1024)?;
         let server = self
             .configuration()?
             .settings
@@ -82,6 +83,8 @@ impl Store {
         };
         sigil_crypto::link::verify(&proof, expected, verification_time)
             .map_err(|_| StoreError::Unauthorized)?;
+        let endorsement =
+            crate::account_key::verify(&tx, &account, &proof.joining, &authorization.endorsement)?;
         let expires_at = if let Some(prior) = prior {
             if prior != bytes {
                 return Err(StoreError::Conflict);
@@ -129,14 +132,20 @@ impl Store {
                 ),
             )?;
             tx.execute(
-                "INSERT INTO device_links VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO device_links VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 (
                     &target,
                     &sponsor,
                     proof.transcript.sponsor_challenge.as_slice(),
                     proof.transcript.joining_challenge.as_slice(),
                     bytes,
+                    &endorsement,
+                    secrets,
                 ),
+            )?;
+            tx.execute(
+                "INSERT INTO device_endorsements VALUES(?1,?2)",
+                (&target, endorsement),
             )?;
             expiry
         };
@@ -147,6 +156,7 @@ impl Store {
             device_id: target,
             device_label: "Linked device".into(),
             expires_at,
+            pending: false,
         })
     }
 }
@@ -158,8 +168,8 @@ impl Store {
     ) -> Result<Authorization, StoreError> {
         let tx = self.0.transaction()?;
         let target = authorize(&tx, credential, now)?;
-        let bytes:Vec<u8>=tx.query_row("SELECT CASE WHEN length(proof)<=1380 THEN proof END FROM device_links WHERE target=?1", [&target], |r|r.get(0)).optional()?.ok_or(StoreError::NotFound)?;
-        Ok(Authorization { proof: hex(&bytes) })
+        let (bytes, endorsement, secrets): (Vec<u8>, Vec<u8>, Vec<u8>) = tx.query_row("SELECT CASE WHEN length(proof)<=1380 THEN proof END,endorsement,secrets FROM device_links WHERE target=?1", [&target], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?.ok_or(StoreError::NotFound)?;
+        Ok(Authorization { proof: hex(&bytes), endorsement: hex(&endorsement), secrets: hex(&secrets) })
     }
 }
 pub(crate) fn routes() -> Router<AppState> {
@@ -168,7 +178,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/client/v0/device-links/{challenge}", delete(cancel_link))
         .route("/client/v0/device-link", get(own_link))
         .route_layer(middleware::from_fn(native_only))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(4096))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(8192))
 }
 async fn own_link(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let credential = match bearer(&headers) {

@@ -106,48 +106,78 @@ fn wallpaper_is_local_bound_to_its_conversation_and_replaced_atomically() {
         .is_empty());
 }
 #[test]
-fn recovery_setup_waits_for_saved_key_and_preserves_it_after_failed_commit_and_restart() {
-    let (dir, _server, mut alice, _bob, _now) = crate::claims::tests::pair();
-    let generated = run(&mut alice, json!({"command":"recovery_generate"}));
-    let secret = generated["secret"].as_str().unwrap();
-    assert_eq!(secret.len(), 64);
-    assert_ne!(secret, "00".repeat(32));
-    assert!(
-        !run(&mut alice, json!({"command":"storage"}))["recovery"]["enabled"]
-            .as_bool()
-            .unwrap()
+fn passkey_recovery_joins_the_account_without_touching_the_other_device() {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    let (dir, fixture, mut alice, _bob, now) = crate::claims::tests::pair();
+    alice.after_sign_in().unwrap();
+    assert_eq!(run(&mut alice, json!({"command":"storage"}))["recovery"]["enabled"], true);
+    let code = run(&mut alice, json!({"command":"recovery_code"}))["code"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(code.len(), 79);
+    let options = run(&mut alice, json!({"command":"passkey_create_options"}));
+    let salt = options["salt"].as_str().unwrap().to_owned();
+    let prf = Base64UrlUnpadded::encode_string(&[5; 32]);
+    run(
+        &mut alice,
+        json!({"command":"passkey_add","credential":"AQID","salt":salt,"prf":prf,"label":"Synthetic phone"}),
     );
-    let confirm = json!({"command":"recovery_enable","secret":secret});
-    alice.db.execute_batch("CREATE TRIGGER fail BEFORE INSERT ON archive BEGIN SELECT RAISE(ABORT,'synthetic'); END").unwrap();
-    let failed: Value = serde_json::from_str(&alice.mobile_command(&confirm.to_string())).unwrap();
-    assert_eq!(failed["ok"], false);
-    assert!(matches!(alice.recovery_status(), Err(Error::NotFound)));
-    alice.db.execute_batch("DROP TRIGGER fail").unwrap();
-    assert_eq!(run(&mut alice, confirm)["recovery"]["enabled"], true);
-    assert_eq!(
-        run(&mut alice, json!({"command":"recovery_policy","days":30}))["recovery"]["days"],
-        30
-    );
-    drop(alice);
-    let mut alice = ClientStore::open(
-        &dir.path().join("alice.db"),
-        StorageKey::new(Secret32::from_bytes([9; 32])).unwrap(),
+    let state = run(&mut alice, json!({"command":"state"}));
+    assert_eq!(state["account_recovery"]["passkeys"][0]["label"], "Synthetic phone");
+    assert_eq!(state["account_recovery"]["ready"], true);
+    let session = alice.connection_session().unwrap().unwrap();
+    let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
+    let invite = server
+        .invite_reauthorization(&session.account_id, 60, now)
+        .unwrap();
+    let mut laptop = ClientStore::open(
+        &dir.path().join("laptop.db"),
+        StorageKey::new(Secret32::from_bytes([31; 32])).unwrap(),
     )
     .unwrap();
-    let restored = run(&mut alice, json!({"command":"storage"}));
-    assert_eq!(restored["recovery"]["enabled"], true);
-    assert_eq!(restored["recovery"]["days"], 30);
-    let regenerate: Value =
-        serde_json::from_str(&alice.mobile_command(r#"{"command":"recovery_generate"}"#)).unwrap();
-    assert_eq!(regenerate["ok"], false);
-    let replacement: Value = serde_json::from_str(&alice.mobile_command(
-        &json!({"command":"recovery_enable","secret":"ff".repeat(32)}).to_string(),
+    laptop
+        .prepare_enrollment(
+            "chat.example",
+            fixture.port(),
+            &[crate::network::tests::CA.to_vec()],
+            &invite.secret,
+            "Synthetic laptop",
+            true,
+        )
+        .unwrap();
+    laptop.enroll_online().unwrap();
+    let waiting = run(&mut laptop, json!({"command":"state"}));
+    assert_eq!(waiting["phase"], "recover");
+    assert_eq!(waiting["passkeys"], 1);
+    let request = run(&mut laptop, json!({"command":"passkey_request"}));
+    assert_eq!(request["credentials"][0]["id"], "AQID");
+    assert_eq!(request["credentials"][0]["salt"], salt.as_str());
+    let wrong: Value = serde_json::from_str(&laptop.mobile_command(
+        &json!({"command":"recover","credential":"AQID","prf":Base64UrlUnpadded::encode_string(&[6; 32])}).to_string(),
     ))
     .unwrap();
-    assert_eq!(replacement["ok"], false);
+    assert_eq!(wrong["ok"], false);
+    let joined = run(&mut laptop, json!({"command":"recover","credential":"AQID","prf":prf}));
+    assert_eq!(joined["phase"], "connected");
+    assert_eq!(joined["account_recovery"]["passkeys"][0]["label"], "Synthetic phone");
     assert_eq!(
-        run(&mut alice, json!({"command":"recovery_policy","days":null}))["recovery"]["days"],
-        Value::Null
+        run(&mut laptop, json!({"command":"recovery_code"}))["code"],
+        code.as_str()
+    );
+    assert!(alice.connected_client().unwrap().session().is_ok());
+    // Each device trusts the other because the account key endorsed both.
+    alice.reconcile_own_devices_online().unwrap();
+    laptop.reconcile_own_devices_online().unwrap();
+    let own = laptop.connection_session().unwrap().unwrap();
+    let laptop_peer = alice
+        .peer(crate::peers::reference("chat.example", &crate::connection::decode_id(&own.device_id).unwrap()))
+        .unwrap();
+    assert!(laptop_peer.trusted);
+    run(&mut alice, json!({"command":"passkey_remove","credential":"AQID"}));
+    assert_eq!(
+        run(&mut alice, json!({"command":"state"}))["account_recovery"]["passkeys"],
+        json!([])
     );
 }
 #[test]

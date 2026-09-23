@@ -99,7 +99,7 @@ pub fn seal(
     role: u8,
     bytes: &[u8],
 ) -> Result<Vec<u8>, Error> {
-    if bytes.len() > 2048 || role > 1 {
+    if bytes.len() > 2048 || role > 2 {
         return Err(Error::Limit);
     }
     channel(own, peer, context)?.seal(
@@ -114,7 +114,7 @@ pub fn open(
     role: u8,
     bytes: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, Error> {
-    if bytes.len() > 2084 || role > 1 {
+    if bytes.len() > 2084 || role > 2 {
         return Err(Error::Limit);
     }
     channel(own, peer, context)?.open(

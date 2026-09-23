@@ -35,64 +35,6 @@ pub(crate) fn changed(original: &[u8], key: &IdentityKey) -> Vec<u8> {
 }
 
 #[test]
-fn linked_contact_anchors_preserve_blocks_and_identity_conflicts() {
-    let (_dir, _fixture, mut alice, mut bob, _) = crate::claims::tests::pair();
-    let original = bob.own_device_binding().unwrap();
-    let peer = alice.observe_peer_binding(&original).unwrap();
-    let anchor = ContactAnchor {
-        statement: transport::hex(&original),
-        verified: false,
-    };
-    {
-        let tx = alice.db.transaction().unwrap();
-        import_contact_anchor(&tx, &alice.key, &anchor).unwrap();
-        tx.commit().unwrap();
-    }
-    assert!(alice.peer(peer.id).unwrap().trusted);
-    assert!(!alice.peer(peer.id).unwrap().verified);
-    let replacement = changed(&original, &IdentityKey::generate().unwrap());
-    let candidate = alice
-        .observe_peer_binding(&replacement)
-        .unwrap()
-        .changed_fingerprint;
-    {
-        let tx = alice.db.transaction().unwrap();
-        import_contact_anchor(
-            &tx,
-            &alice.key,
-            &ContactAnchor {
-                statement: anchor.statement.clone(),
-                verified: true,
-            },
-        )
-        .unwrap();
-        tx.commit().unwrap();
-    }
-    let current = alice.peer(peer.id).unwrap();
-    assert!(!current.trusted);
-    assert_eq!(current.changed_fingerprint, candidate);
-    alice.block_peer(peer.id, true).unwrap();
-    {
-        let tx = alice.db.transaction().unwrap();
-        import_contact_anchor(&tx, &alice.key, &anchor).unwrap();
-        tx.commit().unwrap();
-    }
-    assert!(alice.peer(peer.id).unwrap().blocked);
-    let mut malformed = original;
-    *malformed.last_mut().unwrap() ^= 1;
-    let tx = alice.db.transaction().unwrap();
-    assert!(import_contact_anchor(
-        &tx,
-        &alice.key,
-        &ContactAnchor {
-            statement: transport::hex(&malformed),
-            verified: true
-        }
-    )
-    .is_err());
-}
-
-#[test]
 #[cfg_attr(
     debug_assertions,
     ignore = "bulk cryptographic boundary acceptance; run cargo test --release -p sigil-client --lib"
@@ -813,7 +755,19 @@ fn reviewed_link_endorsement_requires_existing_trust_and_preserves_quarantine() 
         .is_err());
 }
 
+/// Each synthetic account's key derives from its account id, so directories built
+/// for the same account agree without shared state.
+pub(crate) fn account_key(account: &Id) -> IdentityKey {
+    IdentityKey::from_private_bytes(&Sha256::digest([b"synthetic account key".as_slice(), account].concat()).into())
+}
 pub(crate) fn directory(bindings: &[Vec<u8>]) -> sigil_protocol::admin::ContactDirectory {
+    let account = parse(&bindings[0]).unwrap().binding.account;
+    directory_with(bindings, &account_key(&account))
+}
+pub(crate) fn directory_with(
+    bindings: &[Vec<u8>],
+    key: &IdentityKey,
+) -> sigil_protocol::admin::ContactDirectory {
     let parsed: Vec<_> = bindings.iter().map(|v| parse(v).unwrap()).collect();
     let owner = &parsed[0].binding;
     let mut devices: Vec<_> = parsed
@@ -827,12 +781,20 @@ pub(crate) fn directory(bindings: &[Vec<u8>]) -> sigil_protocol::admin::ContactD
             account: transport::hex(&owner.account),
             devices,
         },
+        account_key: Some(transport::hex(&key.public_key())),
         bindings: bindings.iter().map(|v| transport::hex(v)).collect(),
-        links: vec![],
+        endorsements: parsed
+            .iter()
+            .map(|s| {
+                transport::hex(
+                    &sigil_crypto::account::endorse(key, &fingerprint(&s.binding).unwrap()).unwrap(),
+                )
+            })
+            .collect(),
     }
 }
 #[test]
-fn directory_trust_is_not_manual_verification_and_replacements_require_exact_review() {
+fn endorsed_devices_are_trusted_and_a_new_account_key_requires_exact_review() {
     let (dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
     let original = bob.own_device_binding().unwrap();
     let binding = parse(&original).unwrap().binding;
@@ -855,16 +817,33 @@ fn directory_trust_is_not_manual_verification_and_replacements_require_exact_rev
     apply(&mut alice, &first, true, None).unwrap();
     assert!(alice.peer(old).unwrap().trusted);
     assert!(!alice.peer(old).unwrap().verified);
+    // Another device endorsed by the same key needs no review.
+    let key = IdentityKey::generate().unwrap();
+    let mut sibling = parse(&changed(&original, &key)).unwrap();
+    sibling.binding.device = [163; 32];
+    sibling.signature = key.sign(&sibling.binding.signing_bytes().unwrap()).unwrap();
+    let both = directory(&[original.clone(), sibling.to_bytes().unwrap()]);
+    assert_eq!(apply(&mut alice, &both, true, None).unwrap(), None);
+    let added = reference(&binding.server, &sibling.binding.device);
+    assert!(alice.peer(added).unwrap().trusted);
+    assert!(alice.peer(old).unwrap().trusted);
+    // An unendorsed device is never trusted.
+    let mut forged = both.clone();
+    forged.endorsements[1] = transport::hex(&[0; 64]);
+    apply(&mut alice, &forged, true, None).unwrap();
+    assert!(!alice.peer(added).unwrap().trusted);
+    apply(&mut alice, &both, true, None).unwrap();
     crate::incoming::tests::start(&mut alice, old, now);
     let queued = alice
         .send_peer_text(old, [161; 32], "Retained synthetic draft", now, now)
         .unwrap();
     let history = alice.outgoing_message(queued.0, [161; 32]).unwrap();
+    // A different account key pauses every device until the user approves it.
     let key = IdentityKey::generate().unwrap();
     let mut signed = parse(&changed(&original, &key)).unwrap();
     signed.binding.device = [162; 32];
     signed.signature = key.sign(&signed.binding.signing_bytes().unwrap()).unwrap();
-    let replacement = directory(&[signed.to_bytes().unwrap()]);
+    let replacement = directory_with(&[signed.to_bytes().unwrap()], &IdentityKey::generate().unwrap());
     let review = apply(&mut alice, &replacement, true, None)
         .unwrap()
         .unwrap();
@@ -887,70 +866,6 @@ fn directory_trust_is_not_manual_verification_and_replacements_require_exact_rev
     alice.block_peer(new, true).unwrap();
     apply(&mut alice, &replacement, true, None).unwrap();
     assert!(!alice.peer(new).unwrap().trusted);
-}
-#[test]
-fn directory_link_endorsement_survives_consent_expiry_but_rejects_tampering() {
-    let (dir, _fixture, mut contact, mut sponsor, now) = crate::claims::tests::pair();
-    let mut joining = open(&dir.path().join("directory-child.db"));
-    let sponsor_bytes = sponsor.own_device_binding().unwrap();
-    let child_bytes = joining
-        .sign_joining_device_binding(&sponsor_bytes, [171; 32])
-        .unwrap();
-    let binding = parse(&sponsor_bytes).unwrap().binding;
-    let apply = |store: &mut ClientStore, dir: &sigil_protocol::admin::ContactDirectory| {
-        store.reconcile_contact_trust(
-            dir,
-            (&binding.server, &binding.username, binding.account),
-            true,
-            None,
-            now + 1000,
-        )
-    };
-    apply(
-        &mut contact,
-        &directory(std::slice::from_ref(&sponsor_bytes)),
-    )
-    .unwrap();
-    let transcript = sigil_protocol::link::Transcript {
-        sponsor: device_fingerprint(&sponsor_bytes).unwrap(),
-        joining: device_fingerprint(&child_bytes).unwrap(),
-        sponsor_challenge: [172; 32],
-        joining_challenge: [173; 32],
-        provisioning_key: sigil_crypto::DhKey::generate().unwrap().public_key(),
-        credential_commitment: [174; 32],
-        created_at: now,
-        expires_at: now + 600,
-    };
-    let digest = crate::link::confirmation(&transcript).unwrap();
-    let proof = sigil_protocol::link::Proof {
-        sponsor_signature: sponsor
-            .sign_device_link_consent(&transcript, &sponsor_bytes, &child_bytes, digest, now)
-            .unwrap(),
-        joining_signature: joining
-            .sign_device_link_consent(&transcript, &sponsor_bytes, &child_bytes, digest, now)
-            .unwrap(),
-        transcript,
-        sponsor: parse(&sponsor_bytes).unwrap(),
-        joining: parse(&child_bytes).unwrap(),
-    };
-    let mut next = directory(&[child_bytes]);
-    let mut tampered = proof.clone();
-    tampered.sponsor_signature[0] ^= 1;
-    next.links = vec![transport::hex(&tampered.to_bytes().unwrap())];
-    assert!(apply(&mut contact, &next).is_err());
-    next.links = vec![transport::hex(&proof.to_bytes().unwrap())];
-    assert_eq!(apply(&mut contact, &next).unwrap(), None);
-    let child = contact
-        .peer(reference(&binding.server, &[171; 32]))
-        .unwrap();
-    assert!(child.trusted);
-    assert!(!child.verified);
-    assert!(
-        !contact
-            .peer(reference(&binding.server, &binding.device))
-            .unwrap()
-            .active
-    );
 }
 
 #[test]

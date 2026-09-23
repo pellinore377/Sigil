@@ -946,6 +946,7 @@ fn recover_card_actions(mode: u8) {
         )
         .unwrap();
     let enrolled = recovered.enroll_online().unwrap();
+    crate::account::tests::activate(&mut recovered, &mut bob);
     assert_eq!(enrolled.account_id, original.account_id);
     assert_ne!(enrolled.device_id, original.device_id);
     configure(&mut recovered, 8);
@@ -991,7 +992,7 @@ fn recover_card_actions(mode: u8) {
         recovered.account_reference().unwrap(),
         bob.account_reference().unwrap()
     );
-    for table in ["sessions", "identity", "peers", "prekeys", "push_state"] {
+    for table in ["sessions", "peers", "prekeys", "push_state"] {
         assert_eq!(
             recovered
                 .db

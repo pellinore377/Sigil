@@ -9,7 +9,7 @@ use std::{
 };
 
 const APPLICATION_ID: i64 = 0x5349474c;
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -22,7 +22,6 @@ pub enum StoreError {
     AlreadyExists,
     NotFound,
     Forbidden,
-    DeviceLinkRequired,
     Invalid(&'static str),
 }
 impl From<rusqlite::Error> for StoreError {
@@ -245,6 +244,25 @@ impl Store {
             )?;
             if !present {
                 transaction.execute_batch("ALTER TABLE calls ADD COLUMN started INTEGER NOT NULL DEFAULT 0;")?;
+            }
+        }
+        if version < 39 {
+            let legacy: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('oidc_grants') WHERE name='replace_devices')",
+                [],
+                |r| r.get(0),
+            )?;
+            if legacy {
+                transaction.execute_batch("")?;
+            }
+            transaction.execute_batch(crate::account_key::MIGRATION)?;
+            let linked: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('device_links') WHERE name='secrets')",
+                [],
+                |r| r.get(0),
+            )?;
+            if !linked {
+                transaction.execute_batch(crate::account_key::LINK_COLUMNS)?;
             }
         }
         transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;

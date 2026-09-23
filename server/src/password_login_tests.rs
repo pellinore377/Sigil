@@ -42,10 +42,19 @@ fn policy_password_checks_and_retry_preserve_account_and_devices() {
     assert!(s
         .password_sign_in(request("unknown", PASSWORD, &credential), now + 2)
         .is_err());
-    assert!(s
+    let pending = s
         .password_sign_in(request("alice", PASSWORD, &credential), now + 3)
-        .is_err());
+        .unwrap();
+    assert!(pending.pending);
+    s.0.execute("UPDATE password_policy SET login_after=0", []).unwrap();
+    assert_eq!(
+        s.password_sign_in(request("alice", PASSWORD, &credential), now + 3)
+            .unwrap(),
+        pending
+    );
+    assert!(s.session(&credential, now + 3).is_err());
     assert_eq!(s.session(&alice, now + 3).unwrap(), old);
+    s.0.execute_batch("DELETE FROM pending_devices; UPDATE password_policy SET login_after=0;").unwrap();
     s.0.execute(
         "UPDATE devices SET revoked=1,token_hash=NULL WHERE account_id=?1",
         [&old.account_id],
@@ -63,9 +72,11 @@ fn policy_password_checks_and_retry_preserve_account_and_devices() {
             .unwrap(),
         session
     );
-    assert!(s
-        .password_sign_in(request("alice", PASSWORD, &"bb".repeat(32)), now + 6)
-        .is_err());
+    assert!(
+        s.password_sign_in(request("alice", PASSWORD, &"bb".repeat(32)), now + 6)
+            .unwrap()
+            .pending
+    );
     s.configure_user_passwords(PasswordPolicy {
         enabled: false,
         ..policy
@@ -94,7 +105,7 @@ fn policy_password_checks_and_retry_preserve_account_and_devices() {
 fn migration_defaults_closed_and_keeps_existing_sessions() {
     let (dir, s, alice, _, now) = crate::admin::tests::setup();
     let prior = s.session(&alice, now).unwrap();
-    s.0.execute_batch("DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; ALTER TABLE oidc_grants DROP COLUMN replace_devices; DROP TABLE IF EXISTS push_android; DROP TABLE link_relay; PRAGMA user_version=29;").unwrap();
+    s.0.execute_batch("DROP TABLE profile_shares; DROP TABLE profile_photos; DROP TABLE contact_requests; DROP TABLE contact_request_policy; DROP TABLE account_passwords; DROP TABLE password_policy; DROP TABLE IF EXISTS push_android; DROP TABLE link_relay; PRAGMA user_version=29;").unwrap();
     drop(s);
     let s = Store::open(&dir.path().join("sigil.db")).unwrap();
     assert!(!s.user_password_policy().unwrap().enabled);

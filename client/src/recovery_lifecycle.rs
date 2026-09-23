@@ -135,10 +135,11 @@ mod tests {
             )
             .unwrap();
         replacement.enroll_online().unwrap();
+        crate::account::tests::activate(&mut replacement, &mut source);
         replacement.publish_device_binding_online().unwrap();
         let identity = replacement.identity().unwrap();
         assert_ne!(identity, original_identity);
-        assert!(source.devices_online(None).is_err());
+        assert!(source.devices_online(None).is_ok());
         assert!(bob.devices_online(None).is_ok());
         assert!(replacement
             .begin_history_recovery_online(Secret32::from_bytes(*secret), false)

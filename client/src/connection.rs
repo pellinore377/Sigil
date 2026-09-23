@@ -338,7 +338,6 @@ impl ClientStore {
         roots: &[Vec<u8>],
         username: Option<&str>,
         label: &str,
-        replace_devices: bool,
     ) -> Result<(), Error> {
         let secret = fresh_credential()?;
         self.prepare_connection(
@@ -347,7 +346,7 @@ impl ClientStore {
             roots,
             &secret,
             label,
-            replace_devices,
+            false,
             Some(Oidc {
                 username_needed: false,
                 request_id: fresh_credential()?.to_string(),
@@ -370,7 +369,6 @@ impl ClientStore {
                 .ok_or(Error::Unprepared)?
                 .to_string(),
             username: oidc.username.clone(),
-            replace_devices: oidc.link_secret.is_none() && profile.reauthorize,
         };
         Ok(if oidc.link_secret.is_some() {
             network.link_oidc(&request)?
@@ -379,18 +377,6 @@ impl ClientStore {
         })
     }
     pub fn restart_oidc_enrollment(&mut self, username: Option<&str>) -> Result<(), Error> {
-        self.restart_oidc_enrollment_mode(username, false)
-    }
-    pub(crate) fn restart_oidc_recovery(&mut self) -> Result<(), Error> {
-        let (profile, _) = load(&self.db, &self.key)?;
-        let username = profile.oidc.as_ref().and_then(|flow| flow.username.clone());
-        self.restart_oidc_enrollment_mode(username.as_deref(), true)
-    }
-    fn restart_oidc_enrollment_mode(
-        &mut self,
-        username: Option<&str>,
-        replace: bool,
-    ) -> Result<(), Error> {
         let (mut profile, expected) = load(&self.db, &self.key)?;
         let oidc = profile.oidc.as_mut().ok_or(Error::Unprepared)?;
         if oidc.link_secret.is_some() {
@@ -401,7 +387,6 @@ impl ClientStore {
         oidc.completion = None;
         profile.invitation = Some(fresh_credential()?);
         profile.credential = fresh_credential()?;
-        profile.reauthorize |= replace;
         save(&self.db, &self.key, &profile, Some(&expected))
     }
     /// Callers serialize enrollment requests. Never discard a live/uncertain
@@ -425,10 +410,6 @@ impl ClientStore {
         tx.execute("DELETE FROM connection", [])?;
         tx.commit()?;
         Ok(())
-    }
-    pub(crate) fn needs_history_recovery(&self) -> Result<bool, Error> {
-        let (profile, _) = load(&self.db, &self.key)?;
-        Ok(profile.reauthorize && profile.session.is_some() && !recovery::configured(&self.db)?)
     }
     pub fn accept_oidc_callback(
         &mut self,
@@ -527,11 +508,9 @@ impl ClientStore {
                     save(&self.db, &self.key, &profile, Some(&expected))?;
                     return Ok(None);
                 }
-                sigil_protocol::oidc::Progress::Access { .. } => {
-                    profile.reauthorize = true;
+                sigil_protocol::oidc::Progress::Ready { reauthorize, .. } => {
+                    profile.reauthorize = reauthorize;
                 }
-                sigil_protocol::oidc::Progress::Ready { reauthorize, .. }
-                    if reauthorize == profile.reauthorize => {}
                 _ => return Err(Error::Cancelled),
             }
             profile.oidc = None;
@@ -592,7 +571,9 @@ impl ClientStore {
     }
     pub(crate) fn enrollment_kind(&self) -> Result<&'static str, Error> {
         match load(&self.db, &self.key) {
-            Ok((p, _)) => Ok(if p.session.is_some() {
+            Ok((p, _)) => Ok(if p.session.as_ref().is_some_and(|s| s.pending) {
+                "recover"
+            } else if p.session.is_some() {
                 "connected"
             } else if p.oidc.as_ref().is_some_and(|o| o.username_needed) {
                 "username"
@@ -606,6 +587,37 @@ impl ClientStore {
             Err(Error::NotFound) => Ok("new"),
             Err(e) => Err(e),
         }
+    }
+    /// The stored session whether or not recovery has activated it.
+    pub(crate) fn profile_session(&self) -> Result<Option<accounts::Session>, Error> {
+        Ok(load(&self.db, &self.key)?.0.session)
+    }
+    /// Signed in but waiting for recovery: only the pending routes accept this credential.
+    pub(crate) fn pending_session(&self) -> Result<Option<(accounts::Session, network::HttpsClient)>, Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        match profile.session.clone() {
+            Some(session) if session.pending => Ok(Some((
+                session,
+                client(&self.db, &self.key, &profile, &profile.credential)?,
+            ))),
+            _ => Ok(None),
+        }
+    }
+    /// Replaces the pending session once the server accepted this device's endorsement.
+    pub(crate) fn activate_session(&mut self, session: accounts::Session) -> Result<(), Error> {
+        let (mut profile, expected) = load(&self.db, &self.key)?;
+        let pending = profile.session.as_ref().ok_or(Error::Unprepared)?;
+        if !pending.pending
+            || session.pending
+            || session.device_id != pending.device_id
+            || session.account_id != pending.account_id
+        {
+            return Err(Error::Conflict);
+        }
+        validate_session(&profile, &session)?;
+        profile.session = Some(session);
+        profile.reauthorize = false;
+        save(&self.db, &self.key, &profile, Some(&expected))
     }
     pub(crate) fn enrollment_server(&self) -> Result<Option<String>, Error> {
         match load(&self.db, &self.key) {
@@ -683,7 +695,7 @@ impl ClientStore {
     pub fn connected_client(&self) -> Result<network::HttpsClient, Error> {
         let (profile, state) = load(&self.db, &self.key)?;
         let mut cached = self.connection.borrow_mut();
-        if profile.session.is_none() || profile.rotation.is_some() {
+        if profile.session.as_ref().is_none_or(|s| s.pending) || profile.rotation.is_some() {
             *cached = None;
             return Err(Error::Unprepared);
         }
@@ -707,7 +719,10 @@ impl ClientStore {
             return Err(Error::Conflict);
         }
         let network = client(&self.db, &self.key, &profile, &profile.credential)?;
-        let session = match network.session() {
+        let session = match network.session().or_else(|e| match e {
+            network::Error::Status { code: 401, .. } => network.pending().map(|p| p.session),
+            e => Err(e),
+        }) {
             Ok(session) => session,
             Err(network::Error::Status { code: 401, .. }) if profile.invitation.is_some() => {
                 network.enroll(
@@ -904,7 +919,7 @@ pub(super) fn session_in(
     db: &Connection,
     key: &StorageKey,
 ) -> Result<Option<accounts::Session>, Error> {
-    Ok(load(db, key)?.0.session)
+    Ok(load(db, key)?.0.session.filter(|s| !s.pending))
 }
 pub(super) fn decode_id(value: &str) -> Result<Id, Error> {
     if !accounts::valid_credential(value) {

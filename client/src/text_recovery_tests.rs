@@ -153,6 +153,7 @@ fn accepted_text_is_archived_atomically_and_a_fresh_device_recovers_it_over_http
         )
         .unwrap();
     let enrolled = replacement.enroll_online().unwrap();
+    crate::account::tests::activate(&mut replacement, &mut alice);
     assert_eq!(enrolled.account_id, original.account_id);
     assert_ne!(enrolled.device_id, original.device_id);
     configure(&mut replacement, 7);
@@ -180,7 +181,7 @@ fn accepted_text_is_archived_atomically_and_a_fresh_device_recovers_it_over_http
         body(&replacement, second_id).as_slice(),
         b"recoverable reply"
     );
-    for table in ["sessions", "identity", "prekeys", "peers", "text_events"] {
+    for table in ["sessions", "prekeys", "peers", "text_events"] {
         assert_eq!(count(&replacement, table), 0, "{table}");
     }
 }

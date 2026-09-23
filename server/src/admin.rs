@@ -436,30 +436,21 @@ pub(crate) fn contact_directory(
 ) -> Result<ContactDirectory, StoreError> {
     let account = discover(db, username, now)?;
     let mut bindings = Vec::new();
-    let mut links = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut endorsements = Vec::new();
     for device in &account.devices {
         let bytes: Option<Vec<u8>> = db.query_row("SELECT CASE WHEN length(statement)<=512 THEN statement END FROM device_bindings WHERE device=?1", [device], |r| r.get(0)).optional()?;
         if let Some(bytes) = bytes {
             bindings.push(crate::federation_auth::hex(&bytes));
-        }
-        let mut target = device.clone();
-        while seen.insert(target.clone()) {
-            if seen.len() > 128 {
-                return Err(StoreError::Busy);
-            }
-            let row: Option<(String, Vec<u8>)> = db.query_row("SELECT sponsor,CASE WHEN length(proof)<=1380 THEN proof END FROM device_links WHERE target=?1", [&target], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
-            let Some((sponsor, proof)) = row else {
-                break;
-            };
-            links.push(crate::federation_auth::hex(&proof));
-            target = sponsor;
+            let signature = crate::account_key::endorsement(db, device)?;
+            endorsements.push(signature.map(|s| crate::federation_auth::hex(&s)).unwrap_or_default());
         }
     }
+    let account_key = crate::account_key::account_key(db, &account.account)?.map(|k| k.public);
     Ok(ContactDirectory {
         account,
+        account_key,
         bindings,
-        links,
+        endorsements,
     })
 }
 impl Store {

@@ -46,6 +46,13 @@ impl IdentityKey {
     pub fn generate() -> Result<Self, Error> {
         Ok(Self(DhKey::generate()?))
     }
+    /// Raw scalar for callers that seal it themselves.
+    pub fn private_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.0 .0.to_bytes())
+    }
+    pub fn from_private_bytes(bytes: &[u8; 32]) -> Self {
+        Self(DhKey(x25519_dalek::StaticSecret::from(*bytes)))
+    }
 
     pub fn public_key(&self) -> [u8; 32] {
         self.0.public_key()

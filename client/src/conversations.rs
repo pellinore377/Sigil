@@ -1758,11 +1758,6 @@ fn history_id(e: &Entry) -> Id {
     .into()
 }
 fn archive_new(tx: &Transaction<'_>, key: &StorageKey, e: &Entry) -> Result<(), Error> {
-    if e.conversation
-        == crate::mobile::contacts::catalog::scope(e.author, e.operation.version.device)
-    {
-        return Ok(());
-    }
     if !recovery::configured(tx)? || copyable(tx, key, e)? != Some(true) {
         return Ok(());
     }
@@ -1884,11 +1879,19 @@ pub(crate) fn restore(
         observe(tx, key, e.operation.version.counter)?;
     }
     if let Some(digest) = redacted {
-        retention::accept_redaction(tx, key, e, digest)
-    } else {
-        ingest_only(tx, key, &e)?;
-        structured(tx, key, &e)
+        return retention::accept_redaction(tx, key, e, digest);
     }
+    let own = crate::structured::account_context(tx, key)?.1;
+    let catalog = (e.author == own
+        && e.conversation
+            == crate::mobile::contacts::catalog::scope(own, e.operation.version.device))
+    .then(|| e.operation.clone());
+    ingest_only(tx, key, &e)?;
+    structured(tx, key, &e)?;
+    if let Some(operation) = catalog {
+        crate::mobile::contacts::catalog::receive(tx, key, own, &operation)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn observe_expiry(

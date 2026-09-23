@@ -97,6 +97,9 @@ impl FoundAccount {
 #[serde(deny_unknown_fields)]
 pub struct ContactDirectory {
     pub account: FoundAccount,
+    /// Hex account key; absent until the first device publishes it.
+    pub account_key: Option<String>,
     pub bindings: Vec<String>,
-    pub links: Vec<String>,
+    /// Hex endorsement per binding, empty when the device is not endorsed.
+    pub endorsements: Vec<String>,
 }

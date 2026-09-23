@@ -121,6 +121,8 @@ fn immutable_objects_are_account_scoped_and_survive_reauthorization_and_restart(
     assert_eq!(store.recovery_head(&bob, NOW).unwrap(), Head::default());
     let account = store.session(&alice, NOW).unwrap().account_id;
     let invite = store.invite_reauthorization(&account, 60, NOW).unwrap();
+    let own = store.session(&alice, NOW).unwrap().device_id;
+    store.revoke_device(&alice, &own, NOW).unwrap();
     let replacement = random_secret().unwrap();
     store
         .reauthorize(

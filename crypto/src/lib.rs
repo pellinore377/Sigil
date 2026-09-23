@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Experimental primitives, handshake, classical ratchet and encrypted checkpoints. No enabled wire suite.
 
+pub mod account;
 pub mod attachment;
 mod braid;
 mod checkpoint;

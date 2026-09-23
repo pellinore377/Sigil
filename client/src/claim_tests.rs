@@ -50,6 +50,8 @@ pub(crate) fn pair_with_bob_key(
         .unwrap();
     bob.prepare_prekey_publication(SLOT, true, 3600).unwrap();
     bob.publish_prekey_online(SLOT).unwrap();
+    alice.ensure_account_key_online().unwrap();
+    bob.ensure_account_key_online().unwrap();
     (dir, fixture, alice, bob, now)
 }
 fn device(store: &ClientStore) -> Id {

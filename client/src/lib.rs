@@ -9,6 +9,7 @@ use sigil_crypto::{
     MAX_PLAINTEXT,
 };
 use std::path::Path;
+mod account;
 pub mod attachments;
 #[cfg(target_arch = "wasm32")]
 pub mod browser_transport;
@@ -76,7 +77,7 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-pub const DATABASE_VERSION: u32 = 85;
+pub const DATABASE_VERSION: u32 = 86;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -101,6 +102,8 @@ pub enum Error {
     Unprepared,
     DirectoryUnavailable,
     SharedContactChanged,
+    /// The passkey or recovery code does not belong to this account.
+    RecoveryMismatch,
     UnsupportedTextEdit,
     CallingUnavailable,
     UnsupportedSession,
@@ -529,6 +532,9 @@ impl ClientStore {
         if version < 85 {
             // The ops that decide a preference or activity fold, so reads replay a few instead of the whole log.
             tx.execute_batch("CREATE TABLE IF NOT EXISTS fold_cache(scope BLOB NOT NULL, kind INTEGER NOT NULL, last BLOB NOT NULL, ids BLOB NOT NULL, PRIMARY KEY(scope,kind)); PRAGMA user_version=85;")?;
+        }
+        if version < 86 {
+            tx.execute_batch(account::MIGRATION)?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

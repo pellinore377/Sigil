@@ -165,6 +165,8 @@ fn qr_linking_survives_each_restart_and_lost_local_commits_then_exchanges_encryp
     assert!(sponsor.session_peer_confirmed([3; 32]).unwrap());
     let request = || sigil_protocol::link::Authorization {
         proof: crate::transport::hex(&proof.to_bytes().unwrap()),
+        endorsement: "00".repeat(64),
+        secrets: "00".repeat(40),
     };
     sponsor.cancel_sponsored_link_online([2; 32]).unwrap();
     sponsor.cancel_sponsored_link_online([2; 32]).unwrap();
