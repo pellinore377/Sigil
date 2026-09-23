@@ -17,6 +17,9 @@ import androidx.compose.ui.unit.dp
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.delay
 
+// A camera scanner where this device signs in by scanning another's code; absent, it shows its own.
+val LocalQrScanner = staticCompositionLocalOf<(@Composable ((String) -> Unit) -> Unit)?> { null }
+
 @Composable fun LinkPanel(raw:String,busy:Boolean,issue:String?,command:(String,String?)->Unit,scanner:@Composable ((String)->Unit)->Unit) {
     val flow=remember(raw){Json.parseToJsonElement(raw).jsonObject}
     val stage=flow.string("stage")
@@ -25,7 +28,7 @@ import kotlinx.coroutines.delay
     val currentCommand by rememberUpdatedState(command)
     val currentBusy by rememberUpdatedState(busy)
     LaunchedEffect(stage) {
-        if(stage in setOf("show_offer","exchanging","wait_approval"))while(true){
+        if(stage in setOf("show_offer","show_join","exchanging","wait_approval"))while(true){
             delay(1500)
             if(!currentBusy)currentCommand("poll",null)
         }
@@ -43,7 +46,8 @@ import kotlinx.coroutines.delay
             },label="Linking stage") {shown->
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(20.dp)) {
                 Text(when(shown){
-                    "show_offer"->"On your existing device, open Settings, then Devices, then Link a new device. Scan this code with that device."
+                    "show_offer"->"On your existing device, open Settings, then Devices, then Link a new device, and choose Scan its code. Scan this code with that device."
+                    "show_join"->"On your new device, choose Link from another device, then scan this code."
                     "scan_offer"->"Scan the code shown by your new device. Keep both devices with you throughout setup."
                     "exchanging"->"Connecting to your new device…"
                     "confirm_sponsor"->"Tap the emoji shown on your new device to approve it. Only link a device you have with you."
@@ -60,7 +64,7 @@ import kotlinx.coroutines.delay
                 if(emoji.isNotEmpty())Text(emoji.joinToString(" "),Modifier.align(Alignment.CenterHorizontally),style=MaterialTheme.typography.displayMedium)
                 flow.optional("account")?.let {Text(it,style=MaterialTheme.typography.titleMedium)}
                 issue?.let {Text(it,Modifier.semantics {liveRegion=LiveRegionMode.Polite},style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.error)}
-                if(busy && shown !in setOf("show_offer","exchanging","wait_approval"))CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp))
+                if(busy && shown !in setOf("show_offer","show_join","exchanging","wait_approval"))CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).size(24.dp))
             }
             }
             when(stage){
