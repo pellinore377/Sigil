@@ -203,6 +203,7 @@ pub(crate) fn request_in(
             &request.invitation,
         ),
     )?;
+    crate::push::signal_account(tx, &request.recipient, now)?;
     receipt(tx, &id)
 }
 pub(crate) fn status_in(
@@ -275,7 +276,8 @@ impl Store {
             return Err(StoreError::Invalid("invalid request cursor"));
         }
         let tx = self.0.transaction()?;
-        let (account, _) = own(&tx, credential, now)?;
+        let (account, device) = own(&tx, credential, now)?;
+        tx.execute("DELETE FROM device_signals WHERE device=?1", [&device])?;
         let rows=tx.prepare("SELECT id,origin,account,device,binding,signature,created_at,expires_at,invitation FROM contact_requests WHERE recipient=?1 AND state=0 AND expires_at>?2 AND id>?3 ORDER BY id LIMIT 33")?.query_map((&account,sql(now)?,after.unwrap_or("")),|r|Ok(IncomingRequest{receipt:RequestReceipt{id:r.get(0)?,state:RequestState::Pending,expires_at:unsigned(r,7)?},origin:r.get(1)?,account:r.get(2)?,device:r.get(3)?,binding:hex(&r.get::<_,Vec<u8>>(4)?),signature:r.get(5)?,invitation:r.get(8)?,created_at:unsigned(r,6)?}))?.collect::<Result<Vec<_>,_>>()?;
         let next = if rows.len() > 32 {
             Some(rows[31].receipt.id.clone())
@@ -350,6 +352,15 @@ impl Store {
             "UPDATE contact_requests SET state=?2 WHERE id=?1",
             (id, value),
         )?;
+        // A local requester learns of the decision immediately.
+        let (origin, requester): (String, String) = tx.query_row(
+            "SELECT origin,account FROM contact_requests WHERE id=?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if Some(origin) == crate::store::read_configuration(&tx)?.settings.map(|s| s.server_name) {
+            crate::push::signal_account(&tx, &requester, now)?;
+        }
         let value = receipt(&tx, id)?;
         tx.commit()?;
         Ok(value)

@@ -72,9 +72,9 @@ async fn create(
     Json(request): Json<RequestContact>,
 ) -> Reply<RequestReceipt> {
     let token = bearer(&headers)?;
-    Ok(Json(
-        with_store(state, move |s| s.request_contact(&token, request, now()?)).await?,
-    ))
+    let value = with_store(state.clone(), move |s| s.request_contact(&token, request, now()?)).await?;
+    let _ = state.mailbox_wake.send("*".into());
+    Ok(Json(value))
 }
 async fn status(
     State(state): State<AppState>,
@@ -96,12 +96,12 @@ async fn resolve(
     Json(request): Json<ResolveRequest>,
 ) -> Reply<RequestReceipt> {
     let token = bearer(&headers)?;
-    Ok(Json(
-        with_store(state, move |s| {
-            s.resolve_contact_request(&token, &id, request.state, &request.signature, now()?)
-        })
-        .await?,
-    ))
+    let value = with_store(state.clone(), move |s| {
+        s.resolve_contact_request(&token, &id, request.state, &request.signature, now()?)
+    })
+    .await?;
+    let _ = state.mailbox_wake.send("*".into());
+    Ok(Json(value))
 }
 async fn policy(State(state): State<AppState>, headers: HeaderMap) -> Reply<RequestPolicy> {
     let token = bearer(&headers)?;

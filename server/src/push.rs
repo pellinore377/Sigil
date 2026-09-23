@@ -350,9 +350,29 @@ pub(crate) fn enqueue(tx: &Transaction<'_>, device: &str, now: u64) -> Result<()
         return Ok(());
     }
     let (through,expires):(Option<i64>,Option<u64>)=tx.query_row("SELECT max(sequence),max(expires_at) FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2",(device,sql(now)?),|r|Ok((r.get(0)?,optional_unsigned(r,1)?)))?;
-    let (Some(through), Some(expires)) = (through, expires) else {
-        return Ok(());
+    let (through, expires) = match (through, expires) {
+        (Some(through), Some(expires)) => (through, expires),
+        _ if signalled(tx, device)? => (0, now.saturating_add(3600)),
+        _ => return Ok(()),
     };
     tx.execute("INSERT INTO push_jobs VALUES(?1,?2,?3,?4,?5,0,NULL,0) ON CONFLICT(device) DO UPDATE SET through_sequence=max(through_sequence,excluded.through_sequence),expires_at=max(expires_at,excluded.expires_at)",(device,sql(row.revision)?,through,sql(expires.min(row.expires.ok_or(StoreError::InvalidData)?))?,sql(now)?))?;
     Ok(())
+}
+
+pub(crate) const SIGNAL_MIGRATION: &str =
+    "CREATE TABLE IF NOT EXISTS device_signals(device TEXT PRIMARY KEY REFERENCES devices(id));";
+/// Wakes every device of an account for a change outside the mailbox, such as a contact request.
+pub(crate) fn signal_account(tx: &Transaction<'_>, account: &str, now: u64) -> Result<(), StoreError> {
+    let devices: Vec<String> = tx
+        .prepare("SELECT id FROM devices WHERE account_id=?1 AND revoked=0 AND expires_at>?2")?
+        .query_map((account, sql(now)?), |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    for device in devices {
+        tx.execute("INSERT INTO device_signals VALUES(?1) ON CONFLICT DO NOTHING", [&device])?;
+        enqueue(tx, &device, now)?;
+    }
+    Ok(())
+}
+pub(crate) fn signalled(db: &rusqlite::Connection, device: &str) -> Result<bool, StoreError> {
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM device_signals WHERE device=?1)", [device], |r| r.get(0))?)
 }

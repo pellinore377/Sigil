@@ -105,12 +105,17 @@ impl Store {
                 }
             } else {
                 let pending:(Option<i64>,Option<u64>)=tx.query_row("SELECT max(sequence),max(expires_at) FROM mailbox WHERE recipient=?1 AND payload IS NOT NULL AND expires_at>?2",(&device,sql(now)?),|r|Ok((r.get(0)?,optional_unsigned(r,1)?)))?;
-                let (Some(sequence), Some(expiry)) = pending else {
-                    tx.execute("DELETE FROM push_jobs WHERE device=?1", [&device])?;
-                    continue;
-                };
-                through = through.max(sequence);
-                expires = expiry.min(row.expires.ok_or(StoreError::InvalidData)?);
+                match pending {
+                    (Some(sequence), Some(expiry)) => {
+                        through = through.max(sequence);
+                        expires = expiry.min(row.expires.ok_or(StoreError::InvalidData)?);
+                    }
+                    _ if push::signalled(&tx, &device)? => {}
+                    _ => {
+                        tx.execute("DELETE FROM push_jobs WHERE device=?1", [&device])?;
+                        continue;
+                    }
+                }
                 Hint::Wake
             };
             let lease = random_secret().map_err(|_| StoreError::InvalidData)?;

@@ -69,6 +69,7 @@ enum Command {
     },
     CancelLogin {},
     PasskeyRequest {},
+    ContactSignal {},
     Recover {
         credential: Option<String>,
         prf: Option<Zeroizing<String>>,
@@ -748,6 +749,10 @@ impl ClientStore {
                 self.mobile_state()
             }
             Command::PasskeyRequest {} => self.passkey_request(),
+            Command::ContactSignal {} => {
+                crate::CONTACT_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(json!({}))
+            }
             Command::Recover {
                 credential,
                 prf,
@@ -1632,12 +1637,18 @@ impl ClientStore {
                     let _ = self.approve_recovery(&action, conversations::now());
                 }
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
-                // Wake passes stay short; the periodic contact poll rides regular passes.
-                let contact_issue = if wake == Some(true) { None } else {
-                    self.mobile_contact_sync(false)
-                        .err()
-                        .map(|error| format!("Contact sync: {}", error_message(&error)))
-                };
+                // The server signals contact requests and replies; act on them at once.
+                let signalled = crate::CONTACT_SIGNAL.swap(false, std::sync::atomic::Ordering::Relaxed);
+                if signalled {
+                    self.db.execute(
+                        "UPDATE mobile_contacts SET work_at=?1 WHERE work_at>?1 AND work_at<9223372036854775807",
+                        [conversations::now() as i64],
+                    )?;
+                }
+                let contact_issue = self
+                    .mobile_contact_sync(signalled)
+                    .err()
+                    .map(|error| format!("Contact sync: {}", error_message(&error)));
                 if let Some(step) = &result.step {
                     if let Some((stage, error)) = step.issue() {
                         let detail = step

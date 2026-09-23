@@ -74,8 +74,8 @@ fn directory_error(error: network::Error) -> Error {
         other => other.into(),
     }
 }
-/// Requests and replies are seen within this many seconds of a sync.
-const POLL: u64 = 10;
+/// Fallback poll; the server signals requests and replies as they happen.
+const POLL: u64 = 60;
 fn waiting() -> u64 {
     i64::MAX as u64
 }

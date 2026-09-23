@@ -617,6 +617,13 @@ async fn wait(
         if !list.is_empty() {
             return Json(list).into_response();
         }
+        let signalled = device.clone();
+        // Reported once, so a client that ignores it cannot spin on it.
+        if with_store(state.clone(), move |store| Ok(store.0.execute("DELETE FROM device_signals WHERE device=?1", [&signalled])? > 0)).await.unwrap_or(false) {
+            let mut response = empty();
+            response.headers_mut().insert(sigil_protocol::mailbox::SIGNAL_HEADER, axum::http::HeaderValue::from_static("contacts"));
+            return response;
+        }
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {

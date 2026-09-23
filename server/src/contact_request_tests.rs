@@ -531,3 +531,19 @@ fn directory_is_authenticated_and_schema_32_requests_remain_valid() {
     let json = serde_json::to_string(&request).unwrap();
     assert!(!json.contains("invitation"));
 }
+#[test]
+fn requests_and_decisions_signal_the_other_accounts_devices() {
+    let (_dir, mut store, alice, bob, now) = crate::admin::tests::setup();
+    let a = store.session(&alice, now).unwrap();
+    let b = store.session(&bob, now).unwrap();
+    let (_, request) = request(&mut store, &alice, &b.account_id, now);
+    let queued = store.request_contact(&alice, request.clone(), now).unwrap();
+    assert!(crate::push::signalled(&store.0, &b.device_id).unwrap());
+    assert!(!crate::push::signalled(&store.0, &a.device_id).unwrap());
+    store.contact_requests(&bob, None, now).unwrap();
+    assert!(!crate::push::signalled(&store.0, &b.device_id).unwrap());
+    store
+        .resolve_contact_request(&bob, &queued.id, RequestState::Accepted, &request.signature, now)
+        .unwrap();
+    assert!(crate::push::signalled(&store.0, &a.device_id).unwrap());
+}

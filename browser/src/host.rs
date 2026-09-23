@@ -326,11 +326,18 @@ pub async fn mailbox_watch() -> Result<bool, JsValue> {
     if response.status() != 200 {
         return Err(fail(&format!("Mailbox wait failed (HTTP {})", response.status())));
     }
+    let signalled = response
+        .headers()
+        .get("sigil-signal")?
+        .is_some();
+    if signalled {
+        rpc(r#"{"command":"contact_signal"}"#.into(), None).await?;
+    }
     let text = wasm_bindgen_futures::JsFuture::from(response.text()?)
         .await?
         .as_string()
         .ok_or_else(|| fail("Invalid mailbox wait response"))?;
-    Ok(text.contains('{'))
+    Ok(signalled || text.contains('{'))
 }
 
 #[wasm_bindgen]

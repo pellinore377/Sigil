@@ -5,6 +5,8 @@ pub const MAX_BODY: usize = 140 * 1024;
 pub const RECOVERY_HEADER: &str = "sigil-recovery-request";
 /// "1" marks traffic that never yields a visible notification; servers skip push for it.
 pub const SILENT_HEADER: &str = "sigil-silent";
+/// Set on an empty mailbox wait when something outside the mailbox changed.
+pub const SIGNAL_HEADER: &str = "sigil-signal";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
