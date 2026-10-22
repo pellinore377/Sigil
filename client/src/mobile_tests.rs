@@ -1641,7 +1641,7 @@ fn diagnostics_report_gives_counts_without_identifying_anyone() {
     assert!(report.contains("schema"), "{report}");
     assert!(report.contains("unacknowledged"), "{report}");
     assert!(report.contains("prekeys:") && report.contains("backoff:"), "{report}");
-    // Counts and stage names only.
+    // Counts and stage names only: no addresses or URLs.
     assert!(!report.contains('@'), "{report}");
-    assert!(!report.contains("watchtower"), "{report}");
+    assert!(!report.contains("https://"), "{report}");
 }

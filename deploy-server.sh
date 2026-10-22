@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Build the server image on the machine that runs it, then restart the stack there.
 # Avoids a hosted runner: the build host keeps its own layer cache and never moves
-# the image across the network.
+# the image across the network. Restart uses --pull never so this build is the one
+# that starts. If the stack directory contains compose.host-build.yaml, it is merged
+# so later Compose commands and Watchtower keep the host build. See the README.
 #
 #   ./deploy-server.sh              build, deploy, wait for health
 #   ./deploy-server.sh --skip-tests skip the server test run
@@ -66,7 +68,15 @@ printf 'Building %s\n' "$image"
 ssh "$host" "cd '$remote' && DOCKER_BUILDKIT=1 docker build ${fast:+--build-arg WEB_SOURCE=web-prebuilt} --tag '$image' ."
 
 printf 'Restarting the stack\n'
-ssh "$host" "cd '$stack' && docker compose up -d"
+ssh "$host" "
+  cd '$stack'
+  if [ -f compose.host-build.yaml ]; then
+    docker compose -f compose.yaml -f compose.host-build.yaml up -d --pull never
+  else
+    echo 'compose.host-build.yaml is not in the stack directory; Watchtower can still replace this image' >&2
+    docker compose up -d --pull never
+  fi
+"
 
 printf 'Waiting for health\n'
 ssh "$host" "
