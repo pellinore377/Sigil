@@ -6,7 +6,7 @@ Self-hostable encrypted messaging under development. Rust owns backend/domain lo
 
 ## Run and configure
 
-Install Docker with the Compose plugin, download [compose.yaml](compose.yaml), and run the commands below from its directory. Dockge users can paste the file into a new stack and deploy. Compose downloads the public Linux/amd64 image containing the server and browser interface; no build tools or registry login are required.
+Install Docker with the Compose plugin, download [compose.yaml](compose.yaml), and run the commands below from its directory. Dockge users can paste that file into a new stack and deploy. Compose pulls the public Linux/amd64 image containing the server and browser interface; no build tools or registry login are required. Do not add [compose.host-build.yaml](compose.host-build.yaml) unless the image is built on that host.
 
 ```sh
 docker compose pull
@@ -15,7 +15,15 @@ docker compose up -d
 
 To inspect encrypted messages in Dockge's container logs, set `SIGIL_LOG_CIPHERTEXT: "true"` under the service's `environment` and redeploy. Accepted local message envelopes appear as `sigil.encrypted_message` JSON records with their exact `payload_hex` (public protocol headers plus ciphertext). This does not log decrypted text, credentials or private keys. Disable it after testing: container logs retain these copies independently of message deletion. Logging is bounded and may drop diagnostic records under load; message delivery does not wait for the log writer.
 
-`latest` tracks published builds; pull and redeploy to update a running server. Revision tags remain available for pinned deployments. Back up before upgrades; older images may reject upgraded databases.
+`latest` tracks published builds. `compose.yaml` sets `pull_policy: always`, so `docker compose pull` followed by `docker compose up -d` fetches that tag and starts it. Revision tags remain available for pinned deployments. Back up before upgrades; older images may reject upgraded databases.
+
+To build the image on the host instead of pulling it, use `deploy-server.sh`. That script builds `ghcr.io/pellinore377/sigil:latest` on the machine that runs it and does not push the result. Put `compose.host-build.yaml` next to `compose.yaml` in the stack directory. It sets `pull_policy: never` and disables Watchtower for this service, so neither Compose nor Watchtower replaces the host build with the registry copy. Start that stack with:
+
+```sh
+docker compose -f compose.yaml -f compose.host-build.yaml up -d
+```
+
+`deploy-server.sh` restarts with `--pull never`, and merges `compose.host-build.yaml` when the stack directory contains it.
 
 When updating Android, check its release notes for a matching server update. Updating the APK does not update the server image.
 

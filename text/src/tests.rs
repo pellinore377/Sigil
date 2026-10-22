@@ -66,7 +66,7 @@ fn modifiers_escapes_and_code_have_distinct_grammars() {
     assert_eq!(parsed("||text||").spans(), parsed("spoiler::text;").spans());
     assert_eq!(parsed("||redact::secret;||").body(), "[REDACTED]");
     // The body never carries the secret's length; the span carries the count for the drawn bar.
-    let long = parsed("redact::Hello my name is pellinore;");
+    let long = parsed("redact::Hello my name is synthetic;");
     assert_eq!(long.body(), "[REDACTED]");
     assert_eq!(long.spans()[0].effects.redaction, Some(26));
     assert_eq!(long.to_bytes().unwrap(), crate::Text::from_bytes(&long.to_bytes().unwrap()).unwrap().to_bytes().unwrap());

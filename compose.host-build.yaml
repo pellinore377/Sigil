@@ -1,0 +1,8 @@
+# Merge when the image is built on this host and not pushed (deploy-server.sh):
+#   docker compose -f compose.yaml -f compose.host-build.yaml up -d
+# Without this file, Compose and Watchtower replace that build with the registry image.
+services:
+  sigil:
+    pull_policy: never
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
