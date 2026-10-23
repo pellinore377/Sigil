@@ -422,12 +422,7 @@ fn mobile_help_sharing_preserves_literal_examples_and_rejects_invalid_rich_input
     run(&mut alice, post);
     let timeline = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     assert_eq!(timeline["messages"].as_array().unwrap().len(), 1);
-    let expected = sigil_protocol::text::help::sheet("redact", Default::default()).unwrap();
-    assert_eq!(timeline["messages"][0]["text"], expected.body());
-    assert!(timeline["messages"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("redact::private;"));
+    assert_eq!(timeline["messages"][0]["text"], sigil_protocol::text::help::body("redact"));
     for source in [
         "help::UNKNOWN_SECRET;",
         "help::redact::SECRET;",
@@ -817,6 +812,9 @@ fn a_recurring_list_reaches_the_timeline_with_its_reset_and_persistent_rows() {
     let card = &message["parts"][0];
     assert_eq!(card["kind"], "recurring");
     assert!(card["date"].as_str().unwrap().starts_with("Weekly · resets "));
+    assert_eq!(card["interval"], "Weekly");
+    assert!(card["at"].as_u64().unwrap() > now);
+    assert_eq!(card["timezone"], "America/Chicago");
     assert_eq!(card["items"][0]["persistent"], true);
     assert_eq!(card["items"][1]["persistent"], false);
     assert_eq!(card["items"][0]["enabled"], true);
@@ -855,6 +853,11 @@ fn mobile_task_undo_is_available_only_for_our_recent_completion() {
         complete["messages"][0]["parts"][0]["items"][0]["enabled"],
         true
     );
+    let done = &complete["messages"][0]["parts"][0]["items"][0];
+    assert_eq!((done["done_at"].as_u64(), &done["done_mine"]), (Some(now), &json!(true)));
+    assert_eq!(done["done_by"], json!(message["author"]));
+    assert!(done["undo_until"].as_u64().unwrap() > now);
+    assert!(complete["messages"][0]["parts"][0]["items"][1]["done_at"].is_null());
     action["checked"] = json!(false);
     run(&mut alice, action.clone());
     let undone = run(&mut alice, json!({"command":"timeline","peer":"self"}));
@@ -868,6 +871,7 @@ fn mobile_task_undo_is_available_only_for_our_recent_completion() {
     run(&mut alice, action.clone());
     let old = run(&mut alice, json!({"command":"timeline","peer":"self"}));
     assert_eq!(old["messages"][0]["parts"][0]["items"][1]["enabled"], false);
+    assert_eq!(old["messages"][0]["parts"][0]["items"][1]["undo_until"], 0);
     action["checked"] = json!(false);
     let rejected: Value = serde_json::from_str(&alice.mobile_command(&action.to_string())).unwrap();
     assert_eq!(rejected["ok"], false);
@@ -1644,4 +1648,20 @@ fn diagnostics_report_gives_counts_without_identifying_anyone() {
     // Counts and stage names only: no addresses or URLs.
     assert!(!report.contains('@'), "{report}");
     assert!(!report.contains("https://"), "{report}");
+}
+#[test]
+fn picked_mentions_bind_on_the_wire_and_unknown_addresses_stay_plain() {
+    let (_dir, _server, alice, _bob, _now) = crate::claims::tests::pair();
+    let chosen = vec![MentionChoice { display: "@ari".into(), address: "@ari:nowhere.example".into() }];
+    assert!(alice.mobile_mention_contacts(&chosen).unwrap().is_empty());
+    assert!(matches!(inline_body_bound("Hi @ari".into(), &[]).unwrap(), Body::Text(_)));
+    let contact = sigil_protocol::text::contact::Contact {
+        user_id: [7; 32],
+        address: "@ari:one.example".into(),
+        display_name: sigil_protocol::text::Text::plain("ari", Default::default()).unwrap(),
+        avatar_url: None,
+    };
+    let Body::Rich(bytes) = inline_body_bound("Hi @ari".into(), &[("@ari".into(), contact)]).unwrap() else { panic!("unbound") };
+    let text = sigil_protocol::text::Text::from_bytes(&bytes).unwrap();
+    assert_eq!(text.mentions()[0].user_id, [7; 32]);
 }

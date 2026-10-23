@@ -13,6 +13,8 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.text
 import androidx.compose.ui.unit.dp
 
 /** Panel, ink and one colour per token role the tokenizer emits; appearance settings can supply their own. */
@@ -53,7 +55,8 @@ internal fun richSlice(value: RichText, start: Int, end: Int) = RichText(value.t
     value.spans.filter { it.start < end && it.end > start }.map { it.copy(start = maxOf(it.start, start) - start, end = minOf(it.end, end) - start) },
     value.blocks.filter { it.start < end && it.end > start }.map { it.copy(start = maxOf(it.start, start) - start, end = minOf(it.end, end) - start) },
     value.codeTokens.filter { it.start >= start && it.end <= end }.map { it.copy(start = it.start - start, end = it.end - start) },
-    value.motion.mapNotNull { run ->run.copy(units=run.units.filter {it.first>=start && it.second<=end}.map {it.first-start to it.second-start}).takeIf {it.units.isNotEmpty()} })
+    value.motion.mapNotNull { run ->run.copy(units=run.units.filter {it.first>=start && it.second<=end}.map {it.first-start to it.second-start}).takeIf {it.units.isNotEmpty()} },
+    value.mentions.filter { it.start >= start && it.end <= end }.map { it.copy(start = it.start - start, end = it.end - start) })
 
 @Composable
 internal fun CodeBlock(value: RichText, language: String, modifier: Modifier = Modifier, shape: Shape = RoundedCornerShape(12.dp)) = CodePanel(value, language, false, modifier, shape)
@@ -80,17 +83,35 @@ private fun CodePanel(value: RichText, language: String, hug: Boolean, modifier:
     }
 }
 
+/** Zero-width break chances after `_ . :: ( , /`, so wrapped code breaks between words, not inside one; with each source offset's display offset. */
+internal fun codeBreaks(text: String): Pair<String, IntArray> {
+    val map = IntArray(text.length + 1)
+    val out = StringBuilder(text.length + text.length / 8)
+    text.forEachIndexed { i, c ->
+        map[i] = out.length
+        out.append(c)
+        val next = text.getOrNull(i + 1)
+        if (next != null && !next.isWhitespace() && (c in "_.(,/" || (c == ':' && text.getOrNull(i - 1) == ':'))) out.append('\u200B')
+    }
+    map[text.length] = out.length
+    return out.toString() to map
+}
+
 @Composable
 private fun CodeText(value: RichText, theme: CodeTheme, wrap: Boolean, maxLines: Int) {
-    val text = remember(value, theme) {
+    val text = remember(value, theme, wrap) {
+        val (shown, map) = if (wrap) codeBreaks(value.text) else value.text to IntArray(value.text.length + 1) { it }
         buildAnnotatedString {
-            append(value.text)
+            append(shown)
             value.codeTokens.forEach { token ->
-                if (token.start >= 0 && token.end <= length && token.start < token.end) {
-                    theme.roles[token.role]?.let { addStyle(SpanStyle(color = it), token.start, token.end) }
+                if (token.start >= 0 && token.end <= value.text.length && token.start < token.end) {
+                    theme.roles[token.role]?.let { addStyle(SpanStyle(color = it), map[token.start], map[token.end]) }
                 }
             }
         }
     }
-    Text(text, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = LocalCodeFont.current), color = theme.ink, softWrap = wrap, maxLines = maxLines, overflow = TextOverflow.Clip)
+    // The break chances are display only: what is read aloud is the code as written.
+    Box(Modifier.clearAndSetSemantics { this.text = AnnotatedString(value.text) }) {
+        Text(text, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = LocalCodeFont.current), color = theme.ink, softWrap = wrap, maxLines = maxLines, overflow = TextOverflow.Clip)
+    }
 }

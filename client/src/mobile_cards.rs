@@ -115,6 +115,32 @@ impl ClientStore {
             forwarded.to_bytes().map_err(|_| Error::InvalidEvent)?,
         ))
     }
+    /// Earliest active completion of a task item, and our own undo deadline when still open.
+    fn mobile_task_done(
+        &self,
+        conversation: Id,
+        card: CardReference,
+        item: Id,
+    ) -> Result<Option<(Id, bool, u64, u64)>, Error> {
+        let own = self.account_reference()?;
+        let now = conversations::now();
+        let (mut first, mut undo, mut after) = (None::<(Id, u64)>, 0, None);
+        loop {
+            let page = self.task_completions(conversation, card, item, after)?;
+            for c in &page.completions {
+                if first.is_none_or(|(_, at)| c.created_at < at) {
+                    first = Some((c.actor, c.created_at));
+                }
+                if c.actor == own && c.created_at <= now && now < c.undo_until {
+                    undo = undo.max(c.undo_until);
+                }
+            }
+            after = page.next;
+            if after.is_none() {
+                return Ok(first.map(|(actor, at)| (actor, actor == own, at, undo)));
+            }
+        }
+    }
     fn mobile_task_undo(
         &self,
         conversation: Id,
@@ -174,6 +200,9 @@ impl ClientStore {
                 value["text"] = json!(list.title.body());
                 value["rich"] = json!(list.title.presentation());
                 value["date"] = json!(rule.reset_label(now).map_err(|_| Error::InvalidStore)?);
+                value["at"] = json!(rule.next_reset(now).map_err(|_| Error::InvalidStore)?);
+                value["interval"] = json!(rule.interval.name());
+                value["timezone"] = json!(rule.timezone);
                 value["items"] = json!(list
                     .items
                     .iter()
@@ -194,8 +223,11 @@ impl ClientStore {
                 value["items"] = json!(list.items.iter().map(|item| -> Result<Value, Error> {
                     let check = state.checks.iter().find(|s| s.item == item.id);
                     let task = state.tasks.iter().find(|s| s.item == item.id);
-                    let undo = if task.is_some_and(|t| t.completed && !t.initially_completed) { self.mobile_task_undo(conversation, reference, item.id)?.is_some() } else { false };
-                    Ok(json!({"id":transport::hex(&item.id), "text":item.text.body(), "rich":item.text.presentation(), "checked":check.map(|s| s.checked).or_else(||task.map(|s|s.completed)).unwrap_or(item.checked), "enabled":check.is_some() || task.is_some_and(|s| !s.completed) || undo}))
+                    let done = if task.is_some_and(|t| t.completed && !t.initially_completed) { self.mobile_task_done(conversation, reference, item.id)? } else { None };
+                    let undo = done.map_or(0, |d| d.3);
+                    let mut value = json!({"id":transport::hex(&item.id), "text":item.text.body(), "rich":item.text.presentation(), "checked":check.map(|s| s.checked).or_else(||task.map(|s|s.completed)).unwrap_or(item.checked), "enabled":check.is_some() || task.is_some_and(|s| !s.completed) || undo > 0});
+                    if let Some((actor, mine, at, _)) = done { value["done_at"] = json!(at); value["done_mine"] = json!(mine); value["done_by"] = json!(transport::hex(&actor)); value["undo_until"] = json!(undo); }
+                    Ok(value)
                 }).collect::<Result<Vec<_>,_>>()?);
             }
             Construct::Poll(poll) => {
@@ -205,6 +237,9 @@ impl ClientStore {
                 value["rich"] = json!(poll.question.presentation());
                 value["multiple"] =
                     json!(poll.selection != sigil_protocol::text::structured::Selection::Single);
+                if let Some(scale) = poll.scale {
+                    value["scale"] = json!(scale);
+                }
                 value["closed"] = json!(current.closed);
                 value["can_close"] =
                     json!(!current.closed && card.creator == self.account_reference()?);
@@ -220,6 +255,11 @@ impl ClientStore {
                 value["text"] = json!(d.text.body());
                 value["rich"] = json!(d.text.presentation());
                 value["at"] = json!(d.at);
+                if !matches!(state.definition.content, Construct::Reminder(_)) {
+                    if let Value::Object(day) = d.day().map_err(|_| Error::InvalidStore)? {
+                        value.as_object_mut().ok_or(Error::InvalidStore)?.extend(day);
+                    }
+                }
             }
             Construct::Timer(timer) => {
                 value["kind"] = json!("timer");

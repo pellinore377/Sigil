@@ -15,7 +15,12 @@ import kotlin.js.*
     fun toLocaleString():String
     companion object {fun now():Double}
 }
+// The workbench parses in the zone it formats in, as the app does.
+private val previewZone by lazy {viewerZone().ifBlank {"UTC"}}
 private fun context(source:String,timezone:String)=buildJsonObject {put("source",source);put("now",(WebDate.now()/1000).toLong());put("timezone",timezone)}.toString()
+// Made-up people for mention previews: two share a handle so ambiguity can be seen.
+private val PreviewDirectory=listOf(MentionCandidate("@ari:studio.example","Ari Lane",true),MentionCandidate("@jules:studio.example","Jules Hart"),
+    MentionCandidate("@alex:studio.example","Alex Moreau"),MentionCandidate("@alex:north.example","Alex Brandt"))
 private fun seeded(query:String):List<ChatMessage> {
     val raw=query.removePrefix("?").split('&').firstOrNull {it.startsWith("seed=")}?.removePrefix("seed=") ?: return emptyList()
     val json=runCatching {kotlin.io.encoding.Base64.UrlSafe.withPadding(kotlin.io.encoding.Base64.PaddingOption.ABSENT_OPTIONAL).decode(raw).decodeToString()}.getOrNull() ?: return emptyList()
@@ -25,8 +30,14 @@ private fun seeded(query:String):List<ChatMessage> {
         val built=items.mapIndexed {i,item->
             val source=item.jsonObject["text"]?.jsonPrimitive?.content.orEmpty()
             val mine=item.jsonObject["mine"]?.jsonPrimitive?.booleanOrNull ?: true
-            val parts=previewService(source)?.let {listOf(MessagePart("seed-$i-0","service","",service=it))} ?: Json.parseToJsonElement(rustPlayground(context(source,"UTC"))).jsonArray.mapIndexed {j,p->ContentDecoder.part(p.toString()) {WebDate(it*1000.0).toLocaleString()}.copy(id="seed-$i-$j")}
-            ChatMessage("seed-$i",if(mine)"local" else "maya",source,mine,"","sent",false,emptyList(),emptyList(),null,true,timestamp=(WebDate.now()/1000).toLong()-60*i,parts=parts,peer="preview")
+            val parts=previewService(source)?.let {listOf(MessagePart("seed-$i-0","service","",service=it))} ?: Json.parseToJsonElement(rustPlayground(context(source,previewZone))).jsonArray.mapIndexed {j,p->ContentDecoder.part(p.toString(),::calendar).copy(id="seed-$i-$j")}
+            // "poll":{"counts":[…],"own":n,"closed":bool} stands in for a poll's live tallies.
+            val tally=item.jsonObject["poll"]?.jsonObject
+            val live=if(tally==null)parts else parts.map {p->if(p.kind!="poll")p else {
+                val counts=tally["counts"]?.jsonArray?.map {it.jsonPrimitive.long};val own=tally["own"]?.jsonPrimitive?.intOrNull ?: 0;val closed=tally["closed"]?.jsonPrimitive?.booleanOrNull==true
+                p.copy(closed=closed,canClose=mine && !closed,voters=counts?.sum(),items=p.items.mapIndexed {k,it->it.copy(enabled=!closed,checked=k+1==own,count=counts?.getOrNull(k))})
+            }}
+            ChatMessage("seed-$i",if(mine)"local" else "maya",source,mine,"","sent",false,emptyList(),emptyList(),null,true,timestamp=(WebDate.now()/1000).toLong()-60*i,parts=live,peer="preview")
         }
         built.mapIndexed {i,m->
             fun target(key:String)=items[i].jsonObject[key]?.jsonPrimitive?.intOrNull?.takeIf {it in built.indices}?.let {built[it].copy(text=items[it].jsonObject["text"]?.jsonPrimitive?.content.orEmpty())}
@@ -37,7 +48,9 @@ private fun seeded(query:String):List<ChatMessage> {
         }
     }.getOrDefault(emptyList())
 }
-private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(context(source,"UTC"))) {WebDate(it*1000.0).toLocaleString()}}.getOrNull()
+// Workbench ids are not event ids; a stable stand-in lets seeded effects play here as they do on real messages.
+private fun previewMotionSeeds(input:String)=rustMotionSeeds(input.substringBefore('/').hashCode().toUInt().toString(16).padStart(8,'0').repeat(8)+"/"+input.substringAfter('/'))
+private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(context(source,previewZone)),::calendar)}.getOrNull()
 
 @Composable internal fun WebPreview() {
     var materialsReady by remember { mutableStateOf(false) }
@@ -68,7 +81,7 @@ private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(
             "delete" -> messages = messages.filterNot { it.id == fields["message"] }
             "post"->{
                 val source=fields["text"] as? String ?: ""
-                val parts=runCatching {Json.parseToJsonElement(rustPlayground(context(source,fields["timezone"] as? String ?: "UTC"))).jsonArray.mapIndexed {i,p->ContentDecoder.part(p.toString()) {WebDate(it*1000.0).toLocaleString()}.copy(id="part-$i")}}.getOrNull()
+                val parts=runCatching {Json.parseToJsonElement(rustPlayground(context(source,fields["timezone"] as? String ?: "UTC"))).jsonArray.mapIndexed {i,p->ContentDecoder.part(p.toString(),::calendar).copy(id="part-$i")}}.getOrNull()
                 if(parts==null)error="This content could not be previewed. Your draft is preserved."
                 else {sent++;sentText=source;messages=listOf(ChatMessage("preview-$sent","local","",true,"","sent",false,emptyList(),emptyList(),null,true,timestamp=(WebDate.now()/1000).toLong(),parts=parts, peer="preview", threadAuthor=fields["thread_author"] as? String, threadMessage=fields["thread_message"] as? String, threadPreview=messages.firstOrNull { it.id == fields["thread_message"] }?.text).let {m->messages.firstOrNull {it.id==fields["reply_message"]}?.let {r->m.copy(reply=r.text,replyAuthor=r.author,replyMine=r.mine,replyMessage=r.id,replyParts=r.parts)} ?: m})+messages.take(49)}
             }
@@ -76,8 +89,8 @@ private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(
             "call_start","call_prepare"->error="Calls are unavailable in the design workbench."
         }
     }
-    CompositionLocalProvider(LocalMaterialPlatform provides WebMaterials, LocalSolidMaterial provides (if (materialsReady) { value, progress, modifier -> MaterialMessages(value, progress, modifier) } else null), LocalMaterialOverlay provides (if (materialsReady) { timeline, modifier -> MaterialTimelineOverlay(timeline, modifier) } else null), LocalRecipeScale provides ::previewRecipeScale,LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides ::preview,LocalBuilderTimezone provides "UTC",LocalCodePreview provides ::rustCode,
-        LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::rustMotionSeeds,
+    CompositionLocalProvider(LocalMaterialPlatform provides WebMaterials, LocalSolidMaterial provides (if (materialsReady) { value, progress, modifier -> MaterialMessages(value, progress, modifier) } else null), LocalMaterialOverlay provides (if (materialsReady) { timeline, modifier -> MaterialTimelineOverlay(timeline, modifier) } else null), LocalRecipeScale provides ::previewRecipeScale,LocalBuilderSource provides ::rustBuilder,LocalStructuredPreview provides ::preview,LocalBuilderTimezone provides previewZone,LocalCodePreview provides ::rustCode,
+        LocalEditorAnalysis provides ::rustEditor,LocalHelpCatalog provides ::rustHelp,LocalTextMotionSeeds provides ::previewMotionSeeds,
         LocalTemporalPreview provides {kind,input->
             val result=rustTemporal("$kind\n${(WebDate.now()/1000).toLong()}\nUTC\nday\n$input").split('\n')
             if(result.size!=3)null else result[1].toLongOrNull()?.let {TemporalPreview(result[0],"UTC",if(kind=="Timer")"$it seconds" else WebDate(it*1000.0).toLocaleString()+" · UTC")}
@@ -95,8 +108,10 @@ private fun preview(source:String)=runCatching {ContentDecoder.part(rustPreview(
                     if(error.isNotEmpty())Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer).padding(horizontal=20.dp),verticalAlignment=Alignment.CenterVertically) {Text(error,Modifier.weight(1f),color=MaterialTheme.colorScheme.onErrorContainer,style=MaterialTheme.typography.bodyMedium);Symbol("close","Dismiss notice") {error=""}}
                     Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.TopCenter) {
                         Box(Modifier.fillMaxHeight().widthIn(max=if(narrow)440.dp else 1120.dp).fillMaxWidth()) {
+                            CompositionLocalProvider(LocalMentionDirectory provides PreviewDirectory) {
                             SigilApp(::rustPalette,::rustAnalyze,MessengerState(phase="connected",chats=listOf(chat.copy(preview=messages.firstOrNull()?.text.orEmpty())),selected=selected,timelineLoaded=true,messages=messages.filter { message -> when { thread != null -> message.threadMessage == thread?.id && message.threadAuthor == thread?.author; category == "Notes" -> message.noted || message.parts.any { it.kind == "note" }; category == "Pins" -> message.pinned; category == "Threads" -> message.threadMessage != null; else -> true } },sent=sent,sentText=sentText,sentMessage="preview-$sent",ui=mapOf("appearance" to appearance)),command,wideLayout=!narrow,
                                 read={preferences[it]},write={key,value->preferences=preferences+(key to value)})
+                            }
                         }
                     }
                 }

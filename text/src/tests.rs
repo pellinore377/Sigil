@@ -89,6 +89,18 @@ fn modifiers_escapes_and_code_have_distinct_grammars() {
     );
 }
 #[test]
+fn gradient_keyword_aliases_the_stop_list() {
+    assert_eq!(
+        parsed("sparkle::gradient::blue-purple-pink::A little constellation.;").spans(),
+        parsed("sparkle::blue-purple-pink::A little constellation.;").spans()
+    );
+    assert_eq!(parsed("gradient::red::x;").body(), "gradient::red::x;");
+    assert_eq!(parsed("gradient::x;").body(), "gradient::x;");
+    let t = parsed("bold::gradient::x;");
+    assert_eq!(t.body(), "gradient::x");
+    assert!(t.spans()[0].effects.bold);
+}
+#[test]
 fn unicode_17_normalization_and_style_boundaries_are_grapheme_safe() {
     assert_eq!(unicode_normalization::UNICODE_VERSION, (17, 0, 0));
     assert_eq!(unicode_segmentation::UNICODE_VERSION, (17, 0, 0));

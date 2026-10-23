@@ -73,6 +73,37 @@ fn literal(source: &str, limits: CardLimits, hint: Option<Hint>) -> Result<Draft
         hints: hint.into_iter().collect(),
     })
 }
+/// `rate::[open|closed::]<5|10>::Question` asks for a rating; `rate::4/5` only shows one.
+fn rating_request(line: &str) -> Option<(Disclosure, u8, &str, bool)> {
+    let mut rest = line.strip_prefix("rate::")?;
+    let (mut disclosure, mut scale, mut repeated) = (None, None, false);
+    while let Some((segment, tail)) = rest.split_once("::") {
+        match segment {
+            "open" | "closed" => {
+                repeated |= disclosure.is_some();
+                disclosure = Some(if segment == "open" {
+                    Disclosure::Open
+                } else {
+                    Disclosure::Closed
+                });
+            }
+            _ => match segment.parse::<u8>() {
+                Ok(n) if Poll::SCALES.contains(&n) && !segment.starts_with('0') => {
+                    repeated |= scale.is_some();
+                    scale = Some(n);
+                }
+                _ => break,
+            },
+        }
+        rest = tail;
+    }
+    Some((
+        disclosure.unwrap_or(Disclosure::Open),
+        scale?,
+        rest,
+        repeated,
+    ))
+}
 /// Incomplete/invalid syntax stays literal, with redaction still applied.
 pub fn parse_card(source: &str, origin: Origin<'_>, limits: CardLimits) -> Result<Draft, Error> {
     parse_card_with_dates(source, origin, limits, None)
@@ -95,14 +126,23 @@ pub fn parse_card_with_dates(
         .strip_prefix("help::")
         .and_then(|s| s.strip_suffix(';'))
     {
-        return match crate::help::sheet(query, limits.text) {
-            Ok(text) => Ok(Draft {
-                content: Parsed::Text(text),
-                hints: Vec::new(),
-            }),
-            Err(Error::Invalid) => literal(source, limits, Some(Hint::InvalidStructure)),
-            Err(error) => Err(error),
+        if query.len() > 64 {
+            return Err(Error::Limit);
+        }
+        if crate::help::resolve(query).is_none() {
+            return literal(source, limits, Some(Hint::InvalidStructure));
+        }
+        let card = Card {
+            id: origin.message,
+            creator: origin.creator,
+            created_at: origin.created_at,
+            content: Construct::Utility(crate::utility::Utility::Help(query.into())),
         };
+        card.validate(limits)?;
+        return Ok(Draft {
+            content: Parsed::Card(Box::new(card)),
+            hints: Vec::new(),
+        });
     }
     let recognized = crate::help::structured_prefix(trimmed);
     if !recognized {
@@ -147,6 +187,27 @@ fn parse_recognized(
             return literal(source, limits, Some(Hint::InvalidStructure));
         }
         Construct::Note(Note { text: label(text)? })
+    } else if let Some((disclosure, scale, question, repeated)) = rating_request(lines[0]) {
+        if lines.len() != 1 {
+            return literal(source, limits, Some(Hint::InvalidStructure));
+        }
+        if repeated {
+            hints.push(Hint::RepeatedOption);
+        }
+        Construct::Poll(Poll {
+            question: label(question)?,
+            disclosure,
+            selection: Selection::Single,
+            options: (1..=scale)
+                .map(|n| {
+                    Ok(PollOption {
+                        id: item_id(&origin.message, u32::from(n) - 1),
+                        text: label(&n.to_string())?,
+                    })
+                })
+                .collect::<Result<_, Error>>()?,
+            scale: Some(scale),
+        })
     } else if [
         "calc::",
         "convert::",
@@ -319,6 +380,7 @@ fn parse_recognized(
             disclosure,
             selection,
             options,
+            scale: None,
         })
     };
     let card = Card {

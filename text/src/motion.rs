@@ -134,7 +134,8 @@ impl Animation {
                 p.duration_ms = 1700;
                 p.mode = "fragment";
                 p.amplitude_milli = 4_000;
-                p.substitutions = "\u{2301}\u{2591}/\u{00a6}\u{2237}\u{2310}\u{2260}\u{2592}";
+                // The reference set, with \u{2301} and \u{2310} swapped for lookalikes the bundled code font carries.
+                p.substitutions = "\u{2248}\u{2591}/\u{00a6}\u{2237}\u{00ac}\u{2260}\u{2592}";
             }
             Self::Scatter => {
                 p.duration_ms = 1800;

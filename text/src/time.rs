@@ -48,6 +48,18 @@ impl Dated {
         value.validate()?;
         Ok(value)
     }
+    /// The sender's calendar day as cards read it; a clock other than the 09:00 date-only default is shown.
+    pub fn day(&self) -> Result<serde_json::Value, Error> {
+        let local = timestamp(self.at)?.to_zoned(zone(&self.timezone)?);
+        let start = local.start_of_day().map_err(|_| Error::Invalid)?;
+        let timed = local.time() != Time::new(9, 0, 0, 0).map_err(|_| Error::Invalid)?;
+        Ok(serde_json::json!({
+            "date": local.strftime(if timed { "%-d %B %Y, %-I:%M %p %Z" } else { "%-d %B %Y" }).to_string(),
+            "day_start": u64::try_from(start.timestamp().as_second()).map_err(|_| Error::Invalid)?,
+            "date_iso": local.strftime("%F").to_string(),
+            "timed": timed,
+        }))
+    }
     pub fn validate(&self) -> Result<(), Error> {
         if self.tzdb != TZDB_VERSION {
             return Err(Error::Version);
@@ -177,12 +189,19 @@ pub fn resolve_date(
             time = parse_clock(clock)?;
             date_text = date;
         }
-    } else if let Some((date, clock)) = source.split_once('t') {
+    } else if let Some((date, clock)) = source
+        .split_once('t')
+        .filter(|(date, _)| date.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+    {
+        // Only an ISO date takes a `T` clock; `today` and `tuesday` contain one too.
         time = parse_clock(clock)?;
         date_text = date;
     }
     let date = match date_text {
         "today" => today,
+        "yesterday" => today
+            .checked_sub(Span::new().days(1))
+            .map_err(|_| Error::Invalid)?,
         "tomorrow" => today
             .checked_add(Span::new().days(1))
             .map_err(|_| Error::Invalid)?,
@@ -303,6 +322,18 @@ mod tests {
             resolve_date("07/05/27 9:30am", now, "UTC", Some(DateOrder::DayFirst)).unwrap(),
             epoch("2027-05-07T09:30:00Z")
         );
+        for (word, day) in [("today", "2026-03-07"), ("tomorrow", "2026-03-08"), ("yesterday", "2026-03-06"), ("tuesday", "2026-03-10"), ("thursday", "2026-03-12")] {
+            assert_eq!(
+                resolve_date(word, now, "America/New_York", None).unwrap(),
+                epoch(&format!("{day}T09:00:00{}", if day < "2026-03-08" { "-05:00" } else { "-04:00" })),
+                "{word}"
+            );
+        }
+        assert_eq!(resolve_date("2026-03-09t10:15", now, "UTC", None).unwrap(), epoch("2026-03-09T10:15:00Z"));
+        let dated = Dated::new(Text::plain("Day", Default::default()).unwrap(), epoch("2027-07-05T09:00:00+02:00"), "Europe/Paris").unwrap();
+        assert_eq!(dated.day().unwrap(), serde_json::json!({"date":"5 July 2027","day_start":epoch("2027-07-05T00:00:00+02:00"),"date_iso":"2027-07-05","timed":false}));
+        let timed = Dated::new(Text::plain("Day", Default::default()).unwrap(), epoch("2027-07-05T23:50:00+10:00"), "Australia/Sydney").unwrap();
+        assert_eq!(timed.day().unwrap(), serde_json::json!({"date":"5 July 2027, 11:50 PM AEST","day_start":epoch("2027-07-05T00:00:00+10:00"),"date_iso":"2027-07-05","timed":true}));
         assert!(resolve_date("07/05/27", now, "UTC", None).is_err());
         assert!(resolve_date("2026-02-30", now, "UTC", None).is_err());
         assert!(resolve_date("2026-03-08 24:00", now, "UTC", None).is_err());

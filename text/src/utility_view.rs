@@ -134,6 +134,16 @@ impl Utility {
             } => {
                 json!({"kind":"quote","rich":text.presentation(),"secondary":author.presentation(),"details":source.iter().map(Text::presentation).collect::<Vec<_>>()})
             }
+            Self::Help(topic) => match crate::help::resolve(topic) {
+                Some(sheet) => {
+                    json!({"kind":"help","display":sheet.title,"alternate":if sheet.more>0 {format!("{} more: type help::{topic} in the composer.",sheet.more)} else {"Type help:: in the composer to browse without sending.".into()},
+                        "secondary":sheet.intro.as_deref().map(plain).transpose()?,"entries":sheet.entries.iter().map(|(label,code)|json!({"label":label,"code":code})).collect::<Vec<_>>(),
+                        "copy":sheet.entries.iter().map(|(_,code)|*code).collect::<Vec<_>>().join("\n\n")})
+                }
+                None => {
+                    json!({"kind":"help","display":format!("help::{topic};"),"alternate":"This topic is not in your version of the reference.","entries":[]})
+                }
+            },
         })
     }
 }

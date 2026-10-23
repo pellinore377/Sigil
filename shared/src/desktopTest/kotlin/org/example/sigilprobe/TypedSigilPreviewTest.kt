@@ -35,7 +35,7 @@ class TypedSigilPreviewTest {
             Box(Modifier.width(400.dp)) { TypedSigilPreview("checklist::recurr::weekly::Flat chores\n-r- Bins out\n- Hoover;") }
         } } }
         ui.waitUntil(5000) { ui.onAllNodesWithTag("typed-sigil-preview").fetchSemanticsNodes().isNotEmpty() }
-        ui.onNodeWithText("Flat chores").assertExists()
+        ui.onNodeWithContentDescription("Recurring checklist. Flat chores").assertExists()
         ui.onAllNodesWithContentDescription("Kept through resets").assertCountEquals(1)
         ui.onNodeWithText("Weekly · resets ",substring=true).assertExists()
     }

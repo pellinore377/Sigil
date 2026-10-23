@@ -41,6 +41,8 @@ pub enum Utility {
         source: Option<Text>,
         text: Text,
     },
+    /// A shared cheat sheet; each reader renders it from their own reference.
+    Help(String),
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -418,6 +420,14 @@ impl Utility {
                 }
             }
             Self::Swatch(_) => (),
+            Self::Help(topic) => {
+                if topic.is_empty()
+                    || topic.len() > 64
+                    || !topic.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"@:-".contains(&b))
+                {
+                    return Err(Error::Invalid);
+                }
+            }
         }
         Ok(())
     }
@@ -453,6 +463,7 @@ impl Utility {
                     .map(|v| format!(", {}", v.body()))
                     .unwrap_or_default()
             ),
+            Self::Help(topic) => crate::help::body(topic),
         })
     }
 }

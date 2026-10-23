@@ -107,6 +107,12 @@ pub struct Poll {
     pub disclosure: Disclosure,
     pub selection: Selection,
     pub options: Vec<PollOption>,
+    /// A rating request: options are the scores 1..=scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u8>,
+}
+impl Poll {
+    pub const SCALES: [u8; 2] = [5, 10];
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -248,6 +254,17 @@ impl Card {
                 if poll.options.len() > limits.options {
                     return Err(Error::Limit);
                 }
+                if let Some(scale) = poll.scale {
+                    if !Poll::SCALES.contains(&scale)
+                        || poll.selection != Selection::Single
+                        || poll.options.len() != usize::from(scale)
+                        || (1..=scale).zip(&poll.options).any(|(n, option)| {
+                            option.text.body() != n.to_string() || !option.text.spans().is_empty()
+                        })
+                    {
+                        return Err(Error::Invalid);
+                    }
+                }
                 if matches!(poll.selection,Selection::Capped(n) if n<2 || n as usize>poll.options.len())
                 {
                     return Err(Error::Invalid);
@@ -314,6 +331,11 @@ impl Card {
                 }
                 body
             }
+            Construct::Poll(Poll {
+                question,
+                scale: Some(scale),
+                ..
+            }) => format!("Rating: {} (out of {scale})", question.body()),
             Construct::Poll(poll) => {
                 let mut body = format!("Poll: {}", poll.question.body());
                 for option in &poll.options {
@@ -375,6 +397,15 @@ impl Card {
                     html.push_str("</li>")
                 }
                 html.push_str("</ul>");
+            }
+            Construct::Poll(Poll {
+                question,
+                scale: Some(scale),
+                ..
+            }) => {
+                html.push_str("<p><strong>Rating</strong></p>");
+                html.push_str(&question.html());
+                html.push_str(&format!("<p>Out of {scale}</p>"));
             }
             Construct::Poll(poll) => {
                 html.push_str("<p><strong>Poll</strong></p>");

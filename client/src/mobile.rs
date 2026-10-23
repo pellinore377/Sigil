@@ -439,6 +439,8 @@ enum Command {
         #[serde(default)]
         formatted: bool,
         timezone: Option<String>,
+        #[serde(default)]
+        mentions: Vec<MentionChoice>,
     },
     React {
         peer: String,
@@ -465,10 +467,28 @@ enum Command {
         message: String,
     },
 }
+/// A mention the sender picked: the written handle and the address it means.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MentionChoice {
+    display: String,
+    address: String,
+}
 fn inline_body(source: String) -> Result<Body, Error> {
+    inline_body_bound(source, &[])
+}
+fn inline_body_bound(
+    source: String,
+    mentions: &[(String, sigil_protocol::text::contact::Contact)],
+) -> Result<Body, Error> {
     let text = sigil_protocol::text::parse(&source, Default::default())
-        .map_err(|_| Error::InvalidEvent)?;
-    if text.body() == source && text.spans().is_empty() && text.blocks().is_empty() {
+        .map_err(|_| Error::InvalidEvent)?
+        .bind_written_mentions(mentions);
+    if text.body() == source
+        && text.spans().is_empty()
+        && text.blocks().is_empty()
+        && text.mentions().is_empty()
+    {
         Ok(Body::Text(source))
     } else {
         Ok(Body::Rich(
@@ -1947,6 +1967,7 @@ impl ClientStore {
                 rich,
                 formatted,
                 timezone,
+                mentions,
             } => {
                 let reply = optional_reference(reply_author, reply_message)?;
                 let thread = optional_reference(thread_author, thread_message)?;
@@ -1967,20 +1988,13 @@ impl ClientStore {
                         timezone: timezone.as_deref(),
                         date_order: None,
                     })?;
-                    let help = text
-                        .trim_end()
-                        .strip_prefix("help::")
-                        .and_then(|value| value.strip_suffix(';'))
-                        .is_some_and(|query| {
-                            sigil_protocol::text::help::sheet(query, Default::default()).is_ok()
-                        });
-                    if matches!(doc, sigil_protocol::text::Document::Text(_)) && !help {
+                    if matches!(doc, sigil_protocol::text::Document::Text(_)) {
                         self.discard_sigiltext_draft(conversation, id(&request)?)?;
                         return Err(Error::InvalidEvent);
                     }
                     Body::Rich(doc.to_bytes().map_err(|_| Error::InvalidEvent)?)
                 } else if formatted {
-                    inline_body(text)?
+                    inline_body_bound(text, &self.mobile_mention_contacts(&mentions)?)?
                 } else {
                     Body::Text(text)
                 };

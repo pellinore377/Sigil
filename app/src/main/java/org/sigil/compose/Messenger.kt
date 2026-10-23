@@ -741,6 +741,7 @@ private fun separator(seconds: Long): String {
     val day = when (time.toLocalDate()) {
         today -> "Today"
         today.minusDays(1) -> "Yesterday"
+        today.plusDays(1) -> "Tomorrow"
         else -> time.format(java.time.format.DateTimeFormatter.ofPattern(if (time.year == today.year) "MMMM d" else "MMMM d, yyyy"))
     }
     return "$day, ${clock(seconds)}"

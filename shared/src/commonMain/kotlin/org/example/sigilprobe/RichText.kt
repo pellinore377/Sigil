@@ -19,6 +19,13 @@ import androidx.compose.ui.graphics.*
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.text
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
@@ -38,30 +45,8 @@ internal val LocalMessageSurfaceAlternates = staticCompositionLocalOf { emptyLis
 private const val PaintUnits = 192
 
 
-internal fun textColor(name: String, surface: Color, alternates: List<Color> = emptyList()): Color {
-    val hue = when (name.dropLast(1)) { "red" -> 5f; "orange" -> 28f; "yellow" -> 52f; "green" -> 135f; "cyan" -> 185f; "blue" -> 220f; "purple" -> 275f; "pink" -> 330f; else -> 0f }
-    val shade = name.lastOrNull()?.digitToIntOrNull() ?: 2
-    val saturation = if (name.startsWith("gray")) 0f else .80f
-    val grounds = (alternates + surface).map { it.luminance() }
-    fun contrast(light: Float): Float {
-        val a = Color.hsl(hue, saturation, light).luminance()
-        return grounds.minOf { b -> (maxOf(a, b) + .05f) / (minOf(a, b) + .05f) }
-    }
-    // Correct toward whichever side of the background has headroom; a fixed direction muddies mid-tone bubbles.
-    fun walk(step: Float): Pair<Float, Float> {
-        var light = .66f - shade * .08f
-        while (contrast(light) < 4.5f && light + step in 0f..1f) light += step
-        return light to contrast(light)
-    }
-    val nominal = .66f - shade * .08f
-    val up = walk(.02f); val down = walk(-.02f)
-    return Color.hsl(hue, saturation, when {
-        up.second >= 4.5f && down.second >= 4.5f -> if (up.first - nominal <= nominal - down.first) up.first else down.first
-        up.second >= 4.5f -> up.first
-        down.second >= 4.5f -> down.first
-        else -> if (up.second >= down.second) up.first else down.first
-    })
-}
+/** A SigilText named colour resolved against the ground it sits on; see shadeColor. */
+internal fun textColor(name: String, surface: Color, alternates: List<Color> = emptyList()): Color = shadeColor(name, surface, alternates)
 
 internal fun gradientStop(colors: List<Color>, index: Int, count: Int): Color {
     if (colors.size < 2) return colors.firstOrNull() ?: Color.Unspecified
@@ -106,8 +91,14 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
         val start = length
         val from = at
         if (span.reveal.isNotEmpty() && span.start !in revealed) {
-            // Laid out as written; the veil drawn over it does the concealing until it is uncovered.
+            // Laid out as written, at its own size and weight, so uncovering only lifts the veil.
             plain(span.end)
+            addStyle(SpanStyle(
+                fontWeight = if ("bold" in span.flags) FontWeight.Bold else null,
+                fontStyle = if ("italic" in span.flags) FontStyle.Italic else null,
+                fontFamily = if ("monospace" in span.flags || "code" in span.flags) codeFont else null,
+                fontSize = if (span.size != 0) sizeStep(span.size).em else if ("code" in span.flags) .88.em else TextUnit.Unspecified,
+            ), start, length)
             if (span.reveal == "scratch") addStringAnnotation("scratch", span.start.toString(), start, length)
             else addLink(LinkAnnotation.Clickable("reveal:${span.start}", null) { reveal(span.start) }, start, length)
         } else if (span.redaction > 0) {
@@ -128,9 +119,9 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
                 fontStyle = if ("italic" in flags) FontStyle.Italic else null,
                 fontFamily = if ("monospace" in flags || "code" in flags) codeFont else null,
                 textDecoration = if (decoration.isEmpty()) null else TextDecoration.combine(decoration),
-                fontSize = if (span.size == 0) TextUnit.Unspecified else (1f + span.size * .12f).em,
+                // Monospace sets large beside the serif; inline code steps down to sit level with it.
+                fontSize = if (span.size != 0) sizeStep(span.size).em else if ("code" in flags) .88.em else TextUnit.Unspecified,
                 color = if (background || colors.isEmpty()) Color.Unspecified else colors.first(),
-                background = if ("code" in flags && !background) foreground.copy(alpha = .08f) else Color.Unspecified,
             ), start, length)
             if (!background && colors.size > 1) {
                 // A span brush is sized to the whole layout, so a short span would show one slice of the ramp.
@@ -147,7 +138,7 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
     value.blocks.forEach { block ->
         val start = offsets[block.start]; val end = offsets[block.end]
         if (start < end) when (block.kind) {
-            "heading" -> addStyle(SpanStyle(fontSize = (1.28f - block.level * .075f).em, fontWeight = FontWeight.Bold), start, end)
+            "heading" -> addStyle(SpanStyle(fontSize = (1.28f - block.level * .075f).em), start, end)
             "code" -> addStyle(SpanStyle(fontFamily = codeFont, background = foreground.copy(alpha = .08f)), start, end)
             "quote" -> addStyle(SpanStyle(fontStyle = FontStyle.Italic), start, end)
             else -> {}
@@ -157,60 +148,17 @@ internal fun richPresentation(value: RichText, revealed: Set<Int>, codeFont: Fon
 
 /** A code panel sits closer to the bubble edge than body text does. */
 internal val CodeBleed = 14.dp
-private fun Modifier.bleed(amount: Dp) = layout { measurable, constraints ->
+internal fun Modifier.bleed(amount: Dp) = layout { measurable, constraints ->
     val extra = amount.roundToPx() * 2
     val placeable = measurable.measure(constraints.copy(minWidth = 0, maxWidth = constraints.maxWidth + extra))
     layout((placeable.width - extra).coerceAtLeast(0), placeable.height) { placeable.place(-amount.roundToPx(), 0) }
 }
 
-/** Blocks that cannot live inside one paragraph: fenced code, and quotations with their rule. */
-private fun standaloneBlocks(value: RichText): List<RichBlock> {
-    val code = visibleCodeBlocks(value)
-    val quotes = value.blocks.filter { it.kind == "quote" && it.start >= 0 && it.end <= value.text.length && it.start < it.end }
-        .filter { outer -> value.blocks.none { it.kind == "quote" && it !== outer && it.start <= outer.start && it.end >= outer.end && (it.start < outer.start || it.end > outer.end) } }
-        .filter { quote -> code.none { it.start < quote.end && it.end > quote.start } }
-    return (code + quotes).sortedBy { it.start }
-}
-
-private class MessageChunk(val value: RichText, val code: RichBlock?, val quote: Boolean)
-
-/** A code panel is a bubble of its own; the captions around it are bubbles too, grouped against it. */
+/** Structured text is laid out block by block; a capped preview stays one run of text. */
 @Composable
 fun RichMessageText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, maxLines: Int = Int.MAX_VALUE) {
-    val blocks = remember(value) { standaloneBlocks(value) }
-    if (blocks.isEmpty()) { RichInlineText(value, modifier, style, maxLines); return }
-    val chunks = remember(value, blocks) {
-        buildList {
-            var start = 0
-            blocks.forEach { block ->
-                if (block.start > start) trimmedSlice(value, start, block.start)?.let { add(MessageChunk(it, null, false)) }
-                if (block.kind == "code") add(MessageChunk(richSlice(value, block.start, trimmedEnd(value, block)), block, false))
-                else trimmedSlice(value, block.start, block.end)?.let { add(MessageChunk(it, null, true)) }
-                start = block.end
-            }
-            if (start < value.text.length) trimmedSlice(value, start, value.text.length)?.let { add(MessageChunk(it, null, false)) }
-        }
-    }
-    val panelled = chunks.any { it.code != null } && LocalMessageBubble.current
-    if (!panelled) {
-        Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            chunks.forEach { chunk ->
-                if (chunk.code != null) CodeBlock(chunk.value, chunk.code.language, Modifier.bleed(CodeBleed))
-                else if (chunk.quote) QuoteBlock(chunk.value, style)
-                else RichInlineText(chunk.value, style = style)
-            }
-        }
-        return
-    }
-    // One bubble, no gaps: the panel runs edge to edge and the bubble's own shape rounds the outside.
-    Column(modifier) {
-        chunks.forEach { chunk ->
-            if (chunk.code != null) CodeBlock(chunk.value, chunk.code.language, Modifier.fillMaxWidth(), RectangleShape)
-            else Box(Modifier.fillMaxWidth().background(LocalBubbleGround.current).padding(horizontal = 14.dp, vertical = 10.dp)) {
-                if (chunk.quote) QuoteBlock(chunk.value, style) else RichInlineText(chunk.value, style = style)
-            }
-        }
-    }
+    val nodes = remember(value, maxLines) { if (maxLines == Int.MAX_VALUE) markdownTree(value) else emptyList() }
+    if (nodes.isEmpty()) RichInlineText(value, modifier, style, maxLines) else MarkdownBody(value, nodes, style, modifier)
 }
 /** True where the caller draws the surrounding bubble, so a code panel may replace it. */
 val LocalMessageBubble = staticCompositionLocalOf { false }
@@ -221,13 +169,13 @@ internal val LocalMessageKey = staticCompositionLocalOf<String?> { null }
 private val revealLedger = mutableStateMapOf<String, Set<Int>>()
 
 /** Trailing blank lines inside a fence would otherwise pad the panel with dead space. */
-private fun trimmedEnd(value: RichText, block: RichBlock): Int {
+internal fun trimmedEnd(value: RichText, block: RichBlock): Int {
     var end = block.end
     while (end > block.start && value.text[end - 1].isWhitespace()) end--
     return if (end > block.start) end else block.end
 }
 /** The blank lines that separate blocks belong to neither: they must not pad a caption bubble. */
-private fun trimmedSlice(value: RichText, from: Int, to: Int): RichText? {
+internal fun trimmedSlice(value: RichText, from: Int, to: Int): RichText? {
     var start = from; var end = to
     while (start < end && value.text[start].isWhitespace()) start++
     while (end > start && value.text[end - 1].isWhitespace()) end--
@@ -236,7 +184,7 @@ private fun trimmedSlice(value: RichText, from: Int, to: Int): RichText? {
 
 /** The marker stays in the canonical body; the rule replaces it on screen. */
 @Composable
-private fun QuoteBlock(value: RichText, style: TextStyle) {
+internal fun QuoteBlock(value: RichText, style: TextStyle) {
     val trimmed = remember(value) { quoteBody(value) }
     Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Box(Modifier.width(3.dp).fillMaxHeight().clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current.copy(alpha = .32f)))
@@ -262,11 +210,12 @@ internal fun quoteBody(value: RichText): RichText {
         value.spans.mapNotNull { span -> map(span.start).let { s -> map(span.end).let { e -> if (s < e) span.copy(start = s, end = e) else null } } },
         value.blocks.mapNotNull { block -> map(block.start).let { s -> map(block.end).let { e -> if (s < e) block.copy(start = s, end = e) else null } } },
         value.codeTokens.mapNotNull { token -> map(token.start).let { s -> map(token.end).let { e -> if (s < e) token.copy(start = s, end = e) else null } } },
-        value.motion.mapNotNull { run -> run.copy(units = run.units.map { map(it.first) to map(it.second) }.filter { it.first < it.second }).takeIf { it.units.isNotEmpty() } })
+        value.motion.mapNotNull { run -> run.copy(units = run.units.map { map(it.first) to map(it.second) }.filter { it.first < it.second }).takeIf { it.units.isNotEmpty() } },
+        value.mentions.mapNotNull { m -> map(m.start).let { s -> map(m.end).let { e -> if (s < e) m.copy(start = s, end = e) else null } } })
 }
 
 @Composable
-private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, maxLines: Int = Int.MAX_VALUE) {
+internal fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style: TextStyle = MaterialTheme.typography.bodyLarge, maxLines: Int = Int.MAX_VALUE) {
     val ledgerKey = LocalMessageKey.current?.let { "$it/${value.text.hashCode()}/${value.spans.size}" }
     var local by remember(value) { mutableStateOf(emptySet<Int>()) }
     val revealed = if (ledgerKey != null) revealLedger[ledgerKey].orEmpty() else local
@@ -293,8 +242,21 @@ private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style
             if (wiping == start) wiping = null
         }
     }
-    val text = remember(value, revealed, font, surface, foreground, alternates) { richPresentation(value, revealed, font, surface, foreground, alternates, ::uncover) }
+    val directory = LocalMentionDirectory.current
+    val mentions = remember(value, directory) { mentionMarks(value, directory) }
+    val after = mentionSpacingAfter()
+    val (text, sizedStyle) = remember(value, revealed, font, surface, foreground, alternates, style, mentions) {
+        sizedParagraphs(richPresentation(value, revealed, font, surface, foreground, alternates, ::uncover), style).let { (shown, sizedStyle) ->
+            // An address keeps its server, quietly: the handle is what reads. 76%, not 68%: it sits on the chip, which narrows contrast.
+            val servers = mentions.mapNotNull { (run, _) -> run.server?.let { motionOffsets(value, revealed, run.start + 1 + run.handle.length) to motionOffsets(value, revealed, run.end) } }
+            (if (servers.isEmpty()) shown else AnnotatedString.Builder(shown).apply { servers.forEach { (a, b) -> if (a < b && b <= length) addStyle(SpanStyle(color = foreground.copy(alpha = .76f)), a, b) } }.toAnnotatedString()).withMentionRoom(mentions, value, revealed, after) to sizedStyle
+        }
+    }
+    val uriHandler = LocalUriHandler.current
+    MentionHost(mentions.isNotEmpty(), modifier, { MentionTargets(mentions, value, revealed, layout, after) }) { modifier ->
     Text(text, modifier
+        .concealedSemantics(value, revealed, ::uncover) { runCatching { uriHandler.openUri(it) } }
+        .mentionChips(mentions, value, revealed, layout, foreground, after)
         .then(markHighlights(value, revealed, layout, foreground, surface, alternates))
         .then(revealVeil(value, revealed, layout, foreground, surface, brushed, wiping, wipe.value, tapPoint))
         .then(textMotion(value, revealed, layout, foreground, surface))
@@ -329,7 +291,35 @@ private fun RichInlineText(value: RichText, modifier: Modifier = Modifier, style
                 paint(down.position)
                 drag(down.id) { change -> change.consume(); paint(change.position) }
             }
-        }, style = style, maxLines = maxLines, overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis, onTextLayout = { layout = it })
+        }, style = sizedStyle, maxLines = maxLines, overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis, onTextLayout = { layout = it })
+    }
+}
+/** What a screen reader hears: never a redacted or still-hidden secret. Null when the drawn text already reads true. */
+internal fun spokenText(value: RichText, revealed: Set<Int>): String? {
+    val legacy = redactionRanges(value)
+    val hidden = value.spans.filter { (it.reveal.isNotEmpty() && it.start !in revealed) || it.redaction > 0 }
+    if (hidden.isEmpty() && legacy.isEmpty()) return null
+    val cuts = (hidden.map { Triple(it.start, it.end, if (it.redaction > 0) "[REDACTED]" else if (it.reveal == "scratch") "[Scratch to reveal, hidden]" else "[Spoiler, hidden]") } +
+        legacy.map { (from, to) -> Triple(from, to, "[REDACTED]") }).sortedBy { it.first }
+    return buildString {
+        var at = 0
+        cuts.forEach { (from, to, said) -> if (from >= at) { append(value.text, at, from); append(said); at = to } }
+        append(value.text, at, value.text.length)
+    }
+}
+/** Hidden text is replaced in semantics, with a Reveal action per veil; links stay reachable as actions. */
+internal fun Modifier.concealedSemantics(value: RichText, revealed: Set<Int>, uncover: (Int) -> Unit, open: (String) -> Unit): Modifier {
+    val spoken = spokenText(value, revealed) ?: return this
+    val veiled = value.spans.filter { it.reveal.isNotEmpty() && it.start !in revealed }
+    val scratch = veiled.firstOrNull { it.reveal == "scratch" }
+    val actions = veiled.mapIndexed { i, span ->
+        CustomAccessibilityAction(if (veiled.size == 1) "Reveal" else "Reveal ${i + 1}") { uncover(span.start); true }
+    } + value.spans.mapNotNull { span -> span.link?.takeIf { span.reveal.isEmpty() || span.start in revealed }?.let { url -> CustomAccessibilityAction("Open $url") { open(url); true } } }
+    // Scratch is a drag; Enter or Space reveals it for a keyboard.
+    val keys = if (scratch == null) this else this.onKeyEvent { event ->
+        if (event.type == KeyEventType.KeyUp && (event.key == Key.Enter || event.key == Key.Spacebar || event.key == Key.NumPadEnter)) { uncover(scratch.start); true } else false
+    }.focusable()
+    return keys.clearAndSetSemantics { text = AnnotatedString(spoken); customActions = actions }
 }
 /** A superellipse corner, matching the reference stylesheet's continuous rounding. */
 internal fun squirclePath(rect:Rect,radius:Float):Path {
@@ -366,9 +356,11 @@ internal fun redactionRanges(value:RichText):List<Pair<Int,Int>> =
 @Composable
 internal fun markHighlights(value:RichText,revealed:Set<Int>,layout:TextLayoutResult?,foreground:Color,surface:Color,alternates:List<Color>):Modifier {
     val marked=value.spans.filter {"background" in it.flags}
+    // Inline code gets the same squircle, a touch wider so the glyphs have air.
+    val code=value.spans.filter {"code" in it.flags && "background" !in it.flags && it.reveal.isEmpty()}
     val redactions=redactionRanges(value)
     val counted=value.spans.filter {it.redaction>0}
-    if((marked.isEmpty() && redactions.isEmpty() && counted.isEmpty()) || layout==null)return Modifier
+    if((marked.isEmpty() && code.isEmpty() && redactions.isEmpty() && counted.isEmpty()) || layout==null)return Modifier
     return Modifier.drawWithCache {
         val em=(layout.layoutInput.style.fontSize.takeIf {it.type==TextUnitType.Sp}?.toPx()) ?: 16.sp.toPx()
         val shapes=marked.flatMap {span->
@@ -386,7 +378,23 @@ internal fun markHighlights(value:RichText,revealed:Set<Int>,layout:TextLayoutRe
                 }
             }
         }
+        val pad=3.dp.toPx()
+        val chips=code.flatMap {span->
+            val start=motionOffsets(value,revealed,span.start)
+            val end=motionOffsets(value,revealed,span.end)
+            if(start<0 || start>=end || end>layout.layoutInput.text.length)emptyList()
+            else (layout.getLineForOffset(start)..layout.getLineForOffset(end-1)).mapNotNull {line->
+                lineSpanEdges(layout,line,start,end)?.let {(a,b)->
+                    val base=layout.getLineBaseline(line)
+                    val box=Rect(a-pad,base-em*.86f,b+pad,base+em*.30f)
+                    if(box.width<=pad*2)null else squirclePath(box,em*.28f)
+                }
+            }
+        }
+        val chip=foreground.copy(alpha=.10f)
         val bar=if(surface.luminance()<.5f)Color(0xff070709) else foreground
+        // The reference rings the bar so it parts from a dark ground; the ring is as strong as 3:1 needs.
+        val ring=if(contrastRatio(bar,surface)>=3f)null else redactionRing(surface,foreground)
         val ranges=redactions.map {(from,to)->motionOffsets(value,revealed,from) to motionOffsets(value,revealed,to)}+
             counted.map {span->motionOffsets(value,revealed,span.start).let {it to it+span.redaction}}
         val bars=ranges.flatMap {(start,end)->
@@ -401,9 +409,17 @@ internal fun markHighlights(value:RichText,revealed:Set<Int>,layout:TextLayoutRe
             }
         }
         onDrawWithContent {
+            chips.forEach {drawPath(it,chip)}
             shapes.forEach {(path,tint)->drawPath(path,tint)}
             drawContent()
-            bars.forEach {drawPath(it,bar)}
+            bars.forEach {drawPath(it,bar);if(ring!=null)drawPath(it,ring,style=androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))}
         }
     }
+}
+internal fun contrastRatio(a:Color,b:Color):Float {val x=a.luminance()+.05f;val y=b.luminance()+.05f;return maxOf(x,y)/minOf(x,y)}
+/** The faintest ink ring, from the reference's 8%, that parts a redaction bar from its ground at 3:1. */
+internal fun redactionRing(surface:Color,ink:Color):Color {
+    var alpha=.08f
+    while(alpha<1f && contrastRatio(lerp(surface,ink,alpha),surface)<3f)alpha+=.02f
+    return lerp(surface,ink,alpha.coerceAtMost(1f))
 }

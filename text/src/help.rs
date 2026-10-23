@@ -1,4 +1,3 @@
-use crate::{Error, Limits, Text};
 
 pub struct Topic {
     pub name: &'static str,
@@ -459,10 +458,10 @@ pub const TOPICS: &[Topic] = &[
     topic!(
         "rate",
         "utility",
-        "Rating",
-        "rate::<score>/<maximum>;",
+        "Rating, or a request for one out of 5 or 10",
+        "rate::<score>/<maximum>; or rate::[closed::]<5|10>::<question>;",
         [],
-        "rate::4/5;",
+        "rate::5::How was dinner?;",
         true
     ),
     topic!(
@@ -529,14 +528,6 @@ pub const TOPICS: &[Topic] = &[
         false
     ),
 ];
-pub fn search(query: &str) -> impl Iterator<Item = &'static Topic> + '_ {
-    TOPICS.iter().filter(move |topic| {
-        query.is_empty()
-            || topic.name.contains(query)
-            || topic.category.contains(query)
-            || topic.aliases.iter().any(|alias| alias.contains(query))
-    })
-}
 pub fn catalog(query: &str) -> String {
     if query.len() > 128 {
         return String::new();
@@ -584,24 +575,99 @@ pub(crate) fn structured_prefix(source: &str) -> bool {
                     .is_some_and(|tail| tail.starts_with("::")))
     })
 }
-pub fn sheet(query: &str, limits: Limits) -> Result<Text, Error> {
-    if query.len() > 64 {
-        return Err(Error::Limit);
+/// A cheat sheet as the card shows it: a title, an optional lead, then labelled copyable examples.
+pub struct Sheet {
+    pub title: String,
+    pub intro: Option<String>,
+    pub entries: Vec<(&'static str, &'static str)>,
+    pub more: usize,
+}
+const CATEGORIES: &[(&str, &str, &str)] = &[
+    ("text", "Text", "Markdown, modifiers, sizes, spoilers and marks."),
+    ("colors", "Colors", "Hues, shades, gradients and rainbow."),
+    ("animations", "Animations", "Short effects that play once as the message arrives."),
+    ("lists", "Lists", "Checklists, polls and notes."),
+    ("time", "Time", "Reminders, timers, countdowns and elapsed time."),
+    ("utility", "Utility", "Calculations, conversions, randomizers, QR codes and small helpers."),
+    ("data", "Data", "Charts and tables."),
+    ("diagrams", "Diagrams", "Flowcharts, sequences, timelines, mind maps, org charts and state machines."),
+    ("other", "Other", "Recipes, math, art, translation, definitions and weather."),
+];
+const SHEET_ROWS: usize = 7;
+/// The name a learner knows a construct by, as the reference labels its cheats.
+pub fn label(name: &str) -> &'static str {
+    match name {
+        "info" => "Getting started", "markdown" => "Markdown", "bold" => "Bold", "italic" => "Italic", "strike" => "Strikethrough",
+        "underline" => "Underline", "mono" => "Monospace", "mark" => "Highlight", "spoiler" => "Spoiler", "scratch" => "Scratch-off",
+        "redact" => "Redaction", "big" => "Larger text", "small" => "Smaller text", "color" => "Hue and shade", "gradient" => "Gradient",
+        "rainbow" => "Rainbow", "shake" => "Shake", "wave" => "Wave", "pulse" => "Pulse", "glow" => "Glow", "typewriter" => "Typewriter",
+        "sparkle" => "Sparkle", "glitch" => "Glitch", "scatter" => "Scatter", "flip" => "Flip", "barrel" => "Barrel roll",
+        "assemble" => "Assemble", "@" => "Mention", "@::" => "Contact picker", "checklist" => "Checklist", "poll" => "Poll",
+        "note" => "Note", "remind" => "Reminder", "timer" => "Timer", "countdown" => "Countdown", "ago" => "Elapsed time",
+        "chart" => "Chart", "diagram" => "Diagram", "table" => "Table", "recipe" => "Recipe", "calc" => "Calculation",
+        "convert" => "Conversion", "math" => "Math", "art" => "ASCII art", "qr" => "QR code", "roll" => "Dice roll", "pick" => "Pick",
+        "kbd" => "Keyboard shortcut", "rate" => "Rating", "progress" => "Progress", "quote" => "Pull quote", "swatch" => "Color swatch",
+        "translate" => "Translation", "define" => "Definition", "weather" => "Weather", "help" => "Help", _ => "Example",
     }
+}
+/// Further copyable examples per topic: (topic, row label, source). The topic's own example is labelled by `lead`.
+const EXAMPLES: &[(&str, &str, &str)] = &[
+    ("color", "Lighter shade", "green1::Hello;"),
+    ("gradient", "Three stops", "red-orange-yellow::Hello;"),
+    ("checklist", "Recurring checklist", "checklist::weekly::The weekly reset\n-r- Water the plants\n- Buy a notebook;"),
+    ("checklist", "Task list", "checklist::task::Ready to publish\n- Review the copy\n- Publish;"),
+    ("poll", "Choose several", "poll::multi::What should we bring?\n- A camera\n- Coffee;"),
+    ("timer", "Longer timer", "timer::1h30m;"),
+    ("countdown", "Countdown to a time", "countdown::2027-01-01 18:00::Doors open;"),
+    ("ago", "Since yesterday", "ago::yesterday::A little progress;"),
+    ("chart", "Bar chart", "chart::bar::Week\n- Mon=12\n- Tue=20\n- Wed=17;"),
+    ("chart", "Line chart", "chart::line::The week\n- Mon=12\n- Tue=20\n- Wed=14;"),
+    ("diagram", "Sequence", "diagram::sequence::Call\n- Client -> Server: hello\n- Server --> Client: ready;"),
+    ("diagram", "Timeline", "diagram::timeline::Project\n- 2026-03 = Started\n- 2026-09 = Launch;"),
+    ("diagram", "Mind map", "diagram::mindmap::Trip\n- Trip -> Packing\n- Trip -> Route;"),
+    ("diagram", "Org chart", "diagram::org::Team\n- Lead -> Design\n- Lead -> Engineering;"),
+    ("diagram", "State machine", "diagram::state::Call\n- Idle -> Ringing [invite]\n- Ringing -> Connected [answer];"),
+];
+fn lead(topic: &Topic) -> &'static str {
+    match topic.name {
+        "chart" => "Pie chart",
+        "diagram" => "Flowchart",
+        name => label(name),
+    }
+}
+fn examples(name: &'static str) -> impl Iterator<Item = (&'static str, &'static str)> {
+    EXAMPLES.iter().filter(move |(topic, ..)| *topic == name).map(|(_, label, example)| (*label, *example))
+}
+fn topic(name: &str) -> Option<&'static Topic> {
+    TOPICS.iter().find(|topic| topic.name == name)
+}
+/// `info`, a category, or one topic by name; anything else is not a sheet.
+pub fn resolve(query: &str) -> Option<Sheet> {
     if query == "info" {
-        return Text::plain("SigilText\nUse modifier::content; and stack bold::blue::Hello;. Inline formatting may run to the end of a line without a semicolon.\nTry timer::5m; or remind::tomorrow 9:00::Call;.\nType help:: for the full reference.", limits);
+        let info = topic("info")?;
+        let mut entries = vec![("Stack formatting", "bold::blue::Hello;")];
+        for name in ["timer", "remind", "checklist"] {
+            let value = topic(name)?;
+            entries.push((lead(value), value.example));
+        }
+        return Some(Sheet { title: "Getting started".into(), intro: Some(info.description.into()), entries, more: 0 });
     }
-    let mut rows = Vec::new();
-    for topic in search(query) {
-        rows.push(format!(
-            "{} — {}\n{}\nExample: {}",
-            topic.name, topic.description, topic.template, topic.example
-        ));
+    if let Some((name, title, intro)) = CATEGORIES.iter().find(|(name, ..)| *name == query) {
+        let topics = TOPICS.iter().filter(|topic| topic.category == *name).collect::<Vec<_>>();
+        let mut entries = topics.iter().take(SHEET_ROWS).map(|topic| (lead(topic), topic.example)).collect::<Vec<_>>();
+        let room = SHEET_ROWS.saturating_sub(entries.len());
+        entries.extend(topics.iter().flat_map(|topic| examples(topic.name)).take(room));
+        return Some(Sheet { title: (*title).into(), intro: Some((*intro).into()), more: topics.len().saturating_sub(SHEET_ROWS), entries });
     }
-    if rows.is_empty() {
-        return Err(Error::Invalid);
-    }
-    Text::plain(&rows.join("\n\n"), limits)
+    let value = topic(query).filter(|value| value.name != "info")?;
+    let options = (!value.options.is_empty()).then(|| format!("\nOptions: {}.", value.options.join(", "))).unwrap_or_default();
+    let intro = format!("{}. Write {}{options}", value.description, value.template);
+    let entries = std::iter::once((lead(value), value.example)).chain(examples(value.name)).collect();
+    Some(Sheet { title: label(value.name).into(), intro: Some(intro), entries, more: 0 })
+}
+/// The message body every client derives alike, so a sheet's wording can change without breaking older messages.
+pub fn body(topic: &str) -> String {
+    format!("SigilText help: {topic}")
 }
 
 #[cfg(test)]
@@ -642,6 +708,10 @@ mod tests {
                 topic.example
             );
         }
+        for (name, _, example) in EXAMPLES.iter().filter(|(name, ..)| topic(name).is_some_and(|t| t.structured)) {
+            let draft = crate::parse_card(example, origin, Default::default()).unwrap();
+            assert!(matches!(draft.content, crate::Parsed::Card(_)), "{name}: {example}");
+        }
         for category in [
             "info",
             "text",
@@ -654,8 +724,42 @@ mod tests {
             "diagrams",
             "other",
         ] {
-            let sheet = sheet(category, Limits::default()).unwrap();
-            assert!(Text::from_bytes(&sheet.to_bytes().unwrap()).is_ok());
+            let sheet = resolve(category).unwrap();
+            assert!(sheet.entries.len() >= 2, "{category}");
+            assert!(sheet.entries.iter().all(|(label, _)| !label.contains("::")), "{category}");
         }
+    }
+    #[test]
+    fn help_sources_become_cards_rendered_from_the_readers_reference() {
+        let origin = crate::Origin { message: [1; 32], creator: [2; 32], created_at: 1800000000, timezone: Some("UTC") };
+        let draft = crate::parse_card("help::time;", origin, Default::default()).unwrap();
+        let crate::Parsed::Card(card) = draft.content else { panic!("help::time; stayed text") };
+        let crate::structured::Construct::Utility(utility) = &card.content else { panic!() };
+        let view = utility.presentation().unwrap();
+        assert_eq!(view["kind"], "help");
+        assert_eq!(view["display"], "Time");
+        assert_eq!(view["entries"].as_array().unwrap().len(), SHEET_ROWS);
+        assert_eq!((view["entries"][1]["label"].as_str(), view["entries"][1]["code"].as_str()), (Some("Timer"), Some("timer::5m;")));
+        assert_eq!(card.body().unwrap(), "SigilText help: time");
+        let text = resolve("text").unwrap();
+        assert_eq!((text.entries.len(), text.more), (SHEET_ROWS, TOPICS.iter().filter(|t| t.category == "text").count() - SHEET_ROWS));
+        let timer = resolve("timer").unwrap();
+        assert_eq!((timer.title.as_str(), timer.entries), ("Timer", vec![("Timer", "timer::5m;"), ("Longer timer", "timer::1h30m;")]));
+        assert!(timer.intro.unwrap().contains("timer::<duration>;"));
+        let diagrams = resolve("diagrams").unwrap();
+        assert_eq!(diagrams.entries.iter().map(|e| e.0).collect::<Vec<_>>(), ["Flowchart", "Sequence", "Timeline", "Mind map", "Org chart", "State machine"]);
+        assert_eq!(resolve("data").unwrap().entries.iter().map(|e| e.0).collect::<Vec<_>>(), ["Pie chart", "Table", "Bar chart", "Line chart"]);
+        for (name, ..) in EXAMPLES {
+            assert!(topic(name).is_some() && label(name) != "Example", "{name}");
+        }
+        for value in TOPICS {
+            assert_ne!(label(value.name), "Example", "{}", value.name);
+        }
+        for literal in ["help::nope;", "help::Time;", "help::redact::SECRET;"] {
+            assert!(matches!(crate::parse_card(literal, origin, Default::default()).unwrap().content, crate::Parsed::Text(_)), "{literal}");
+        }
+        assert!(crate::utility::Utility::Help("time;".into()).validate(Default::default()).is_err());
+        let unknown = crate::utility::Utility::Help("later".into()).presentation().unwrap();
+        assert_eq!(unknown["entries"].as_array().unwrap().len(), 0);
     }
 }

@@ -196,3 +196,44 @@ fn card_decoding_rejects_forged_fallback_unknown_fields_duplicate_ids_and_limits
     assert_eq!(note.body().unwrap(), "Note: A note");
     assert!(Card::from_bytes(&note.to_bytes().unwrap()).unwrap() == note);
 }
+#[test]
+fn rating_requests_are_single_choice_polls_over_a_fixed_scale() {
+    let five = card("rate::5::How was dinner?;");
+    let Construct::Poll(poll) = &five.content else {
+        panic!()
+    };
+    assert_eq!(poll.scale, Some(5));
+    assert_eq!(poll.selection, Selection::Single);
+    assert_eq!(poll.disclosure, Disclosure::Open);
+    let scores: Vec<_> = poll.options.iter().map(|o| o.text.body()).collect();
+    assert_eq!(scores, ["1", "2", "3", "4", "5"]);
+    assert_eq!(five.body().unwrap(), "Rating: How was dinner? (out of 5)");
+    assert!(Card::from_bytes(&five.to_bytes().unwrap()).unwrap() == five);
+    let ten = card("rate::10::closed::Film::sequel?;");
+    let Construct::Poll(poll) = &ten.content else {
+        panic!()
+    };
+    assert_eq!((poll.scale, poll.disclosure, poll.options.len()), (Some(10), Disclosure::Closed, 10));
+    assert_eq!(poll.question.body(), "Film::sequel?");
+    assert!(matches!(card("rate::4/5;").content, Construct::Utility(_)));
+    for literal in ["rate::7::Odd scale?;", "rate::5::;", "rate::05::Zero?;", "rate::5::Q\n- extra;"] {
+        assert!(matches!(parse_card(literal, origin(), Default::default()).unwrap().content, Parsed::Text(_)), "{literal}");
+    }
+    let repeated = parse_card("rate::5::10::Q;", origin(), Default::default()).unwrap();
+    assert_eq!(repeated.hints, vec![Hint::RepeatedOption]);
+    // A scale that disagrees with its options is refused on the wire.
+    for forge in [
+        |p: &mut Poll| p.options[4].text = parse("6", Default::default()).unwrap(),
+        |p: &mut Poll| p.scale = Some(10),
+        |p: &mut Poll| p.selection = Selection::Unlimited,
+    ] {
+        let mut forged = five.clone();
+        let Construct::Poll(poll) = &mut forged.content else {
+            panic!()
+        };
+        forge(poll);
+        assert!(forged.to_bytes().is_err());
+    }
+    let plain = card("poll::Choose\n- One\n- Two;").to_bytes().unwrap();
+    assert!(!String::from_utf8(plain).unwrap().contains("scale"));
+}

@@ -84,11 +84,19 @@ class ReplyPresentationTest {
         assertEquals("Table · Name, Role · 1 row",cardQuote(listOf(MessagePart("t","card","",table=table)))?.line)
         val items=listOf(CardItem("1","Milk",true,true),CardItem("2","Eggs",false,true))
         assertEquals("Checklist · Groceries · 1 of 2 done",cardQuote(listOf(MessagePart("l","checklist","Groceries",items)))?.line)
+        assertEquals("Task list · Move in · 1 of 2 done",cardQuote(listOf(MessagePart("t","task","Move in",items)))?.line)
         assertEquals("Reminder · Call the studio · Tue 09:00",cardQuote(listOf(MessagePart("r","reminder","Call the studio",date="Tue 09:00")))?.line)
         assertEquals("Location · Dropped pin",cardQuote(listOf(MessagePart("g","location","Dropped pin")))?.line)
         assertEquals("Location · Live location",cardQuote(listOf(MessagePart("g","location","",locationMode="live")))?.line)
         assertEquals("Contact · Ari",cardQuote(listOf(MessagePart("a","card","",contact=ContactContent("@ari:studio.example",rich("Ari"),"x",null))))?.line)
         assertEquals("Recipe · Lemon pasta · serves 2",cardQuote(listOf(MessagePart("f","card","",recipe=RecipeContent(rich("Lemon pasta"),2,2,null,emptyList(),emptyList(),emptyList()))))?.line)
+    }
+    @Test fun a_markdown_reply_quotes_the_words_not_the_markup() {
+        fun part(source: String) = ContentDecoder.part(NativeCore.structuredPreview(source))
+        val note = "### A note from the studio\n\n**Small details.** *A considered pace.*\n\n- A quiet interface\n- [x] Done\n\n> Make space."
+        assertEquals("A note from the studio Small details. A considered pace. A quiet interface Done Make space.", quoteText(listOf(part(note)), note))
+        val fence = "```\ncode only\n```"
+        assertEquals("code only", quoteText(listOf(part(fence)), fence))
     }
     @Test fun quotes_keep_spoilers_covered() {
         val hidden=RichText("The answer is 42",listOf(RichSpan(14,16,reveal="tap")))

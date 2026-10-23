@@ -329,6 +329,10 @@ Representative shape:
 
 Mention ranges use the same canonical text normalization and indexing rules defined for other SigilText spans.
 
+In the current client a pick from the composer's `@` picker travels with the post as `{display, address}` in reading order; the core binds each occurrence to the stored contact behind that address (an address with no contact, or an occurrence inside code, stays unbound), and the presentation carries bound mentions as UTF-16 ranges with the address and identity. Readers settle a chip only from a binding whose identity matches their own contact, or from a full address they know; a bare handle is never guessed from the reader's own contacts and shows as unresolved.
+
+Not yet supported, and left literal on purpose: `#room` references (Sigil groups have no public names to resolve them against) and `:shortcode:` emoji (the composer's emoji sheet is the input path; parse-time substitution would rewrite the canonical body).
+
 ### Contact-card event shape
 
 A contact card shares an identity as structured content rather than merely mentioning it.
@@ -578,6 +582,19 @@ Emit Sigil's canonical poll event shape so the syntax path and graphical poll bu
 - Show the viewer's selected choices persistently.
 - Long option labels wrap naturally; many-option polls collapse after a sensible threshold with **Show all options**.
 - Closed/ended polls become read-only result cards with the winning option(s) visually emphasized without relying solely on color.
+
+### Rating requests
+
+```
+rate::5::How was dinner?;
+rate::10::closed::Pitch deck, honest score?;
+```
+
+`rate::<5|10>::Question;` asks recipients for a score. It is a single-choice poll whose options are the scores `1`…`5` or `1`…`10`, so it shares the poll's vote, change, close and delivery path; the card's `scale` field marks it, and a scale that disagrees with its options is rejected. `open`/`closed` work as for polls and, like the scale, may come in either order before the question. Only 5 and 10 are scales; anything else, or extra lines, stays literal. `rate::4/5;` (a slash, no question) is still the display helper in §25.
+
+- Five renders as 48dp star targets, ten as a row of numbered cells. The filled stars or the filled cell are the viewer's own score; tapping another score changes it, tapping the same one does nothing.
+- The meta line gives the viewer's score, the average to one place and the count (`You rated 4 · 4.2 average · 6 ratings`). `closed` requests say `Results after you rate` until the viewer rates.
+- The author ends it from the message menu (**End rating**), as with **End poll**; the card then reads `Rating closed`, is read-only, and shows the final average on the stars or cells.
 
 
 ---
@@ -917,7 +934,8 @@ ago::2019-03-14::Project started;
 
 - `countdown::` — days remaining until a future date, live-updating
 - `ago::` — elapsed time since a past date
-- Both use the same date parsing and compose-time resolution as `remind::`
+- Both use the same date parsing and compose-time resolution as `remind::`, plus `yesterday`
+- Today, days and years follow the sender's calendar day in the sender's timezone
 - Distinct from `timer::`, which is minutes-scale and notifies
 
 ### Countdown / elapsed-time presentation
@@ -1072,7 +1090,7 @@ For category-based picks, store both the category identifier and the chosen valu
 | `swatch::rgba(255,87,51,0.5);` | Same sample, drawn opaque; the alpha is stated as "50% opacity" |
 | `swatch::hsl(9,100%,60%);` | Same |
 | `kbd::Ctrl+Shift+P;` | Mechanical key caps split on `+`; keys print the legend a physical key carries (⌘ ⌥ ⇧ ⇥ ↵ ⌫), Ctrl and Alt print only their name |
-| `rate::4/5;` | Star rating |
+| `rate::4/5;` | Star rating (to ask for one, see `rate::5::Question;` in §12) |
 | `progress::75;` | Progress bar |
 | `quote::Author::Example quotation;` | Formatted pull-quote with attribution |
 
@@ -1309,6 +1327,8 @@ Help has two uses:
 
 1. **Read locally** — open a cheat sheet inside the composer without sending anything.
 2. **Share in chat** — send the same cheat sheet as a normal Sigil message to teach another person.
+
+A sent `help::<topic>;` carries only the topic (`info`, a category or one construct). Each reader renders the sheet from their own reference as a card whose rows insert their example into the composer; the message body is the fixed line `SigilText help: <topic>`, since a body built from the reference would stop verifying once its wording changes.
 
 A power user who already knows the category can type and terminate `help::colors;` directly. A newer user can type bare `help::`, browse interactively, then choose **Insert**, **Preview**, or **Send cheat sheet**.
 

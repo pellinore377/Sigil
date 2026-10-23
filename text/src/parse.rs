@@ -87,6 +87,8 @@ fn chain(
     let mut at = start;
     let mut effects = Effects::default();
     let mut redact = false;
+    // `gradient::<stops>::` is an alias of the bare stop list; a lone `gradient::` stays literal.
+    let mut gradient: Option<usize> = None;
     loop {
         let tail = &source[at..end];
         let count = tail
@@ -102,12 +104,22 @@ fn chain(
             break;
         }
         let token = &tail[..count];
-        if token == "redact" {
+        if gradient.is_some() {
+            if !token.contains('-') || !effects.modifier(token) {
+                break;
+            }
+            gradient = None;
+        } else if token == "gradient" {
+            gradient = Some(at);
+        } else if token == "redact" {
             redact = true;
         } else if !effects.modifier(token) {
             break;
         }
         at += count + 2;
+    }
+    if let Some(bare) = gradient {
+        at = bare;
     }
     (at > start).then_some((at, effects, redact))
 }

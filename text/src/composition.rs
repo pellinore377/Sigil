@@ -200,12 +200,13 @@ pub fn parse_with_contacts(
     }
     if source.starts_with("help::") && source.trim_end().ends_with(';') {
         let draft = crate::parse_card_with_dates(source, origin, limits, order)?;
-        if let crate::Parsed::Text(text) = draft.content {
-            return Ok(Draft {
-                content: crate::Document::Text(text),
-                hints: draft.hints,
-            });
-        }
+        return Ok(Draft {
+            content: match draft.content {
+                crate::Parsed::Text(text) => crate::Document::Text(text),
+                crate::Parsed::Card(card) => crate::Document::Card(*card),
+            },
+            hints: draft.hints,
+        });
     }
     let (ranges, incomplete) = construct_ranges(source)?;
     let mut parts = Vec::new();

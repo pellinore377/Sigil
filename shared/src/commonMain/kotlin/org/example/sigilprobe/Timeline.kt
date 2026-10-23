@@ -205,7 +205,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             if (state.historical) SigilTextButton({ command("latest", emptyMap()) }, Modifier.align(Alignment.CenterHorizontally)) { Text("Return to latest messages") }
             Box(Modifier.weight(1f).fillMaxWidth().clipToBounds().onGloballyPositioned {materialTimeline.viewport=it.boundsInWindow();val r=materialTimeline.viewport;if(materialHeader>0)materialTimeline.bubbles["header"]=Rect(r.left,r.top,r.right,r.top+materialHeader)}) {
             val timelineMedia = remember(messages) { messages.filter { m -> m.attachment?.let { it.mediaType.startsWith("image/") || it.mediaType.startsWith("video/") } == true }.asReversed() }
-            CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch, LocalTimelineMedia provides timelineMedia) {
+            val insert: ((String) -> Unit)? = if (threadsOverview || page == "Notes" || !chat.verified) null else { source -> draft.edit { replace(selection.min, selection.max, source) } }
+            CompositionLocalProvider(LocalMaterialTimeline provides materialTimeline.takeIf {materialOverlay!=null}, LocalPreviewLaunch provides previewLaunch, LocalTimelineMedia provides timelineMedia, LocalComposerInsert provides insert) {
             LazyColumn(Modifier.fillMaxSize().testTag("timeline"), state = list, reverseLayout = true, userScrollEnabled = selected == null, contentPadding = PaddingValues(start = TimelineGutter, end = TimelineGutter, top = (if (controls) 0.dp else headerInset) + 12.dp, bottom = composerInset)) {
                 item("typing") { androidx.compose.animation.AnimatedVisibility(!threadsOverview && state.typing.isNotEmpty(), enter = expandVertically(motionPolicy.enter(MotionMillis)) + fadeIn(motionPolicy.enter(MotionMillis)), exit = shrinkVertically(motionPolicy.exit(MotionQuick)) + fadeOut(motionPolicy.exit(MotionExit)), label = "Typing indicator") { TypingRow(state.typing.map { state.people[it] ?: if (chat.group) "Member" else chat.name }, chat.name, state.typing) } }
                 itemsIndexed(messages, key = { _, it -> it.author + it.id }) { index, message ->
@@ -372,7 +373,8 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             if (banner) Column(Modifier.padding(bottom = composerInset)) { ContactRequestPanel(chat, state.busy, command) }
             }
             FooterContent {
-            CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch) {
+            val mentionChoices = remember(chat.id) { MentionChoices() }
+            CompositionLocalProvider(LocalPreviewLaunch provides previewLaunch, LocalMentionChoices provides mentionChoices) {
             Column(Modifier.fillMaxWidth()) {
             val context = editing?.let { "Editing" to it.text } ?: reply?.let { (state.people[it.author] ?: if (it.mine) "You" else chat.name) to quoteText(it.parts, it.text) }
             context?.let { (title, text) -> ContextChip(title, text, reply?.attachment, reply, reply?.let { cardQuote(it.parts) }) { reply = null; editing = null } }
@@ -382,7 +384,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
             if (!threadsOverview) ComposerPanel(draft, analyze, chat.verified && !state.busy, page == "Notes", inputCommand, chat.id, state.voice, state.sent, state.sentText, requestContact = if (!chat.verified && !chat.group && !state.busy && chat.request in listOf("none", "expired")) ({ command("contact_request", mapOf("peer" to chat.id, "action" to "send")) }) else null, attachments = state.transfers.filter { it.peer == chat.id }, editingCaption = editing?.attachment != null, attachmentTarget = mapOf("peer" to chat.id, "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) { text, rich, timezone ->
                 submitted = Triple(draft.text.toString(), text, state.sent)
                 if (editing != null) command("edit", mapOf("peer" to chat.id, "author" to editing!!.author, "message" to editing!!.id, "text" to text, "formatted" to true))
-                else { if (canLaunch) previewLaunch.arm(text, state.sent); if (canFly) previewLaunch.armPanel(text, state.sent); command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone,
+                else { if (canLaunch) previewLaunch.arm(text, state.sent); if (canFly) previewLaunch.armPanel(text, state.sent); command("post", mapOf("peer" to chat.id, "text" to text, "rich" to rich, "formatted" to true, "timezone" to timezone, "mentions" to mentionChoices.take(text),
                     "reply_author" to reply?.author, "reply_message" to reply?.id, "thread_author" to thread?.author, "thread_message" to thread?.id)) }
             }
         }
@@ -420,7 +422,7 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
         if (footerHost == null) menuBody()
         else if (selected != null) Presented({ selected = null; heldContent.value = null }) { Box(Modifier.fillMaxSize().onGloballyPositioned { menuPage = it.boundsInWindow() }) { menuBody() } }
         cardDetails?.let { CardDetails(it) { cardDetails = null } }
-        endingPoll?.let { (message, poll) -> EndPollDialog({ endingPoll = null }, poll.text.takeIf { message.parts.count { it.kind == "poll" && it.canClose } > 1 }) {
+        endingPoll?.let { (message, poll) -> EndPollDialog({ endingPoll = null }, poll.text.takeIf { message.parts.count { it.kind == "poll" && it.canClose } > 1 }, poll.scale > 0) {
             endingPoll = null
             command("poll_close", mapOf("peer" to chat.id, "author" to message.author, "message" to message.id, "card" to poll.id))
         } }
@@ -428,9 +430,10 @@ internal fun ConversationPage(chat: ChatSummary, state: MessengerState, draft: T
 }
 private val BubbleCueSpread = 12.dp
 @Composable
-internal fun EndPollDialog(dismiss: () -> Unit, question: String? = null, confirm: () -> Unit) {
-    AlertDialog(dismiss, title = { Text("End poll?") }, text = { Text((question?.let { "“$it”\n" } ?: "") + "Voting closes for everyone and the results become final. This can't be undone.") },
-        confirmButton = { SigilTextButton(confirm) { Text("End poll", color = MaterialTheme.colorScheme.error) } }, dismissButton = { SigilTextButton(dismiss) { Text("Keep open") } })
+internal fun EndPollDialog(dismiss: () -> Unit, question: String? = null, rating: Boolean = false, confirm: () -> Unit) {
+    val end = if (rating) "End rating" else "End poll"
+    AlertDialog(dismiss, title = { Text("$end?") }, text = { Text((question?.let { "“$it”\n" } ?: "") + (if (rating) "Rating closes for everyone and the average becomes final." else "Voting closes for everyone and the results become final.") + " This can't be undone.") },
+        confirmButton = { SigilTextButton(confirm) { Text(end, color = MaterialTheme.colorScheme.error) } }, dismissButton = { SigilTextButton(dismiss) { Text("Keep open") } })
 }
 
 @Composable
@@ -606,7 +609,7 @@ private fun BoxScope.MessageMenu(message: ChatMessage, origin: Rect, progress: A
                     val entries = listOf("reply" to "Reply", "forward" to "Forward", "copy" to "Copy", "thread" to "Reply in thread", "pin" to if (message.pinned) "Unpin" else "Pin", "note" to if (message.noted) "Remove from notes" else "Add to notes") +
                         (if(message.detailsPart()!=null)listOf("details" to "Details") else emptyList()) +
                         (if(message.hasMessageMotion())listOf("replay" to "Replay animation") else emptyList()) +
-                        message.parts.filter { it.kind == "poll" && it.canClose }.let { polls -> polls.map { "end_poll/${it.id}" to if (polls.size > 1) "End poll: ${it.text}" else "End poll" } } +
+                        message.parts.filter { it.kind == "poll" && it.canClose }.let { polls -> polls.map { val end = if (it.scale > 0) "End rating" else "End poll"; "end_poll/${it.id}" to if (polls.size > 1) "$end: ${it.text}" else end } } +
                         (if (message.mine && message.editable) listOf("edit" to "Edit") else emptyList()) + (if (message.mine) listOf("delete" to "Delete") else emptyList())
                     entries.forEach { (entry, label) -> val key = entry.substringBefore('/'); DropdownMenuItem({ Text(label, color = if (key == "delete") scheme.error else scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis) }, { choose(key, entry.substringAfter('/', "")) },
                         leadingIcon = { Glyph(when(key) { "thread" -> "forum"; "pin" -> "push_pin"; "note" -> "description"; "copy" -> "content_copy"; "details" -> "info"; "end_poll" -> "lock"; else -> key }, 20) }) }

@@ -1,6 +1,12 @@
 package org.sigil
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.unit.em
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -196,5 +202,74 @@ class TextMotionTest {
         ui.runOnIdle {flipped=false}
         assertNotEquals(upsideDown,pixels())
         ui.onNodeWithText("abc").assertExists()
+    }
+
+    @Test fun size_steps_follow_the_reference_and_only_lines_holding_enlarged_text_grow() {
+        assertEquals(listOf(.7f,.8f,.9f,1f,1.15f,1.35f,1.6f),(-3..3).map(::sizeStep))
+        val style=androidx.compose.ui.text.TextStyle(fontSize=16.sp,lineHeight=23.sp)
+        val text=androidx.compose.ui.text.buildAnnotatedString {append("quiet\nHello");addStyle(androidx.compose.ui.text.SpanStyle(fontSize=1.6f.em),6,11)}
+        val (sized,sizedStyle)=sizedParagraphs(text,style)
+        val plain=sized.paragraphStyles.single()
+        assertEquals(0 to 5,plain.start to plain.end)
+        assertEquals(23f,plain.item.lineHeight.value,.01f)
+        assertTrue(sizedStyle.lineHeight==androidx.compose.ui.unit.TextUnit.Unspecified)
+        assertEquals(style,sizedParagraphs(androidx.compose.ui.text.AnnotatedString("plain"),style).second)
+        // A wrapped big3 run must not stretch the body-only line that follows it.
+        val long=androidx.compose.ui.text.buildAnnotatedString {
+            append("Before Hello there, this is a long run that wraps; and after it, quietly, all the way to the very end of the paragraph.")
+            addStyle(androidx.compose.ui.text.SpanStyle(fontSize=1.6f.em),7,50)
+        }
+        var layout:androidx.compose.ui.text.TextLayoutResult?=null
+        ui.setContent {val (t,s2)=sizedParagraphs(long,style);androidx.compose.material3.Text(t,Modifier.width(220.dp),style=s2,onTextLayout={layout=it})}
+        ui.runOnIdle {
+            val l=checkNotNull(layout);val last=l.lineCount-1
+            assertTrue(l.getLineStart(last)>50 && l.lineCount>=3)
+            val body=with(ui.density) {23.sp.toPx()}
+            assertTrue(l.getLineBottom(last)-l.getLineTop(last)<=body*1.15f,"body line ${l.getLineBottom(last)-l.getLineTop(last)} vs $body")
+        }
+    }
+    @OptIn(ExperimentalTestApi::class) @Test fun a_hidden_spoiler_keeps_its_size_and_weight_so_revealing_never_reflows() {
+        val rich=RichText("A secret that is big and bold here",listOf(RichSpan(2,26,flags=setOf("bold"),size=3,reveal="spoiler")))
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotion provides MotionPolicy(true)) {
+            Box(Modifier.width(240.dp).testTag("effect")) {RichMessageText(rich)}
+        }}}
+        val before=ui.onNodeWithTag("effect").fetchSemanticsNode().size
+        ui.onNode(hasText("[Spoiler, hidden]",substring=true)).performCustomAccessibilityActionWithLabel("Reveal")
+        ui.onNodeWithText("A secret that is big and bold here").assertExists()
+        assertEquals(before,ui.onNodeWithTag("effect").fetchSemanticsNode().size)
+    }
+    @OptIn(ExperimentalTestApi::class) @Test fun screen_readers_hear_neither_redactions_nor_hidden_text_and_can_reveal_it() {
+        val rich=RichText("Pin [REDACTED] then spoil and scratch",listOf(RichSpan(4,14,redaction=8),RichSpan(20,25,reveal="spoiler"),RichSpan(30,37,reveal="scratch")))
+        ui.setContent {MaterialTheme {CompositionLocalProvider(LocalMotion provides MotionPolicy(true)) {RichMessageText(rich)}}}
+        ui.onNodeWithText("Pin [REDACTED] then [Spoiler, hidden] and [Scratch to reveal, hidden]").assertExists()
+        ui.onAllNodes(hasText("xxxx",substring=true)).assertCountEquals(0)
+        ui.onAllNodes(hasText("spoil",substring=true,ignoreCase=false).and(hasText("Spoiler",substring=true).not())).assertCountEquals(0)
+        ui.onNode(hasText("[Scratch to reveal, hidden]",substring=true)).performCustomAccessibilityActionWithLabel("Reveal 2")
+        ui.onNodeWithText("Pin [REDACTED] then [Spoiler, hidden] and scratch").assertExists()
+        ui.onNode(hasText("[Spoiler, hidden]",substring=true)).performCustomAccessibilityActionWithLabel("Reveal")
+        ui.onNodeWithText("Pin [REDACTED] then spoil and scratch").assertExists()
+    }
+    @Test fun a_redaction_bar_parts_from_every_ground_at_three_to_one() {
+        val white=androidx.compose.ui.graphics.Color.White
+        listOf(androidx.compose.ui.graphics.Color(0xff202020),androidx.compose.ui.graphics.Color(0xff4f4f4f),androidx.compose.ui.graphics.Color(0xff2b2b2b)).forEach {ground->
+            assertTrue(contrastRatio(redactionRing(ground,white),ground)>=3f)
+        }
+        assertTrue(contrastRatio(androidx.compose.ui.graphics.Color(0xff1b1b1b),androidx.compose.ui.graphics.Color(0xffececec))>=3f)
+    }
+    @Test fun a_spoiler_veil_reads_on_dark_and_light_bubbles() {
+        var dark by mutableStateOf(true)
+        ui.setContent {MaterialTheme {
+            val ground=if(dark)androidx.compose.ui.graphics.Color(0xff2b2b2b) else androidx.compose.ui.graphics.Color(0xffececec)
+            val ink=if(dark)androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color(0xff1b1b1b)
+            CompositionLocalProvider(LocalMotion provides MotionPolicy(true),LocalMessageSurface provides ground,androidx.compose.material3.LocalContentColor provides ink) {
+                Box(Modifier.testTag("effect").background(ground)) {RichMessageText(RichText("hidden words",listOf(RichSpan(0,12,reveal="spoiler"))))}
+            }
+        }}
+        repeat(2) {
+            val ground=if(dark)androidx.compose.ui.graphics.Color(0xff2b2b2b) else androidx.compose.ui.graphics.Color(0xffececec)
+            val marked=pixels().count {kotlin.math.abs(it.luminance()-ground.luminance())>.04f}
+            assertTrue(marked>pixels().size/20,"veil marks only $marked pixels")
+            ui.runOnIdle {dark=false}
+        }
     }
 }

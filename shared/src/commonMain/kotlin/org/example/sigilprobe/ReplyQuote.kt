@@ -67,9 +67,12 @@ internal fun RichText.quotePlain(): String = buildString {
 private fun MessagePart.title() = rich?.quotePlain()?.takeIf { it.isNotBlank() } ?: text.replace(Regex("\\s+"), " ").trim()
 private fun details(vararg values: String?) = values.filterNot { it.isNullOrBlank() }.joinToString(" · ")
 
-// What a text-only quote reads; concealed spans stay covered.
+// What a text-only quote reads: the rendered words, never markup; concealed spans stay covered.
 fun quoteText(parts: List<MessagePart>, fallback: String?): String? =
-    if (parts.isNotEmpty() && parts.all { it.kind == "text" } && parts.any { p -> p.rich?.spans.orEmpty().any { it.reveal.isNotEmpty() || it.redaction > 0 } }) parts.joinToString(" ") { it.title() } else fallback
+    if (parts.isNotEmpty() && parts.all { it.kind == "text" } && parts.any { p -> p.rich?.let { it.spans.isNotEmpty() || it.blocks.isNotEmpty() || it.text != p.text } == true })
+        parts.joinToString(" ") { p -> p.title().let { if (p.rich?.blocks.isNullOrEmpty()) it else it.replace(BlockMarkers, "") } } else fallback
+// List bullets, task boxes and a quote's `>` that the layout draws as structure.
+private val BlockMarkers = Regex("""(?<=^| )(?:[•>]|\[[ xX]]) (?=\S)""")
 
 private fun diceLine(utility: UtilityContent): String {
     val faces = utility.details.mapNotNull { it.text.substringAfter(" · ", "").takeIf(String::isNotBlank) }
@@ -81,7 +84,11 @@ private fun diceLine(utility: UtilityContent): String {
     }
 }
 
-fun cardQuote(parts: List<MessagePart>): CardQuote? {
+// A relative day word reads mid-sentence in lower case.
+private fun dayWord(label: String) = listOf("Today", "Yesterday", "Tomorrow").firstOrNull { label.startsWith(it) }?.let { it.lowercase() + label.removePrefix(it) } ?: label
+
+@OptIn(kotlin.time.ExperimentalTime::class)
+fun cardQuote(parts: List<MessagePart>, now: Long = kotlin.time.Clock.System.now().epochSeconds): CardQuote? {
     val part = parts.firstOrNull { it.kind != "text" } ?: return null
     val utility = part.utility
     val service = part.service
@@ -89,15 +96,17 @@ fun cardQuote(parts: List<MessagePart>): CardQuote? {
     val diagram = part.diagram
     val table = part.table
     return when {
+        part.kind == "poll" && part.scale > 0 -> CardQuote("Rating", "star", part.title())
         part.kind == "poll" -> CardQuote("Poll", "ballot", part.title())
-        part.kind in listOf("checklist", "task", "recurring") -> CardQuote(when (part.kind) { "task" -> "Task"; "recurring" -> "Recurring checklist"; else -> "Checklist" },
+        part.kind in listOf("checklist", "task", "recurring") -> CardQuote(when (part.kind) { "task" -> "Task list"; "recurring" -> "Recurring checklist"; else -> "Checklist" },
             when (part.kind) { "task" -> "assignment"; "recurring" -> "event_repeat"; else -> "checklist" },
             details(part.title().ifBlank { part.items.firstOrNull()?.let { it.rich?.quotePlain() ?: it.text } }, part.items.takeIf { it.isNotEmpty() }?.let { "${it.count(CardItem::checked)} of ${it.size} done" }))
         part.kind == "note" -> CardQuote("Note", "description", part.title())
         part.kind == "reminder" -> CardQuote("Reminder", "notifications_active", details(part.title(), part.date))
-        part.kind == "countdown" -> CardQuote("Countdown", "hourglass_bottom", details(part.title(), part.date))
+        part.kind == "countdown" -> CardQuote("Countdown", "calendar_month", details(part.title(), part.date))
         part.kind == "ago" -> CardQuote("Elapsed time", "history", details(part.title(), part.date))
-        part.kind == "timer" -> CardQuote("Timer", "timer", details(part.title(), part.date))
+        part.kind == "timer" -> CardQuote("Timer", "timer", details(part.title().takeIf { it != "Timer" }, part.startedAt.takeIf { it in 1 until part.at }?.let { temporalSpan(part.at - it) },
+            part.date.takeIf { it.isNotBlank() }?.let { "${if (part.at <= now) "ended" else "ends"} ${dayWord(it)}" }))
         part.kind == "location" -> CardQuote("Location", "location_on", part.title().takeIf { it.isNotBlank() && it !in listOf("My location", "Dropped pin") }
             ?: when (part.locationMode) { "live" -> "Live location"; "once" -> "Shared location"; else -> "Dropped pin" })
         table != null -> CardQuote("Table", "table", details(table.columns.joinToString(", ") { it.quotePlain() }, "${table.rows.size} ${if (table.rows.size == 1) "row" else "rows"}"))
@@ -125,6 +134,7 @@ fun cardQuote(parts: List<MessagePart>): CardQuote? {
             "swatch" -> CardQuote("Color swatch", "palette", utility.rgba?.let(::swatchHex) ?: utility.display, rgba = utility.rgba)
             "keys" -> CardQuote("Keyboard shortcut", "keyboard", utility.details.joinToString(" + ") { keyFace(it.quotePlain()).let { k -> k.word.ifEmpty { k.spoken } } })
             "rating" -> CardQuote("Rating", "star", utility.display)
+            "help" -> CardQuote("SigilText help", "help", utility.display)
             "progress" -> CardQuote("Progress", "data_usage", details(utility.display, utility.rich?.quotePlain()))
             "quote" -> CardQuote("Quote", "format_quote", details(utility.rich?.quotePlain()?.takeIf { it.isNotBlank() }?.let { "“$it”" }, utility.secondary?.quotePlain()))
             "art" -> CardQuote("ASCII art", "draw")

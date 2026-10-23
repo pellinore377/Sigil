@@ -41,13 +41,14 @@ private external interface BrowserDateOptions:JsAny {val timeZone:String}
 @JsName("Object") private external class BrowserCalendarOptions:JsAny {var day:String;var month:String;var year:String}
 private val timeOptions=BrowserTimeOptions().apply {hour="numeric";minute="2-digit"}
 private fun clock(value:Long)=if(value==0L)"" else BrowserDate(value*1000.0).toLocaleTimeString(window.navigator.language,timeOptions)
-private fun calendar(value:Long):String {
+internal fun calendar(value:Long):String {
     if(value==0L)return ""
     val date=BrowserDate(value*1000.0)
     val today=BrowserDate(BrowserDate.now())
     val yesterday=BrowserDate(BrowserDate.now()).apply{setDate(getDate()-1)}
+    val tomorrow=BrowserDate(BrowserDate.now()).apply{setDate(getDate()+1)}
     fun same(a:BrowserDate,b:BrowserDate)=a.getFullYear()==b.getFullYear() && a.getMonth()==b.getMonth() && a.getDate()==b.getDate()
-    val label=when{same(date,today)->"Today";same(date,yesterday)->"Yesterday";else->date.toLocaleDateString(window.navigator.language,BrowserCalendarOptions().apply{day="numeric";month="long";if(date.getFullYear()!=today.getFullYear())year="numeric"})}
+    val label=when{same(date,today)->"Today";same(date,yesterday)->"Yesterday";same(date,tomorrow)->"Tomorrow";else->date.toLocaleDateString(window.navigator.language,BrowserCalendarOptions().apply{day="numeric";month="long";if(date.getFullYear()!=today.getFullYear())year="numeric"})}
     return "$label, ${clock(value)}"
 }
 private fun dateOrder():String {

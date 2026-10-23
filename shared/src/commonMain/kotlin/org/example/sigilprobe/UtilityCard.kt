@@ -29,7 +29,7 @@ internal fun utilityLabel(value: UtilityContent) = when (value.kind) {
         "wifi" -> "Wi-Fi QR code"; "contact" -> "Contact QR code"; else -> "QR code"
     }
     "dice" -> "Dice"; "pick" -> if(value.motion?.kind=="coin")"Coin flip" else "Choice"; "random" -> "Random number"; "swatch" -> "Color"
-    "keys" -> "Keyboard shortcut"; "rating" -> "Rating"; "progress" -> "Progress"; "quote" -> "Quote"; else -> "Details"
+    "keys" -> "Keyboard shortcut"; "rating" -> "Rating"; "progress" -> "Progress"; "quote" -> "Quote"; "help" -> "SigilText help"; else -> "Details"
 }
 internal fun utilityAction(value: UtilityContent) = when (value.kind) { "qr" -> "QR code"; "math" -> "formula"; else -> utilityLabel(value).lowercase() }
 
@@ -41,7 +41,7 @@ internal fun UtilityCard(value: UtilityContent, mine: Boolean = false, open: (()
     if (value.kind == "progress") { ProgressCard(value); return }
     if (value.kind == "rating") { RatingCard(value); return }
     if (value.kind == "random") { NumberPickCard(value); return }
-    when (value.kind) { "quote" -> { PullQuoteCard(value); return }; "keys" -> { KeysCard(value); return }; "swatch" -> { SwatchCard(value); return } }
+    when (value.kind) { "quote" -> { PullQuoteCard(value); return }; "keys" -> { KeysCard(value); return }; "swatch" -> { SwatchCard(value); return }; "help" -> { HelpCard(value); return } }
     when (value.kind) { "calculation" -> { CalculationCard(value); return }; "conversion" -> { ConversionCard(value); return }; "math" -> { MathCard(value); return } }
     val clipboard = LocalClipboardManager.current
     val clock=LocalTextMotion.current?.clock

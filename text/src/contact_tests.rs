@@ -148,3 +148,25 @@ fn contact_cards_accept_the_address_without_a_second_at_sign() {
         assert!(matches!(draft.content, crate::Parsed::Card(_)), "{source}");
     }
 }
+
+#[test]
+fn written_mentions_bind_in_order_and_present_in_utf16() {
+    let known = [contact(1, "@ari:one.example"), contact(2, "@ari:two.example")];
+    let text = parse("**Hé** @ari, `@ari` and @ari.", Limits::default())
+        .unwrap()
+        .bind_written_mentions(&[
+            ("@ari".into(), known[0].clone()),
+            ("@ari".into(), known[0].clone()),
+            ("@ari".into(), known[1].clone()),
+        ]);
+    assert_eq!(text.mentions().len(), 2);
+    assert_eq!(text.mentions()[0].user_id, [1; 32]);
+    assert_eq!(text.mentions()[1].user_id, [2; 32]);
+    let view = serde_json::to_value(text.presentation()).unwrap();
+    assert_eq!(view["mentions"][0]["start"], 3);
+    assert_eq!(view["mentions"][0]["address"], "@ari:one.example");
+    assert_eq!(view["mentions"][1]["identity"], "02".repeat(32));
+    let plain = parse("x@ari.com @ario", Limits::default()).unwrap().bind_written_mentions(&[("@ari".into(), known[0].clone())]);
+    assert!(plain.mentions().is_empty());
+    assert!(serde_json::to_value(plain.presentation()).unwrap().get("mentions").is_none());
+}

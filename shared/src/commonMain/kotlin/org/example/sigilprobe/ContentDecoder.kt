@@ -35,8 +35,8 @@ private fun previewPart(p:WireObject,date:(Long)->String):org.sigil.MessagePart 
         items=if(items==null)emptyList() else (0 until items.length()).map { i ->
             val item=items.getJSONObject(i)
             org.sigil.CardItem(item.getString("id"),item.getString("text"),item.getBoolean("checked"),false,rich=item.richText(),persistent=item.optBoolean("persistent"))
-        },multiple=p.optBoolean("multiple"),rich=p.richText(),table=p.tableContent(),recipe=p.recipeContent(),chart=p.chartContent(),diagram=p.diagramContent(),utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),
-        date=if(p.has("date"))p.optString("date") else if(p.has("at"))date(p.getLong("at"))else "",
+        },multiple=p.optBoolean("multiple"),scale=p.optInt("scale"),rich=p.richText(),table=p.tableContent(),recipe=p.recipeContent(),chart=p.chartContent(),diagram=p.diagramContent(),utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),dayStart=p.optLong("day_start"),dateIso=p.optString("date_iso"),timed=p.optBoolean("timed"),
+        date=p.cardDate(date),
         previewParts=p.optJSONArray("parts")?.let {parts->(0 until parts.length()).map {previewPart(parts.getJSONObject(it),date)}} ?: emptyList(),
         randomizerPreview=p.optJSONObject("randomizer")?.let {r->RandomizerPreview(r.getString("kind"),r.getJSONArray("sides").let {sides->(0 until sides.length()).map {sides.getInt(it)}})},
         previewIntent=p.optJSONObject("intent")?.let {v->PreviewIntent(v.getString("tool"),v.getString("text"),v.getString("language"),v.getBoolean("forecast"),v.getBoolean("ready"),v.getInt("start"),v.getInt("end"))})
@@ -48,15 +48,23 @@ private fun messagePart(p:WireObject,date:(Long)->String):org.sigil.MessagePart 
     return org.sigil.MessagePart(p.optString("id"),p.getString("kind"),p.getString("text"),
         items=if(items==null)emptyList() else (0 until items.length()).map {i->
             val item=items.getJSONObject(i)
-            org.sigil.CardItem(item.getString("id"),item.getString("text"),item.getBoolean("checked"),item.optBoolean("enabled"),if(item.isNull("count"))null else item.getLong("count"),item.richText(),item.optBoolean("persistent"))
-        },multiple=p.optBoolean("multiple"),closed=p.optBoolean("closed"),voters=if(p.isNull("voters"))null else p.getLong("voters"),
-        date=if(p.has("date"))p.getString("date") else if(p.has("at"))date(p.getLong("at")) else "",
+            org.sigil.CardItem(item.getString("id"),item.getString("text"),item.getBoolean("checked"),item.optBoolean("enabled"),if(item.isNull("count"))null else item.getLong("count"),item.richText(),item.optBoolean("persistent"),
+                item.optLong("done_at"),item.optBoolean("done_mine"),item.optLong("undo_until"),if(item.optLong("done_at")>0)date(item.optLong("done_at")) else "",item.optString("done_by"))
+        },multiple=p.optBoolean("multiple"),scale=p.optInt("scale"),closed=p.optBoolean("closed"),voters=if(p.isNull("voters"))null else p.getLong("voters"),
+        date=p.cardDate(date),
         latitude=p.optInt("latitude_e6")/1_000_000.0,longitude=p.optInt("longitude_e6")/1_000_000.0,rich=p.richText(),locationMode=p.optString("location_mode","pin"),
         sampledAt=p.optLong("sampled_at"),accuracyCm=if(p.isNull("accuracy_cm"))null else p.getLong("accuracy_cm"),until=if(p.isNull("until"))null else p.getLong("until"),
         stopped=p.optBoolean("stopped"),canStop=p.optBoolean("can_stop"),table=p.tableContent(),recipe=p.recipeContent(),chart=p.chartContent(),diagram=p.diagramContent(),
-        utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),canClose=p.optBoolean("can_close"))
+        utility=p.utilityContent(),service=p.serviceContent(),contact=p.contactContent(),at=p.optLong("at"),startedAt=p.optLong("started_at"),dayStart=p.optLong("day_start"),dateIso=p.optString("date_iso"),timed=p.optBoolean("timed"),canClose=p.optBoolean("can_close"))
 }
 
+// A recurring reset reads in the viewer's clock; the core's label, in the rule's own zone, is the fallback.
+private fun WireObject.cardDate(date:(Long)->String)=when {
+    has("interval") && optLong("at")>0->resetLabel(getString("interval"),date(getLong("at")),viewerWeekday(getLong("at")),optString("date").substringAfter(" · resets ",""),optString("timezone"),viewerZone())
+    has("date")->getString("date")
+    has("at")->date(getLong("at"))
+    else->""
+}
 private fun WireObject.richText(): RichText? = optJSONObject("rich")?.let { it.richValue() }
 private fun WireObject.contactContent(): org.sigil.ContactContent? = optJSONObject("contact")?.let { c ->
     org.sigil.ContactContent(c.getString("address"),c.getJSONObject("name").richValue(),c.getString("identity"),if(c.isNull("vcard"))null else c.getString("vcard"))
@@ -95,7 +103,8 @@ private fun WireObject.richValue(): RichText {
         RichSpan(span.getInt("start"), span.getInt("end"), flags, colors, size, reveal, link, redaction)
     }, rich.getJSONArray("blocks").objects().map { block ->
         val kind = block.getJSONObject("kind")
-        RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"), if (kind.isNull("language")) "" else kind.getString("language"))
+        RichBlock(block.getInt("start"), block.getInt("end"), kind.getString("kind"), kind.optInt("level"), if (kind.isNull("language")) "" else kind.getString("language"),
+            block.optInt("depth"), if (kind.isNull("start")) null else kind.getLong("start"))
     }, rich.optJSONArray("code_tokens")?.objects()?.map { CodeToken(it.getInt("start"), it.getInt("end"), it.getString("role")) }.orEmpty(),
         rich.optJSONArray("motion")?.objects()?.map { run ->
             val p=run.getJSONObject("parameters")
@@ -103,7 +112,8 @@ private fun WireObject.richValue(): RichText {
             org.sigil.TextMotion(run.getString("animation"),p.getInt("duration_ms"),p.getString("mode"),p.getInt("amplitude_milli")/1000f,p.getInt("stagger_ms"),p.getInt("particles"),
                 p.optBoolean("line_scope"),p.getString("caret"),p.getString("substitutions"),
                 (0 until units.length()).map { units.getJSONArray(it).let { u->u.getInt(0) to u.getInt(1) } })
-        }.orEmpty())
+        }.orEmpty(),
+        rich.optJSONArray("mentions")?.objects()?.map { org.sigil.RichMention(it.getInt("start"), it.getInt("end"), it.getString("address"), it.getString("identity")) }.orEmpty())
 }
 
 private fun WireObject.tableContent(): TableContent? = optJSONObject("table")?.let { table ->
@@ -163,7 +173,7 @@ private fun WireObject.utilityContent(): org.sigil.UtilityContent? = optJSONObje
             }}.orEmpty()
             val frames=m.optJSONArray("frames")?.let {a->(0 until minOf(12,a.length())).map(a::getString)}.orEmpty()
             org.sigil.RandomizerMotion(m.getString("kind"),dice,frames,m.optInt("selected"),m.optString("result"))
-        }, u.optBoolean("block", true))
+        }, u.optBoolean("block", true), u.optJSONArray("entries")?.let { a -> (0 until a.length()).map { a.getJSONObject(it).let { e -> org.sigil.HelpEntry(e.getString("label"), e.getString("code")) } } }.orEmpty())
 }
 
 private fun WireObject.serviceContent(): org.sigil.ServiceContent? = optJSONObject("service")?.let { s ->

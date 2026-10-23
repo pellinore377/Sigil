@@ -13,7 +13,7 @@ data class ChatMessage(val id: String, val author: String, val text: String, val
     val timestamp: Long = 0, val separator: String = "", val readers: List<String> = emptyList(), val noted: Boolean = false,
     val threadAuthor: String? = null, val threadMessage: String? = null, val editable: Boolean = true, val kind: String = "Text", val peer: String = "", val attachment: AttachmentDetails? = null, val parts: List<MessagePart> = emptyList(), val threadPreview: String? = null, val replyAuthor: String? = null, val replyMine: Boolean = false, val replyMessage: String? = null, val replyAttachment: AttachmentDetails? = null, val replyParts: List<MessagePart> = emptyList(), val threadParts: List<MessagePart> = emptyList())
 data class MessagePart(val id: String, val kind: String, val text: String, val items: List<CardItem> = emptyList(), val multiple: Boolean = false, val closed: Boolean = false, val voters: Long? = null, val date: String = "", val latitude: Double = 0.0, val longitude: Double = 0.0, val rich: RichText? = null,
-    val locationMode: String = "pin", val sampledAt: Long = 0, val accuracyCm: Long? = null, val until: Long? = null, val stopped: Boolean = false, val canStop: Boolean = false, val table: TableContent? = null, val recipe: RecipeContent? = null, val chart: ChartContent? = null, val diagram: DiagramContent? = null, val utility: UtilityContent? = null, val service: ServiceContent? = null, val contact: ContactContent? = null, val at:Long=0, val startedAt:Long=0, val previewParts:List<MessagePart> = emptyList(), val randomizerPreview:RandomizerPreview?=null, val previewIntent:PreviewIntent?=null, val canClose:Boolean=false)
+    val locationMode: String = "pin", val sampledAt: Long = 0, val accuracyCm: Long? = null, val until: Long? = null, val stopped: Boolean = false, val canStop: Boolean = false, val table: TableContent? = null, val recipe: RecipeContent? = null, val chart: ChartContent? = null, val diagram: DiagramContent? = null, val utility: UtilityContent? = null, val service: ServiceContent? = null, val contact: ContactContent? = null, val at:Long=0, val startedAt:Long=0, val previewParts:List<MessagePart> = emptyList(), val randomizerPreview:RandomizerPreview?=null, val previewIntent:PreviewIntent?=null, val canClose:Boolean=false, val scale:Int=0, val dayStart:Long=0, val dateIso:String="", val timed:Boolean=false)
 data class ContactContent(val address: String,val name: RichText,val identity: String,val vcard: String?)
 data class TableContent(val columns: List<RichText>, val rows: List<List<RichText>>, val numericOrder: List<List<Int>?>, val copyRows: List<String?>, val copyTable: String?)
 data class RecipeContent(val title: RichText, val serves: Int?, val originalServes: Int?, val seconds: Long?, val ingredients: List<RichText>, val scaled: List<Boolean>, val steps: List<RichText>)
@@ -23,12 +23,15 @@ data class DiagramContent(val kind: String, val title: RichText, val width: Floa
 data class DiagramNode(val label: RichText, val shape: String, val x: Float, val y: Float)
 data class DiagramEdge(val from: Int, val to: Int, val label: RichText, val dashed: Boolean, val y: Float)
 data class DiagramEntry(val date: RichText, val label: RichText)
-data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null, val persistent: Boolean = false)
-data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList(), val motion: List<TextMotion> = emptyList())
+data class CardItem(val id: String, val text: String, val checked: Boolean, val enabled: Boolean, val count: Long? = null, val rich: RichText? = null, val persistent: Boolean = false,
+    val doneAt: Long = 0, val doneMine: Boolean = false, val undoUntil: Long = 0, val done: String = "", val doneBy: String = "")
+data class RichText(val text: String, val spans: List<RichSpan> = emptyList(), val blocks: List<RichBlock> = emptyList(), val codeTokens: List<CodeToken> = emptyList(), val motion: List<TextMotion> = emptyList(), val mentions: List<RichMention> = emptyList())
+/** A mention the sender bound to one identity, in UTF-16 units. */
+data class RichMention(val start: Int, val end: Int, val address: String, val identity: String)
 data class TextMotion(val kind:String,val duration:Int,val mode:String,val amplitude:Float,val stagger:Int,val particles:Int,val lineScope:Boolean,
     val caret:String,val substitutions:String,val units:List<Pair<Int,Int>>)
 data class RichSpan(val start: Int, val end: Int, val flags: Set<String> = emptySet(), val colors: List<String> = emptyList(), val size: Int = 0, val reveal: String = "", val link: String? = null, val redaction: Int = 0)
-data class RichBlock(val start: Int, val end: Int, val kind: String, val level: Int = 0, val language: String = "")
+data class RichBlock(val start: Int, val end: Int, val kind: String, val level: Int = 0, val language: String = "", val depth: Int = 0, val first: Long? = null)
 data class CodeToken(val start: Int, val end: Int, val role: String)
 data class AttachmentDetails(val name: String, val mediaType: String, val bytes: Long, val caption: String = "", val draft: Boolean = false)
 data class CollectionItem(val id: String, val name: String, val icon: String = "folder")
@@ -68,7 +71,8 @@ data class AccountRecovery(val passkeys: List<RecoveryPasskey>, val ready: Boole
 data class TimelineBufferDepth(val ahead: Float, val behind: Float)
 data class LoginMethods(val server: String, val sso: Boolean, val password: Boolean, val invitation: Boolean)
 
-data class UtilityContent(val kind: String, val display: String = "", val alternate: String = "", val copy: String? = null, val rich: RichText? = null, val secondary: RichText? = null, val details: List<RichText> = emptyList(), val selected: Int? = null, val ratio: Float? = null, val rgba: Long? = null, val math: MathTypeset? = null, val qr: QrContent? = null, val motion:RandomizerMotion?=null, val block: Boolean = true)
+data class UtilityContent(val kind: String, val display: String = "", val alternate: String = "", val copy: String? = null, val rich: RichText? = null, val secondary: RichText? = null, val details: List<RichText> = emptyList(), val selected: Int? = null, val ratio: Float? = null, val rgba: Long? = null, val math: MathTypeset? = null, val qr: QrContent? = null, val motion:RandomizerMotion?=null, val block: Boolean = true, val entries: List<HelpEntry> = emptyList())
+data class HelpEntry(val label: String, val code: String)
 data class DieFace(val sides:Int,val face:Int,val marking:String="")
 data class RandomizerMotion(val kind:String,val dice:List<DieFace> = emptyList(),val frames:List<String> = emptyList(),val selected:Int=0,val result:String="")
 data class QrContent(val kind: String, val width: Int, val cells: String, val payload: String, val password: RichText? = null, val concealed: Boolean = false)

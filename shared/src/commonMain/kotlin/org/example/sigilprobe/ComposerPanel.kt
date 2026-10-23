@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.*
 import androidx.compose.ui.*
 import androidx.compose.ui.focus.*
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.platform.*
@@ -266,6 +267,8 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                     }
                     if (voiceAttached) VoiceDraft(voice, Modifier.fillMaxWidth(), { command("record_preview", emptyMap()) }, { command("record_cancel", emptyMap()) }) { command("record_seek", mapOf("position" to it)) }
             }
+            val mentionPicker = remember(peer) { MentionPickerState() }
+            if (!notes) MentionPicker(draft, mentionPicker, Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp))
             val barTop by animateDpAsState(if (previewShown) 0.dp else 8.dp, motionPolicy.tween(MotionMillis), label = "Composer bar inset")
             ComposerBar(top = barTop) {
                 Crossfade(if (panel.isEmpty()) "add" else "close", animationSpec = motionPolicy.tween(MotionMillis), label = "Attach toggle") { icon ->
@@ -289,7 +292,7 @@ internal fun ComposerPanel(draft: TextFieldState, analyze: (String) -> String, e
                         send(source,notes && !editingCaption || helpSource?.endsWith(';')==true || structured,null)
                     } else change("Voice") }
                 val sendEnabled = if(launch?.activeSource!=null)false else if(contextual)confirmation.action?.enabled==true else voice.phase !in listOf("Starting","Saving") && if (hasAttachment) enabled && voice.phase != "Sending" && attachmentDrafts.none { it.phase == "Staging" } else if(hasStructured)enabled else if(helpQuery!=null)true else if (hasText) enabled || requestContact != null else LocalClientFeatures.current.voice
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f).onPreviewKeyEvent { mentionPicker.onKey(it) }, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Composer(draft, analyze, Modifier.fillMaxWidth(), showTools = false, focusRequester = editor, namedFormatting = !hasAttachment && !editingCaption, showSource = showSource, placeholder = if (hasAttachment) "Add text" else "Message", onSubmit = { if (sendEnabled && !contextual && (hasAttachment || hasStructured || hasText)) sendAction() }, onFocus = { if (panel == "Voice") command("record_stop", emptyMap()); if (panel == "Attachments") {keyboardPending=true;panel=""} })
                 }
 

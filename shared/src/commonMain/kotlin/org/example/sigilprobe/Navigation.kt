@@ -186,7 +186,9 @@ fun SigilApp(palette: (Int, Boolean) -> String, analyze: (String) -> String, sta
         BackAction(callDetail != null) { callDetail = null }
         BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = wideLayout && maxWidth >= 1000.dp && state.phase == "connected"
-        CompositionLocalProvider(LocalWideLayout provides wide) {
+        val hostDirectory = LocalMentionDirectory.current
+        val mentionDirectory = remember(hostDirectory, state.chats, state.address) { hostDirectory + mentionDirectory(state.chats, state.address) }
+        CompositionLocalProvider(LocalWideLayout provides wide, LocalMentionDirectory provides mentionDirectory) {
         Row(Modifier.fillMaxSize().background(LocalGlobalWorkspace.current).padding(if (wide) 20.dp else 0.dp), horizontalArrangement = Arrangement.spacedBy(if (wide) 20.dp else 0.dp)) {
         if (wide) SigilTheme(appearance, palette = palette) {
             NavigationPane(state, collection, { collection = it }, selected,

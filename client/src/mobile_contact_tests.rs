@@ -958,3 +958,65 @@ fn a_vote_reaches_the_poll_author_and_every_member() {
     let poll = timeline["messages"].as_array().unwrap().iter().find(|m| m["parts"][0]["kind"] == "poll").unwrap()["parts"][0].clone();
     assert_eq!((poll["closed"].clone(), poll["items"][1]["enabled"].clone(), poll["items"][1]["count"].clone()), (json!(true), json!(false), json!(1)), "{poll}");
 }
+#[test]
+fn a_rating_reaches_the_author_and_can_be_changed_and_closed() {
+    let (_dir, _fixture, mut alice, mut bob, now) = crate::claims::tests::pair();
+    alice.after_sign_in().unwrap();
+    bob.after_sign_in().unwrap();
+    let found = alice.mobile_find("@bob:chat.example").unwrap();
+    let target = found["chats"][0]["id"].as_str().unwrap().to_owned();
+    alice.mobile_request(&target, "send").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    let source = bob.mobile_state().unwrap()["chats"][0]["id"].as_str().unwrap().to_owned();
+    bob.mobile_request(&source, "accept").unwrap();
+    bob.mobile_contact_sync(true).unwrap();
+    alice.mobile_request(&target, "refresh").unwrap();
+    alice.mobile_contact_sync(true).unwrap();
+    let run = |store: &mut ClientStore, value: Value| -> Value {
+        let reply: Value = serde_json::from_str(&store.mobile_command(&value.to_string())).unwrap();
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["value"].clone()
+    };
+    let sync = |store: &mut ClientStore| {
+        for _ in 0..3 {
+            let reply: Value = serde_json::from_str(&store.mobile_command(r#"{"command":"sync","interactive":true}"#)).unwrap();
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+    };
+    let rating = |store: &mut ClientStore, peer: &str| -> (Value, Value) {
+        let timeline = run(store, json!({"command":"timeline","peer":peer}));
+        let message = timeline["messages"].as_array().unwrap().iter().find(|m| m["parts"][0]["scale"] == 5).cloned().expect("rating");
+        (message.clone(), message["parts"][0].clone())
+    };
+    let counts = |card: &Value| card["items"].as_array().unwrap().iter().map(|i| i["count"].as_u64().unwrap_or(0)).collect::<Vec<_>>();
+    run(&mut alice, json!({"command":"post","peer":target,"request":"95".repeat(32),"timestamp":now,"rich":true,"text":"rate::5::Dinner?;"}));
+    sync(&mut alice);
+    sync(&mut bob);
+    let chat = bob.mobile_state().unwrap()["chats"][0]["id"].as_str().unwrap().to_owned();
+    let (message, card) = rating(&mut bob, &chat);
+    assert_eq!((card["kind"].as_str(), card["text"].as_str(), card["items"].as_array().unwrap().len()), (Some("poll"), Some("Dinner?"), 5), "{card}");
+    let rate = |store: &mut ClientStore, peer: &str, card: &Value, score: usize, at: u64| {
+        run(store, json!({"command":"card_action","peer":peer,"author":message["author"],"message":message["id"],"card":card["id"],"choices":[card["items"][score - 1]["id"]],"timestamp":at}));
+    };
+    rate(&mut bob, &chat, &card, 4, now + 1);
+    sync(&mut bob);
+    sync(&mut alice);
+    assert_eq!(counts(&rating(&mut alice, &target).1), [0, 0, 0, 1, 0]);
+    // Changing a rating moves the one vote rather than adding a second.
+    rate(&mut bob, &chat, &card, 2, now + 2);
+    sync(&mut bob);
+    sync(&mut alice);
+    let (_, mine) = rating(&mut alice, &target);
+    assert_eq!((counts(&mine), mine["voters"].clone()), (vec![0, 1, 0, 0, 0], json!(1)), "{mine}");
+    rate(&mut alice, &target, &mine, 5, now + 3);
+    sync(&mut alice);
+    sync(&mut bob);
+    let (_, theirs) = rating(&mut bob, &chat);
+    assert_eq!((counts(&theirs), theirs["voters"].clone(), theirs["items"][1]["checked"].clone()), (vec![0, 1, 0, 0, 1], json!(2), json!(true)), "{theirs}");
+    assert_eq!(theirs["can_close"], false);
+    run(&mut alice, json!({"command":"poll_close","peer":target,"author":message["author"],"message":message["id"],"card":card["id"],"timestamp":now+4}));
+    sync(&mut alice);
+    sync(&mut bob);
+    let (_, closed) = rating(&mut bob, &chat);
+    assert_eq!((closed["closed"].clone(), closed["items"][0]["enabled"].clone(), counts(&closed)), (json!(true), json!(false), vec![0, 1, 0, 0, 1]), "{closed}");
+}

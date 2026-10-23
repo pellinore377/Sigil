@@ -88,6 +88,16 @@ pub struct Presentation<'a> {
     pub code_tokens: Vec<crate::code::Token>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub motion: Vec<crate::motion::Run>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<MentionView>,
+}
+/// A bound mention in UTF-16 units: the identity the sender chose, not one a reader guesses.
+#[derive(Serialize)]
+pub struct MentionView {
+    pub start: u32,
+    pub end: u32,
+    pub address: String,
+    pub identity: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -139,6 +149,40 @@ impl Text {
         });
         mentions.sort_by_key(|mention| mention.start);
         self.with_mentions(mentions)
+    }
+    /// Binds each written `display`, in reading order, to its chosen contact; one that cannot bind stays a plain handle.
+    pub fn bind_written_mentions(mut self, chosen: &[(String, crate::contact::Contact)]) -> Self {
+        let body: Vec<String> = self.body.graphemes(true).map(str::to_owned).collect();
+        let word = |g: Option<&String>| {
+            g.is_some_and(|g| g.chars().all(|c| c.is_alphanumeric() || "_-:@".contains(c)))
+        };
+        let mut at = 0;
+        for (display, contact) in chosen {
+            let want: Vec<&str> = display.graphemes(true).collect();
+            if want.is_empty() || want.len() > body.len() {
+                continue;
+            }
+            let found = (at..=body.len() - want.len()).find(|&i| {
+                let after = body.get(i + want.len());
+                body[i..i + want.len()]
+                    .iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                    && !(i > 0 && (word(body.get(i - 1)) || body[i - 1] == "."))
+                    && !word(after)
+                    && !(after.is_some_and(|g| g == ".") && word(body.get(i + want.len() + 1)))
+            });
+            if let Some(i) = found {
+                if let Ok(bound) = self
+                    .clone()
+                    .bind_mention(i as u32..(i + want.len()) as u32, contact)
+                {
+                    self = bound;
+                }
+                at = i + want.len();
+            }
+        }
+        self
     }
     pub fn blocks(&self) -> &[crate::Block] {
         &self.blocks
@@ -206,6 +250,16 @@ impl Text {
             blocks,
             code_tokens,
             motion: crate::motion::presentation(self),
+            mentions: self
+                .mentions
+                .iter()
+                .map(|m| MentionView {
+                    start: offsets[m.start as usize],
+                    end: offsets[m.end as usize],
+                    address: m.address.clone(),
+                    identity: m.user_id.iter().map(|b| format!("{b:02x}")).collect(),
+                })
+                .collect(),
         }
     }
     /// Selection indices use the same graphemes as effects, never UTF-16 units.

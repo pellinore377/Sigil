@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -63,6 +64,8 @@ private fun bellAngle(t:Float):Float {
     // A drafted timer holds its full span; it starts counting once it has been sent.
     val now=if(preview)part.startedAt else temporalNow(part.at,Long.MAX_VALUE,settles=true)
     val ended=part.at in 1..now
+    // An ended card keeps its relative label true while it stays open, on a minute tick and only while visible.
+    val endedNow=if(ended && !preview)temporalNow(part.at,0L) else now
     val remaining=(part.at-now).coerceAtLeast(0)
     val total=(part.at-part.startedAt).coerceAtLeast(1)
     val swept by animateFloatAsState(if(part.startedAt<=0)0f else (remaining.toFloat()/total).coerceIn(0f,1f),motion.tween(MotionMillis),label="Timer progress")
@@ -92,17 +95,29 @@ private fun bellAngle(t:Float):Float {
             if(bubbleCue!=null)return@drawBehind
             val radius=CardRadius.toPx()
             drawEndCue(cue.value,ink,CueSpreadX.toPx(),CueSpreadY.toPx(),floatArrayOf(radius,radius,radius,radius))
-        }.animateContentSize(motion.tween(MotionMillis)),verticalArrangement=Arrangement.spacedBy(9.dp)) {
+        }.animateContentSize(motion.tween(MotionMillis)).padding(vertical=4.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         if(part.at<=0) {Text("No timer set.",style=MaterialTheme.typography.bodyMedium);return@Column}
         TimerFlap(temporalDigits(remaining),regular,{settled.value},if(ended)"Timer ended" else "${temporalSpan(remaining)} remaining")
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(7.dp)) {
             Box(Modifier.graphicsLayer {rotationZ=if(bell.value>=1f)0f else bellAngle(bell.value);transformOrigin=TransformOrigin(.5f,.2f)}) {Glyph(if(ended)"notifications_active" else "schedule",14)}
             Text(if(ended)"Time's up" else if(preview)"Starts when sent" else "Remaining",style=MaterialTheme.typography.labelMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=1,overflow=TextOverflow.Ellipsis)
         }
-        if(!ended)Box(Modifier.fillMaxWidth().height(2.dp).clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current.copy(alpha=.12f))) {
-            Box(Modifier.fillMaxHeight().fillMaxWidth(swept).clip(RoundedCornerShape(2.dp)).background(LocalContentColor.current.copy(alpha=.5f)))
+        // The track yields to when the timer ended; the ended card says so in words.
+        if(!ended)Box(Modifier.fillMaxWidth().height(4.dp).clip(CircleShape).background(ink.copy(alpha=.12f))) {
+            Box(Modifier.fillMaxHeight().fillMaxWidth(swept).clip(CircleShape).background(ink.copy(alpha=.55f)))
         }
+        else Text(timerEnded(part.at,endedNow,part.date),style=MaterialTheme.typography.labelMedium.copy(fontFeatureSettings="tnum, lnum"),color=ink.copy(alpha=.68f),maxLines=2,overflow=TextOverflow.Ellipsis)
     }
+}
+
+// The end reads from absolute time: its clock within a day, then whole days; the decoded day word may be stale.
+internal fun timerEnded(at:Long,now:Long,label:String):String {
+    val span=(now-at).coerceAtLeast(0L)
+    fun unit(count:Long,name:String)="$count $name${if(count==1L)"" else "s"} ago"
+    if(span>=86400L)return "Ended ${unit(span/86400L,"day")}"
+    val ago=if(span<60L)"just now" else if(span<3600L)unit(span/60L,"minute") else unit(span/3600L,"hour")
+    val clock=label.substringAfterLast(", ","").trim()
+    return if(clock.isEmpty())"Ended $ago" else "Ended $clock · $ago"
 }
 
 // The reference's endCue: a box-shadow band spreading from the edge, brightest at 0.38 of the cue, then two rings; all follow the corners.

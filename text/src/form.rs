@@ -53,6 +53,7 @@ if r[0]==section {s.push_str(&format!("\n- {}",literal(&r[1])));}}}
         "Countdown"|"Elapsed time"=>format!("{}::{}::{title}",if f.kind=="Countdown"{"countdown"}else{"ago"},field(0).trim()),
         "Calculation"=>format!("calc::{}",line(0)),
         "Conversion"=>format!("convert::{} {}",line(0),line(1)),
+        "Rating" if f.mode=="ask"=>format!("rate::{}::{title}",field(1).trim()),
         "Rating"=>format!("rate::{}/{}",field(0).trim(),field(1).trim()),
         "Progress"=>format!("progress::{}{}",field(0).trim(),if title.is_empty(){String::new()}else{format!("::{title}")}),
         "Color swatch"=>format!("swatch::{}",field(0).trim()),
@@ -176,12 +177,12 @@ fn card_preview(card:&crate::structured::Card,random:bool,now:u64)->Result<Value
         Construct::Checklist(v)=>{
             use crate::structured::ListMode;
             value["kind"]=json!(match v.mode {ListMode::Task=>"task",ListMode::Recurring(_)=>"recurring",ListMode::Standard=>"checklist"});
-            if let ListMode::Recurring(rule)=&v.mode {value["date"]=json!(rule.reset_label(now)?);}
+            if let ListMode::Recurring(rule)=&v.mode {value["date"]=json!(rule.reset_label(now)?);value["at"]=json!(rule.next_reset(now)?);value["interval"]=json!(rule.interval.name());value["timezone"]=json!(rule.timezone);}
             value["text"]=json!(v.title.body());value["rich"]=json!(v.title.presentation());
             value["items"]=Value::Array(v.items.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":item.checked,"enabled":false,"persistent":item.persistent})).collect());
         }
-        Construct::Poll(v)=>{value["kind"]=json!("poll");value["text"]=json!(v.question.body());value["rich"]=json!(v.question.presentation());value["multiple"]=json!(!matches!(v.selection,crate::structured::Selection::Single));value["items"]=Value::Array(v.options.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":false,"enabled":false})).collect());}
-        Construct::Countdown(v)|Construct::Ago(v)|Construct::Reminder(v)=>{value["kind"]=json!(match &card.content {Construct::Countdown(_)=>"countdown",Construct::Ago(_)=>"ago",_=>"reminder"});value["text"]=json!(v.text.body());value["at"]=json!(v.at);}
+        Construct::Poll(v)=>{value["kind"]=json!("poll");value["text"]=json!(v.question.body());value["rich"]=json!(v.question.presentation());value["multiple"]=json!(!matches!(v.selection,crate::structured::Selection::Single));if let Some(n)=v.scale{value["scale"]=json!(n);}value["items"]=Value::Array(v.options.iter().enumerate().map(|(i,item)|json!({"id":i.to_string(),"text":item.text.body(),"rich":item.text.presentation(),"checked":false,"enabled":false})).collect());}
+        Construct::Countdown(v)|Construct::Ago(v)|Construct::Reminder(v)=>{value["kind"]=json!(match &card.content {Construct::Countdown(_)=>"countdown",Construct::Ago(_)=>"ago",_=>"reminder"});value["text"]=json!(v.text.body());value["rich"]=json!(v.text.presentation());value["at"]=json!(v.at);if !matches!(card.content,Construct::Reminder(_)) {if let Value::Object(day)=v.day()? {value.as_object_mut().ok_or(Error::Invalid)?.extend(day);}}}
         Construct::Timer(v)=>{value["kind"]=json!("timer");value["text"]=json!("Timer");value["at"]=json!(v.ends_at);value["started_at"]=json!(v.started_at);}
         Construct::Contact(v)=>{value["kind"]=json!("contact");value["contact"]=v.presentation()?;}
         _=>return Err(Error::Invalid),
@@ -282,6 +283,8 @@ mod tests {
             let rows:Vec<&[&str]>=if kind=="Recipe"{vec![&["ingredients","200g pasta"],&["steps","Boil water"]]}else{vec![]};
             let s=form(kind,"",&fields,&rows);assert!(preview(&s).is_ok(),"{s}");
         }
+        let ask=form("Rating","ask",&["","10"],&[]);assert_eq!(ask,"rate::10::Example;");
+        let v:Value=serde_json::from_str(&preview(&ask).unwrap()).unwrap();assert_eq!((v["kind"].as_str(),v["scale"].as_u64()),(Some("poll"),Some(10)),"{v}");
         for mode in ["weekly","monthly","yearly"] {let s=form("Recurring checklist",mode,&[],&[&["Milk; eggs","true"]]);assert!(preview(&s).is_ok(),"{s}");}
         for (mode,fields) in [("text",vec!["Hello; world"]),("link",vec!["https://example.test/a?q=2"]),("wifi",vec!["Network","p:a;s"])] {let s=form("QR code",mode,&fields,&[]);assert!(preview(&s).is_ok(),"{s}");}
     }

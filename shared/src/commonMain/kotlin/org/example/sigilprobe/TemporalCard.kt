@@ -65,18 +65,21 @@ private fun addMonths(year:Long,month:Int,day:Int,count:Long):Triple<Long,Int,In
     val shiftedMonth=total.mod(12L).toInt()+1
     return Triple(shiftedYear,shiftedMonth,minOf(day,monthLength(shiftedYear,shiftedMonth)))
 }
-// Calendar subtraction, so a years/months/days readout agrees with a calendar. Boundaries are UTC.
-internal fun temporalComponents(from:Long,to:Long):List<Pair<Long,String>> {
-    if(to<=from)return emptyList()
-    var seconds=to.mod(86400L)-from.mod(86400L)
-    var end=to.floorDiv(86400L)
-    if(seconds<0L) {seconds+=86400L;end--}
-    val (fromYear,fromMonth,fromDay)=civilFromDays(from.floorDiv(86400L))
-    val (endYear,endMonth,_)=civilFromDays(end)
+// Calendar subtraction between two civil days, so a years/months/days readout agrees with a calendar.
+internal fun calendarSteps(fromDay:Long,toDay:Long):List<Pair<Long,String>> {
+    if(toDay<=fromDay)return emptyList()
+    val (fromYear,fromMonth,fromDate)=civilFromDays(fromDay)
+    val (endYear,endMonth,_)=civilFromDays(toDay)
     var months=(endYear*12+endMonth)-(fromYear*12+fromMonth)
-    while(months>0L && addMonths(fromYear,fromMonth,fromDay,months).let {daysFromCivil(it.first,it.second,it.third)}>end)months--
-    val days=end-addMonths(fromYear,fromMonth,fromDay,months).let {daysFromCivil(it.first,it.second,it.third)}
-    return listOf(months/12 to "year",months%12 to "month",days to "day",seconds/3600 to "hour",(seconds%3600)/60 to "minute").filter {it.first>0L}
+    while(months>0L && addMonths(fromYear,fromMonth,fromDate,months).let {daysFromCivil(it.first,it.second,it.third)}>toDay)months--
+    val days=toDay-addMonths(fromYear,fromMonth,fromDate,months).let {daysFromCivil(it.first,it.second,it.third)}
+    return listOf(months/12 to "year",months%12 to "month",days to "day").filter {it.first>0L}
+}
+// Days since 1970-01-01 of an ISO yyyy-mm-dd date.
+internal fun isoDay(iso:String):Long? {
+    val parts=iso.split('-').takeIf {it.size==3} ?: return null
+    val (year,month,day)=Triple(parts[0].toLongOrNull() ?: return null,parts[1].toIntOrNull() ?: return null,parts[2].toIntOrNull() ?: return null)
+    return if(month in 1..12 && day in 1..monthLength(year,month))daysFromCivil(year,month,day) else null
 }
 internal fun temporalPhrase(steps:List<Pair<Long,String>>)=steps.joinToString(" · ") {temporalUnit(it.first,it.second)}
 
@@ -107,12 +110,12 @@ internal fun temporalPhrase(steps:List<Pair<Long,String>>)=steps.joinToString(" 
     }
 }
 // Owner-ordered for the temporal family: the glyph and the title share line one; the type word is never printed.
-@Composable internal fun TemporalHeader(icon:String,label:String,part:MessagePart,analyze:(String)->String) {
+@Composable internal fun TemporalHeader(icon:String,label:String,part:MessagePart,analyze:(String)->String,fill:Boolean=true) {
     val motion=LocalMotion.current
     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
         AnimatedContent(icon,transitionSpec={(fadeIn(motion.enter(MotionInline))+scaleIn(motion.enter(MotionInline),initialScale=.8f)) togetherWith fadeOut(motion.exit(MotionExit))},label="$label state") {Glyph(it,20,label)}
         // An untitled card shows only its glyph; the label stays on the glyph as its description.
-        Box(Modifier.weight(1f)) {
+        Box(Modifier.weight(1f,fill)) {
             if(part.rich!=null)RichMessageText(part.rich,style=MaterialTheme.typography.titleMedium)
             else if(part.text.isNotBlank())MessageText(part.text,analyze)
         }
@@ -121,7 +124,7 @@ internal fun temporalPhrase(steps:List<Pair<Long,String>>)=steps.joinToString(" 
 // Owner-ordered: the figure and its unit sit side by side on one baseline, never stacked.
 @Composable internal fun TemporalFigure(value:String,unit:String,modifier:Modifier=Modifier) {
     Row(modifier.clearAndSetSemantics {contentDescription=if(unit.isEmpty())value else "$value $unit"},horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-        Text(value,Modifier.alignByBaseline(),style=MaterialTheme.typography.displaySmall,maxLines=1)
+        Text(value,Modifier.alignByBaseline(),style=MaterialTheme.typography.displaySmall.copy(fontFeatureSettings="tnum, lnum"),maxLines=1)
         if(unit.isNotEmpty())Text(unit,Modifier.alignByBaseline().weight(1f,false),style=MaterialTheme.typography.bodyMedium,color=LocalContentColor.current.copy(alpha=.68f),maxLines=1,overflow=TextOverflow.Ellipsis)
     }
 }

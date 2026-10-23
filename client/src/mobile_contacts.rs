@@ -325,6 +325,49 @@ impl ClientStore {
         }
         Ok(state)
     }
+    /// The stored contact behind each chosen address; an address with no contact stays unbound.
+    pub(super) fn mobile_mention_contacts(
+        &self,
+        chosen: &[MentionChoice],
+    ) -> Result<Vec<(String, sigil_protocol::text::contact::Contact)>, Error> {
+        if chosen.is_empty() {
+            return Ok(Vec::new());
+        }
+        if chosen.len() > 256 {
+            return Err(Error::Limit);
+        }
+        let ids = self
+            .db
+            .prepare("SELECT id FROM mobile_contacts ORDER BY id")?
+            .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut known = std::collections::HashMap::new();
+        for raw in ids {
+            let contact = self.contact(raw.try_into().map_err(|_| Error::InvalidStore)?)?;
+            if !contact.blocked {
+                let address = format!("@{}:{}", contact.username, contact.server);
+                known.insert(address.to_ascii_lowercase(), (contact.id(), address));
+            }
+        }
+        Ok(chosen
+            .iter()
+            .filter_map(|choice| {
+                let (user_id, address) = known.get(&choice.address.to_ascii_lowercase())?;
+                let username = address.strip_prefix('@')?.split(':').next()?;
+                let display_name =
+                    sigil_protocol::text::Text::plain(username, Default::default()).ok()?;
+                Some((
+                    choice.display.clone(),
+                    sigil_protocol::text::contact::Contact {
+                        user_id: *user_id,
+                        address: address.clone(),
+                        display_name,
+                        avatar_url: None,
+                    },
+                ))
+            })
+            .collect())
+    }
     pub(super) fn mobile_contact_chats(&mut self, chats: &mut Vec<Value>) -> Result<(), Error> {
         let ids = self
             .db

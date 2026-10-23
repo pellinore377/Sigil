@@ -108,7 +108,7 @@ internal fun pollFoot(part:MessagePart):String {
     // A row takes the press, so its long press opens the message menu as the bubble's would.
     val choose=Modifier.combinedClickable(interaction,null,enabled,role=if(multiple)Role.Checkbox else Role.RadioButton,onLongClick=hold,onClick=act)
         .semantics {if(multiple)toggleableState=ToggleableState(item.checked) else selected=item.checked}
-    Box(Modifier.bleed(PollBleed).fillMaxWidth().heightIn(min=48.dp).clip(RoundedCornerShape(14.dp)).background(ink.copy(alpha=fill))
+    Box(Modifier.widen(PollBleed).fillMaxWidth().heightIn(min=48.dp).clip(RoundedCornerShape(14.dp)).background(ink.copy(alpha=fill))
         .then(choose).semantics {if(results)stateDescription="$percent%, $votes of $voters ${if(multiple)"voters" else "votes"}"+if(won)", most votes" else ""}
         .padding(horizontal=PollBleed,vertical=8.dp),contentAlignment=Alignment.CenterStart) {
         Column {
@@ -137,7 +137,7 @@ internal fun pollFoot(part:MessagePart):String {
 }
 
 // Widens a row by `by` on both sides without moving its neighbours, so a fill can run past the shared text edge.
-private fun Modifier.bleed(by:Dp)=layout {measurable,constraints->
+internal fun Modifier.widen(by:Dp)=layout {measurable,constraints->
     val extra=by.roundToPx()*2
     val widened=if(constraints.hasBoundedWidth)constraints.copy(minWidth=constraints.minWidth+extra,maxWidth=constraints.maxWidth+extra) else constraints
     val placeable=measurable.measure(widened)

@@ -39,7 +39,7 @@ internal val formSpecs=mapOf(
     "Recurring checklist" to FormSpec(emptyList(),modes=listOf("weekly","monthly","yearly"),title=true,rows=listOf("Item")),
     "Countdown" to FormSpec(listOf("When"),title=true),"Elapsed time" to FormSpec(listOf("Since when"),title=true),
     "Calculation" to FormSpec(listOf("Expression")),"Conversion" to FormSpec(listOf("Value","Unit"),listOf("","miles")),
-    "Rating" to FormSpec(listOf("Rating","Out of"),listOf("","5")),"Progress" to FormSpec(listOf("Percent"),listOf("0"),title=true),
+    "Rating" to FormSpec(listOf("Rating","Out of"),listOf("","5"),modes=listOf("ask","show")),"Progress" to FormSpec(listOf("Percent"),listOf("0"),title=true),
     "Color swatch" to FormSpec(listOf("Color"),listOf("#808080")),"Keyboard shortcut" to FormSpec(listOf("Keys, e.g. Ctrl+Shift+P")),
     "Quote" to FormSpec(listOf("Author","Source (optional)","Quotation")),"QR code" to FormSpec(listOf("Content / Network name","Wi-Fi password"),modes=listOf("text","link","wifi")),
     "Math" to FormSpec(listOf("Formula (LaTeX)")),"ASCII art" to FormSpec(listOf("Your artwork"))
@@ -80,10 +80,13 @@ internal val formSpecs=mapOf(
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).wrapContentHeight(unbounded=true).then(sizing.measure("body")),verticalArrangement=Arrangement.spacedBy(12.dp)) {
             run {
                 if(spec.modes.isNotEmpty())LazyRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {items(spec.modes,key={it}){m->FilterChip(mode==m,{mode=m},label={Text(m.replaceFirstChar {it.uppercase()})},shape=RoundedCornerShape(12.dp))}}
-                if(spec.title)FormField("Title",title,{title=it})
+                val asking=kind=="Rating" && mode=="ask"
+                if(spec.title || asking)FormField(if(asking)"Question" else "Title",title,{title=it})
                 if(kind!="Recipe")spec.fields.forEachIndexed {i,label->
-                    if(!(kind=="QR code" && i==1 && mode!="wifi")) {
-                        if(kind=="Color swatch")AccentPicker(parseAccent(fields[0]) ?: 0x808080) {fields=listOf("#"+accentText(it))}
+                    if(!(kind=="QR code" && i==1 && mode!="wifi") && !(asking && i==0)) {
+                        // A request is out of 5 (stars) or 10 (numbered scale).
+                        if(asking)Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {listOf("5","10").forEach {n->FilterChip(fields[1]==n,{fields=listOf(fields[0],n)},label={Text("Out of $n")},shape=RoundedCornerShape(12.dp))}}
+                        else if(kind=="Color swatch")AccentPicker(parseAccent(fields[0]) ?: 0x808080) {fields=listOf("#"+accentText(it))}
                         else if(kind=="Progress")Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {
                             Text(label,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             Text("${fields[0]}%",style=MaterialTheme.typography.labelLarge)

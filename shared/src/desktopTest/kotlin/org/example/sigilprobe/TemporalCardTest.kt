@@ -21,18 +21,16 @@ class TemporalCardTest {
     private fun render(message:ChatMessage) {ui.setContent {MaterialTheme {Box(Modifier.width(400.dp)) {MessageCards(message,{""},null)}}}}
 
     @Test fun elapsed_spans_are_broken_down_against_the_calendar_not_average_months() {
-        // 2020-01-31T00:00:00Z .. 2020-03-01T00:00:00Z: one calendar month plus a leap day.
-        assertEquals("1 month · 1 day",temporalPhrase(temporalComponents(1580428800L,1583020800L)))
+        fun day(seconds:Long)=seconds.floorDiv(86400L)
+        // 2020-01-31 .. 2020-03-01: one calendar month plus a leap day.
+        assertEquals("1 month · 1 day",temporalPhrase(calendarSteps(day(1580428800L),day(1583020800L))))
         // 2019-01-31 .. 2019-03-01 borrows a 28-day February.
-        assertEquals("1 month · 1 day",temporalPhrase(temporalComponents(1548892800L,1551398400L)))
-        // 2019-03-01T06:30 .. 2025-08-13T14:00 reads out largest first, down to the minute.
-        assertEquals("6 years · 5 months · 12 days · 7 hours · 30 minutes",temporalPhrase(temporalComponents(1551421800L,1755093600L)))
-        assertEquals("2 hours · 5 minutes",temporalPhrase(temporalComponents(0L,7500L)))
-        // Under a minute, and a zero span, carry no components at all.
-        assertTrue(temporalComponents(0L,59L).isEmpty())
-        assertTrue(temporalComponents(100L,100L).isEmpty())
-        // The elapsed card leads with the first component and reads out the rest.
-        assertEquals("5 months · 12 days · 7 hours · 30 minutes",temporalPhrase(temporalComponents(1551421800L,1755093600L).drop(1)))
+        assertEquals("1 month · 1 day",temporalPhrase(calendarSteps(day(1548892800L),day(1551398400L))))
+        // 2019-03-01 .. 2025-08-13 reads out largest first, in whole days.
+        assertEquals("6 years · 5 months · 12 days",temporalPhrase(calendarSteps(day(1551421800L),day(1755093600L))))
+        // A zero or backward span carries no components at all.
+        assertTrue(calendarSteps(100L,100L).isEmpty())
+        assertTrue(calendarSteps(100L,99L).isEmpty())
     }
 
     @Test fun a_countdown_counts_whole_days_before_it_counts_years() {
@@ -49,44 +47,6 @@ class TemporalCardTest {
         assertEquals("59:59",temporalDigits(3599L))
         assertEquals("01:00:00",temporalDigits(3600L))
         assertEquals("02:03:04",temporalDigits(7384L))
-    }
-
-    @Test fun a_task_list_is_numbered_so_it_never_reads_as_a_checklist() {
-        val items=listOf(CardItem("a","Book the room",true,false),CardItem("b","Send the agenda",false,true))
-        render(message(MessagePart("t","task","Launch",items=items)))
-        ui.onNodeWithText("Launch").assertExists()
-        ui.onNodeWithText("1/2").assertExists()
-        ui.onNodeWithText("2").assertExists()
-        ui.onNodeWithText("Confirm to complete · 30s undo").assertExists()
-        ui.onNodeWithText("Task").assertDoesNotExist()
-    }
-
-    // The wire allows 256 rows; the card renders the reference's eight and counts the rest.
-    @Test fun a_long_checklist_is_bounded_at_the_reference_row_cap() {
-        val items=(1..40).map {CardItem("i$it","Item $it",it<=3,true)}
-        render(message(MessagePart("c","checklist","Long",items=items)))
-        ui.onNodeWithText("Item 8").assertExists()
-        ui.onNodeWithText("Item 9").assertDoesNotExist()
-        ui.onNodeWithText("+32 more").assertExists()
-        ui.onNodeWithText("3/40").assertExists()
-    }
-
-    @Test fun a_checklist_keeps_its_progress_count_and_prints_no_type_word() {
-        val items=listOf(CardItem("a","Milk",true,true),CardItem("b","Bread",false,true))
-        render(message(MessagePart("c","checklist","Shopping",items=items)))
-        ui.onNodeWithText("Shopping").assertExists()
-        ui.onNodeWithText("1/2").assertExists()
-        ui.onNodeWithText("Checklist").assertDoesNotExist()
-        ui.onNodeWithText("Confirm to complete · 30s undo").assertDoesNotExist()
-    }
-
-    @Test fun a_recurring_list_marks_kept_rows_without_a_replay_glyph() {
-        val items=listOf(CardItem("a","Water the plants",false,true,persistent=true),CardItem("b","Buy a notebook",false,true))
-        render(message(MessagePart("r","recurring","Weekly",items=items,date="Weekly · resets Friday 12:01 AM")))
-        ui.onNodeWithText("Weekly · resets Friday 12:01 AM").assertExists()
-        ui.onNodeWithText("Water the plants").assertExists()
-        ui.onAllNodesWithContentDescription("Kept through resets").assertCountEquals(1)
-        ui.onNodeWithText("Recurring").assertDoesNotExist()
     }
 
     @Test fun the_countdown_titles_beside_the_glyph_and_reads_its_unit_beside_the_figure() {
@@ -112,10 +72,10 @@ class TemporalCardTest {
     @Test fun a_reminder_leads_with_its_absolute_time_not_a_span_figure() {
         val at=kotlin.time.Clock.System.now().epochSeconds+50400L
         render(message(MessagePart("m","reminder","Call the vet",at=at,date="Tomorrow, 9:30 AM")))
-        ui.onNodeWithContentDescription("Reminder").assertExists()
-        ui.onNodeWithText("Call the vet").assertExists()
+        ui.onNodeWithContentDescription("Reminder. Call the vet").assertExists()
         // The span moves with the wall clock; only its lead-in is asserted.
-        ui.onNodeWithText("Tomorrow, 9:30 AM · in ",substring=true).assertExists()
+        ui.onNodeWithText("Tomorrow, 9:30 AM").assertExists()
+        ui.onNodeWithText("In ",substring=true).assertExists()
     }
 
     @Test fun an_untitled_temporal_card_falls_back_to_its_glyph_not_its_type_word() {

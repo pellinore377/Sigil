@@ -57,6 +57,7 @@ internal fun MessageCards(message: ChatMessage, analyze: (String) -> String, com
             else if (part.service != null) ServiceCard(part.service)
             else if (part.contact != null) ContactCard(part.contact, contactOpen(message,part,command))
             else if (part.kind == "checklist" || part.kind == "task" || part.kind == "recurring") ChecklistCard(message,part,analyze,command)
+            else if (part.kind == "poll" && part.scale > 0) RatingRequestCard(message,part,command)
             else if (part.kind == "poll") PollCard(message,part,analyze,command)
             else if (part.kind == "note") NoteCard(part,analyze)
             else if (part.kind == "reminder") ReminderCard(part,analyze)
