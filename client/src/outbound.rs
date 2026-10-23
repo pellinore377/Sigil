@@ -467,21 +467,24 @@ mod tests {
         let recipient = bob.connection_session().unwrap().unwrap().device_id;
         let mut receipts = Vec::new();
         if revoked { server.revoke_device(&credential(&bob), &recipient, now).unwrap(); }
-        for n in if revoked {64..64u8} else {64..128u8} {
-            receipts.push(
-                server
-                    .submit_message(
-                        &credential(&alice),
-                        Submit {
-                            recipient_device: recipient.clone(),
-                            message_id: transport::hex(&[n; 32]),
-                            payload: "11".repeat(32),
-                            expires_at: now + 3600,
-                        },
-                        now,
-                    )
-                    .unwrap(),
-            );
+        // Fill this pair's allowance. A shorter prefix no longer makes the recipient full.
+        if !revoked {
+            for n in 0..sigil_server::PEER_ALLOWANCE {
+                receipts.push(
+                    server
+                        .submit_message(
+                            &credential(&alice),
+                            Submit {
+                                recipient_device: recipient.clone(),
+                                message_id: format!("{:064x}", 10_000 + u64::from(n)),
+                                payload: "11".repeat(32),
+                                expires_at: now + 3600,
+                            },
+                            now,
+                        )
+                        .unwrap(),
+                );
+            }
         }
         let frozen = serde_json::to_vec(&alice.pending_deliveries([0; 32], now).unwrap()).unwrap();
         let attempts = alice.resume_outbound_online(now).unwrap();

@@ -1286,6 +1286,49 @@ fn device_revocation_over_https_is_scoped_retryable_and_preserves_local_state() 
 }
 
 #[test]
+fn sign_out_finishes_pending_rotation_then_revokes_without_erasing_local_history() {
+    let (dir, _fixture, mut alice, _, now) = crate::claims::tests::pair();
+    let posted: serde_json::Value = serde_json::from_str(
+        &alice.mobile_command(
+            &serde_json::json!({"command":"post","peer":"self","request":"71".repeat(32),"timestamp":now,"text":"A private saved letter"}).to_string(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(posted["ok"], true);
+    alice.prepare_credential_rotation().unwrap();
+    let pending = load(&alice.db, &alice.key).unwrap().0;
+    let old = pending.credential.clone();
+    let next = pending.rotation.clone().unwrap();
+    alice.sign_out_online().unwrap();
+    let after = load(&alice.db, &alice.key).unwrap().0;
+    assert!(after.rotation.is_none());
+    assert_eq!(after.credential, next);
+    assert!(after.session.is_some());
+    let server = Store::open(&dir.path().join("server.db")).unwrap();
+    assert!(server.session(&old, now).is_err());
+    assert!(server.session(&after.credential, now).is_err());
+    let timeline: serde_json::Value =
+        serde_json::from_str(&alice.mobile_command(r#"{"command":"timeline","peer":"self"}"#))
+            .unwrap();
+    assert_eq!(timeline["value"]["messages"][0]["text"], "A private saved letter");
+}
+
+#[test]
+fn sign_out_does_not_revoke_when_credential_rotation_is_uncertain() {
+    let (dir, fixture, mut alice, _, now) = crate::claims::tests::pair();
+    alice.prepare_credential_rotation().unwrap();
+    let before = load(&alice.db, &alice.key).unwrap().0;
+    drop(fixture);
+    assert!(alice.sign_out_online().is_err());
+    let after = load(&alice.db, &alice.key).unwrap().0;
+    assert_eq!(after.credential, before.credential);
+    assert_eq!(after.rotation, before.rotation);
+    assert!(after.session.is_some());
+    let server = Store::open(&dir.path().join("server.db")).unwrap();
+    assert!(server.session(&before.credential, now).is_ok());
+}
+
+#[test]
 fn password_enrollment_reopens_the_same_account_without_storing_password() {
     let (dir, fixture, invite, now) = setup();
     let mut server = Store::open(&dir.path().join("server.db")).unwrap();

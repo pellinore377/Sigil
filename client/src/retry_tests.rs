@@ -28,34 +28,42 @@ fn full_inboxes_recover_without_discarding_failed_delivery() {
     bob.db.execute("UPDATE prekeys SET state=NULL", []).unwrap();
     assert!(bob.accept_delivery(&original).is_err());
     let mut server = sigil_server::store::Store::open(&dir.path().join("server.db")).unwrap();
-    for n in 64..127u8 {
-        server
-            .submit_message(
-                &credential(&alice),
+    let allowance = u64::from(sigil_server::PEER_ALLOWANCE);
+    // `start` already delivered one packet. Fill each direction until the normal
+    // allowance is exact, so the retried message still has the recovery slot.
+    let mut fill = |from: &str, recipient: &str, base: u64| {
+        let mut n = base;
+        loop {
+            match server.submit_message(
+                from,
                 Submit {
-                    recipient_device: bob.connection_session().unwrap().unwrap().device_id,
-                    message_id: transport::hex(&[n; 32]),
+                    recipient_device: recipient.to_owned(),
+                    message_id: format!("{n:064x}"),
                     payload: "11".repeat(32),
                     expires_at: now + 3600,
                 },
                 now,
-            )
-            .unwrap();
-    }
-    for n in 128..192u8 {
-        server
-            .submit_message(
-                &credential(&bob),
-                Submit {
-                    recipient_device: alice.connection_session().unwrap().unwrap().device_id,
-                    message_id: transport::hex(&[n; 32]),
-                    payload: "11".repeat(32),
-                    expires_at: now + 3600,
-                },
-                now,
-            )
-            .unwrap();
-    }
+            ) {
+                Ok(_) => n += 1,
+                Err(sigil_server::store::StoreError::MailboxFull) => break,
+                Err(error) => panic!("{error:?}"),
+            }
+            assert!(
+                n < base + allowance + 8,
+                "inbox did not reach the peer allowance"
+            );
+        }
+    };
+    fill(
+        &credential(&alice),
+        &bob.connection_session().unwrap().unwrap().device_id,
+        20_000,
+    );
+    fill(
+        &credential(&bob),
+        &alice.connection_session().unwrap().unwrap().device_id,
+        40_000,
+    );
     let id = bob.prepare_retry_request(&original, now).unwrap();
     let control = bob.send_retry_request_online(id, now).unwrap();
     let control = alice

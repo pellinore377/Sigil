@@ -757,7 +757,8 @@ impl ClientStore {
             }
             Command::PasskeyRequest {} => self.passkey_request(),
             Command::ContactSignal {} => {
-                crate::CONTACT_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed);
+                let credential = self.connected_client()?.credential();
+                crate::raise_contact_signal(&credential);
                 Ok(json!({}))
             }
             Command::Recover {
@@ -870,8 +871,7 @@ impl ClientStore {
             ),
             Command::Devices { cursor } => self.mobile_devices(cursor),
             Command::SignOut {} => {
-                let session = self.connection_session()?.ok_or(Error::Unprepared)?;
-                self.revoke_device_online(&session.device_id)?;
+                self.sign_out_online()?;
                 Ok(json!({"revoked": true}))
             }
             Command::RevokeDevice { device } => {
@@ -1652,7 +1652,10 @@ impl ClientStore {
                 }
                 let mut issue = result.scheduling_error.as_ref().map(error_message);
                 // The server signals contact requests and replies; act on them at once.
-                let signalled = crate::CONTACT_SIGNAL.swap(false, std::sync::atomic::Ordering::Relaxed);
+                let signalled = match self.connected_client() {
+                    Ok(network) => crate::take_contact_signal(&network.credential()),
+                    Err(_) => false,
+                };
                 if signalled {
                     self.db.execute(
                         "UPDATE mobile_contacts SET work_at=?1 WHERE work_at>?1 AND work_at<9223372036854775807",

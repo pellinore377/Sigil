@@ -60,6 +60,16 @@ impl Write for Input {
     }
 }
 
+/// Mirror a host directory that the dynamic linker or shell looks up by absolute path.
+fn host_mount(command: &mut Command, path: &str) {
+    let host = std::path::Path::new(path);
+    if let Ok(target) = std::fs::read_link(host) {
+        command.arg("--symlink").arg(target).arg(path);
+    } else if host.is_dir() {
+        command.arg("--ro-bind").arg(path).arg(path);
+    }
+}
+
 pub struct Runtime {
     pub worker: PathBuf,
     pub pdfium: Option<PathBuf>,
@@ -99,31 +109,26 @@ impl Runtime {
             return Err(Error::Unavailable);
         }
         let mut command = Command::new("/usr/bin/bwrap");
+        command.env_clear().args([
+            "--unshare-all",
+            "--unshare-user",
+            "--disable-userns",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+            "--cap-drop",
+            "ALL",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+        ]);
+        // Follow this host's /bin, /lib and /lib64. Debian keeps the dynamic
+        // linker on /lib64 -> usr/lib64; a fixed usr/lib link cannot start a worker.
+        for path in ["/bin", "/lib", "/lib64"] {
+            host_mount(&mut command, path);
+        }
         command
-            .env_clear()
-            .args([
-                "--unshare-all",
-                "--unshare-user",
-                "--disable-userns",
-                "--die-with-parent",
-                "--new-session",
-                "--clearenv",
-                "--cap-drop",
-                "ALL",
-                "--ro-bind",
-                "/usr",
-                "/usr",
-                "--symlink",
-                "usr/bin",
-                "/bin",
-                "--symlink",
-                "usr/lib",
-                "/lib",
-                "--symlink",
-                "usr/lib",
-                "/lib64",
-                "--ro-bind",
-            ])
+            .arg("--ro-bind")
             .arg(worker)
             .arg("/worker")
             .arg("--ro-bind-data")

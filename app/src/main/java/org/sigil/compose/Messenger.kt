@@ -543,6 +543,9 @@ class Messenger(application: Application) : AndroidViewModel(application) {
                     NativeSignOut.save(getApplication(), "confirmed"); signOutStage = "confirmed"
                 }
                 check(signOutStage in listOf("pending", "confirmed"))
+                val connection = runCatching { execute("push", mapOf("action" to "status")).optional("connection") }.getOrNull()
+                runCatching { NativeFcm.stop(getApplication()) }
+                runCatching { NativePush.unregister(getApplication(), connection) }
                 check(NativeSignOut.erase(getApplication()))
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {

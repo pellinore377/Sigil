@@ -147,6 +147,74 @@ pub(crate) fn enable_test_push(store: &mut Store, credential: &str, now: u64) {
     activate(store, credential, now);
 }
 #[test]
+fn revoking_a_device_drops_its_push_registration_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let (mut store, alice, bob) = setup(&path);
+    activate(&mut store, &alice, NOW);
+    activate(&mut store, &bob, NOW);
+    let alice_device = store.session(&alice, NOW).unwrap().device_id;
+    let bob_device = store.session(&bob, NOW).unwrap().device_id;
+    store.allow_sender(&bob, &alice_device, NOW).unwrap();
+    store
+        .submit_message(&alice, message(&bob_device, 1, NOW + 1000), NOW)
+        .unwrap();
+    assert_eq!(
+        store
+            .0
+            .query_row(
+                "SELECT count(*) FROM push_jobs WHERE device=?1",
+                [&bob_device],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    store.revoke_device(&bob, &bob_device, NOW).unwrap();
+    let (state, target): (i64, Option<String>) = store
+        .0
+        .query_row(
+            "SELECT state, target FROM push_channels WHERE device=?1",
+            [&bob_device],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, 3);
+    assert!(target.is_none());
+    assert_eq!(
+        store
+            .0
+            .query_row(
+                "SELECT count(*) FROM push_jobs WHERE device=?1",
+                [&bob_device],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert!(store.claim_push(NOW).unwrap().is_none());
+    let alice_target: Option<String> = store
+        .0
+        .query_row(
+            "SELECT target FROM push_channels WHERE device=?1",
+            [&alice_device],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(alice_target.is_some());
+    let account = store.session(&alice, NOW).unwrap().account_id;
+    store.disable_account(&account).unwrap();
+    let alice_target: Option<String> = store
+        .0
+        .query_row(
+            "SELECT target FROM push_channels WHERE device=?1",
+            [&alice_device],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(alice_target.is_none());
+}
+#[test]
 fn mailbox_enqueue_and_completion_are_atomic_across_arrivals_restart_and_ack() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.db");
