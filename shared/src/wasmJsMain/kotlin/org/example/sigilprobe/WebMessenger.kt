@@ -645,12 +645,12 @@ if(signOut)AlertDialog(onDismissRequest={if(!state.busy)signOut=false},title={Te
     if(signOutFailed)Text("Server revocation was not confirmed. Retry, or remove local data and revoke this device from another signed-in device.")
 }},confirmButton={SigilTextButton(onClick={scope.launch {mutex.withLock {
     state=state.copy(busy=true)
-    try {if(notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>();calls.close();execute("browser_sign_out");finishRemoval()}
+    try {if(notificationsReady)try{webNotificationsDisable().awaitBrowser<JsAny?>()}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){};calls.close();execute("browser_sign_out");finishRemoval()}
     catch(_:Exception){signOutFailed=true;state=state.copy(busy=false)}
 }}},enabled=signOutSaved&&!state.busy){Text(if(signOutFailed)"Retry revocation" else "Sign out")}},dismissButton={Row {
     if(signOutFailed)SigilTextButton(onClick={scope.launch {mutex.withLock {
         state=state.copy(busy=true)
-        try {if(notificationsReady)webNotificationsDisable().awaitBrowser<JsAny?>();execute("browser_erase");finishRemoval()}
+        try {if(notificationsReady)try{webNotificationsDisable().awaitBrowser<JsAny?>()}catch(cancelled:CancellationException){throw cancelled}catch(_:Exception){};execute("browser_erase");finishRemoval()}
         catch(_:Exception){state=state.copy(busy=false,issue="Local removal could not finish. Reload to retry any pending removal.")}
     }}},enabled=signOutSaved&&!state.busy){Text("Remove local data")}
     SigilTextButton({signOut=false},enabled=!state.busy){Text("Cancel")}

@@ -372,6 +372,9 @@ impl Store {
             return Err(StoreError::NotFound);
         }
         retire_device_delivery(&tx, device_id)?;
+        // Drop the push token in this transaction. Later maintenance must not be
+        // what stops a revoked device from being woken.
+        crate::push::clear(&tx, device_id, sigil_protocol::push::State::Invalid)?;
         tx.commit()?;
         Ok(())
     }
@@ -393,6 +396,13 @@ impl Store {
             [account_id],
         )?;
         retire_account_delivery(&tx, account_id)?;
+        let devices: Vec<String> = tx
+            .prepare("SELECT id FROM devices WHERE account_id=?1")?
+            .query_map([account_id], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        for device in &devices {
+            crate::push::clear(&tx, device, sigil_protocol::push::State::Invalid)?;
+        }
         tx.commit()?;
         Ok(())
     }

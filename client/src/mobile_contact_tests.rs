@@ -364,10 +364,11 @@ fn denied_first_message_survives_until_recipient_repairs_acceptance() {
             .next,
         schedule.next
     );
+    // The denied attempt records a recipient backoff. The repaired grant is tried once that wait ends.
     for _ in 0..2 {
-        for attempt in alice.resume_send_intents_online(now).unwrap() {
+        for attempt in alice.resume_send_intents_online(now + 60).unwrap() {
             alice
-                .send_pending_online(attempt.result.unwrap(), now)
+                .send_pending_online(attempt.result.unwrap(), now + 60)
                 .unwrap();
         }
     }

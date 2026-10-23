@@ -789,6 +789,24 @@ impl ClientStore {
         }
         Ok(page)
     }
+    /// Revoke this device. A pending credential rotation is reconciled first;
+    /// a transport failure there is not revocation. Local history and keys stay
+    /// until the platform removes them. Authentication failure is not confirmation.
+    pub fn sign_out_online(&mut self) -> Result<(), Error> {
+        let (profile, _) = load(&self.db, &self.key)?;
+        if profile
+            .session
+            .as_ref()
+            .is_none_or(|session| session.pending)
+        {
+            return Err(Error::Unprepared);
+        }
+        if profile.rotation.is_some() {
+            self.rotate_credential_online()?;
+        }
+        let session = self.connection_session()?.ok_or(Error::Unprepared)?;
+        self.revoke_device_online(&session.device_id)
+    }
     /// Revoke an account device's server authorization; retain local history and
     /// encryption trust. Only a successful server response confirms revocation.
     /// Self-revocation makes subsequent authenticated requests fail, including

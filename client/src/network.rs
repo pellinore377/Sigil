@@ -288,7 +288,7 @@ impl HttpsClient {
             .headers()
             .contains_key(sigil_protocol::mailbox::SIGNAL_HEADER);
         if signalled {
-            crate::CONTACT_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed);
+            crate::raise_contact_signal(&self.credential);
         }
         let bytes = self.response_bytes(response, 200, MAILBOX_RESPONSE, "application/json")?;
         Ok(signalled || bytes.contains(&b'{'))

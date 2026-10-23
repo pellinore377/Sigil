@@ -77,8 +77,23 @@ mod outbound;
 pub use outbound::OutboundAttempt;
 
 pub type Id = [u8; 32];
-/// Set when the server reports a contact request or reply outside the mailbox.
-pub(crate) static CONTACT_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Credentials whose server reported a contact request or reply outside the mailbox.
+/// One process can hold several accounts, so the latch is per credential.
+static CONTACT_SIGNALS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+pub(crate) fn raise_contact_signal(credential: &str) {
+    let mut pending = CONTACT_SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pending.insert(credential.to_owned());
+}
+pub(crate) fn take_contact_signal(credential: &str) -> bool {
+    let mut pending = CONTACT_SIGNALS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    pending.remove(credential)
+}
 pub const DATABASE_VERSION: u32 = 86;
 #[derive(Debug)]
 pub enum Error {
