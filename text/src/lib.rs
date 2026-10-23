@@ -20,6 +20,7 @@ pub mod math;
 mod model;
 pub mod motion;
 pub mod numeric;
+pub mod page_card;
 mod parse;
 pub mod poll_close;
 pub mod recurrence;

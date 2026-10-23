@@ -101,6 +101,31 @@ pub enum Action {
         total: u32,
         payload: String,
     },
+    Page {
+        page: Id,
+        change: PageChange,
+    },
+}
+/// Page notices and grants; the card itself is `Construct::Page`.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub enum PageChange {
+    Edited {
+        seq: u64,
+        title: String,
+        preview: String,
+        kind: crate::pages::PageKind,
+        archived: bool,
+        done: u32,
+        total: u32,
+    },
+    Key {
+        grant: crate::pages::Grant,
+    },
+    KeyRequest {
+        epoch: u64,
+    },
+    Removed,
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Presence {
@@ -193,6 +218,34 @@ impl Operation {
                     || thread.as_ref().is_some_and(|v| v.message == self.id)
                 {
                     return Err("invalid post metadata");
+                }
+            }
+            Action::Page { page, change } => {
+                if *page == [0; 32] {
+                    return Err("invalid page");
+                }
+                match change {
+                    PageChange::Edited {
+                        seq,
+                        title,
+                        preview,
+                        done,
+                        total,
+                        ..
+                    } => {
+                        if *seq > i64::MAX as u64 {
+                            return Err("invalid page sequence");
+                        }
+                        crate::pages::validate_summary(title, preview, *done, *total)
+                            .map_err(|_| "invalid page summary")?;
+                    }
+                    PageChange::Key { grant } if grant.id != *page => {
+                        return Err("grant for another page")
+                    }
+                    PageChange::KeyRequest { epoch } if *epoch == 0 || *epoch > i64::MAX as u64 => {
+                        return Err("invalid page epoch")
+                    }
+                    _ => {}
                 }
             }
             Action::Edit { body, .. } => {

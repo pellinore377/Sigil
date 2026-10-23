@@ -185,6 +185,14 @@ impl ClientStore {
         let state = self.card_state(conversation, reference)?;
         let mut value = json!({"id":transport::hex(&card.id), "kind":"card", "text":card_display_body(card)?, "items":[]});
         match &state.definition.content {
+            Construct::Page(page) => {
+                value["kind"] = json!("page");
+                value["text"] = json!(page.title);
+                value["preview"] = json!(page.preview);
+                value["page_kind"] = json!(page.kind);
+                value["done"] = json!(page.done);
+                value["total"] = json!(page.total);
+            }
             Construct::Note(note) => {
                 value["kind"] = json!("note");
                 value["text"] = json!(note.text.body());

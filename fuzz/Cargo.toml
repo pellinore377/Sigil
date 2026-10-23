@@ -17,6 +17,7 @@ sigil-text = { path = "../text" }
 sigil-protocol = { path = "../protocol" }
 sigil-crypto = { path = "../crypto" }
 sigil-server = { path = "../server" }
+sigil-pages = { path = "../pages", features = ["sim"] }
 serde_json = "=1.0.151"
 axum = { version = "=0.8.9", default-features = false }
 zeroize = "=1.9.0"
@@ -48,6 +49,13 @@ bench = false
 [[bin]]
 name = "federation"
 path = "fuzz_targets/federation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pages"
+path = "fuzz_targets/pages.rs"
 test = false
 doc = false
 bench = false

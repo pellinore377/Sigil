@@ -4885,6 +4885,7 @@ dependencies = [
  "sigil-calls",
  "sigil-crypto",
  "sigil-media",
+ "sigil-pages",
  "sigil-protocol",
  "sigil-server",
  "tempfile",
@@ -4967,6 +4968,14 @@ dependencies = [
  "tempfile",
  "tiny-skia",
  "zip",
+]
+
+[[package]]
+name = "sigil-pages"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

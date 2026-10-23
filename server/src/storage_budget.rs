@@ -71,6 +71,7 @@ pub(crate) fn rebuild(db: &Connection) -> Result<(), StoreError> {
     )? {
         db.execute("UPDATE retained_storage SET bytes=bytes+(SELECT coalesce(sum(?1+length(image)),0) FROM profile_photos WHERE account=retained_storage.account_id)+(SELECT count(*)*?1 FROM profile_shares WHERE owner=retained_storage.account_id)",[crate::profile_photos::RESERVATION as i64])?;
     }
+    crate::pages::rebuild(db)?;
     Ok(())
 }
 

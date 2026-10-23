@@ -30,6 +30,8 @@ mod event;
 pub mod groups;
 pub mod mobile;
 mod notes;
+pub mod page_sync;
+mod pages;
 mod rich_text;
 pub mod services;
 pub mod timeline_preload;
@@ -94,7 +96,7 @@ pub(crate) fn take_contact_signal(credential: &str) -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     pending.remove(credential)
 }
-pub const DATABASE_VERSION: u32 = 86;
+pub const DATABASE_VERSION: u32 = 87;
 #[derive(Debug)]
 pub enum Error {
     Storage(rusqlite::Error),
@@ -552,6 +554,9 @@ impl ClientStore {
         }
         if version < 86 {
             tx.execute_batch(account::MIGRATION)?;
+        }
+        if version < 87 {
+            tx.execute_batch(pages::MIGRATION)?;
         }
         if version < 63 {
             conversations::migrate(&tx, &key)?;

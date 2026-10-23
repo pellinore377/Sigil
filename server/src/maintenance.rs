@@ -60,6 +60,7 @@ impl Store {
         changed += crate::attachments::cleanup(&tx, now)?;
         mark("attachments");
         changed += crate::contact_requests::cleanup(&tx, now)?;
+        changed += crate::pages::cleanup(&tx, now)?;
         changed += crate::push_delivery::cleanup(&tx, now)?;
         mark("push");
         changed += crate::federation_admission::cleanup(&tx, now)?;

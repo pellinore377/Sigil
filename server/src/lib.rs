@@ -44,6 +44,8 @@ mod operation_routes;
 pub mod operations;
 pub mod password_login;
 mod prekeys;
+mod page_routes;
+mod pages;
 mod profile;
 mod profile_photo_routes;
 mod profile_photos;
@@ -91,6 +93,7 @@ struct AppState {
     calls: Arc<call_routes::Runtime>,
     services: Arc<service_routes::Runtime>,
     maps: Arc<map_routes::Runtime>,
+    pages: Arc<page_routes::Runtime>,
     store: Arc<Mutex<Store>>,
     token: AdminToken,
     slots: Arc<Semaphore>,
@@ -138,6 +141,7 @@ fn application_with_log(
         calls: Arc::new(call_routes::Runtime::default()),
         services: Arc::new(service_routes::Runtime::default()),
         maps: Arc::new(map_routes::Runtime::default()),
+        pages: Arc::new(page_routes::Runtime::default()),
         store: Arc::new(Mutex::new(store)),
         token,
         slots: Arc::new(Semaphore::new(32)),
@@ -226,6 +230,7 @@ fn application_with_log(
         .merge(contacts::routes())
         .merge(contact_request_routes::routes())
         .merge(profile_photo_routes::routes())
+        .merge(page_routes::routes())
         .merge(admin_routes::client())
         .merge(oidc_routes::client())
         .merge(oidc_routes::callback())
@@ -293,7 +298,8 @@ async fn security_headers(request: Request, next: Next) -> Response {
 
 /// Mailbox waits hold their own bounded slots and a longer deadline.
 async fn timeouts(request: Request, next: Next) -> Response {
-    let limit = if request.uri().path() == mailbox::WAIT_PATH { mailbox::WAIT_DEADLINE } else { 5 };
+    let waits = request.uri().path() == mailbox::WAIT_PATH || page_routes::long_poll(&request);
+    let limit = if waits { mailbox::WAIT_DEADLINE } else { 5 };
     let (method, path) = (request.method().clone(), request.uri().path().to_owned());
     let started = std::time::Instant::now();
     let response = match tokio::time::timeout(Duration::from_secs(limit), next.run(request)).await {
@@ -302,7 +308,7 @@ async fn timeouts(request: Request, next: Next) -> Response {
     };
     // Path only, durations only: what an ordinary request costs when it is slow.
     let elapsed = started.elapsed().as_millis();
-    if elapsed > 80 && path != mailbox::WAIT_PATH {
+    if elapsed > 80 && !waits {
         eprintln!("sigil.slow_request {} {} {}ms", method, path, elapsed);
     }
     // Path only: no query strings, credentials or bodies.
@@ -312,7 +318,7 @@ async fn timeouts(request: Request, next: Next) -> Response {
     response
 }
 async fn bounded(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if request.uri().path() == mailbox::WAIT_PATH {
+    if request.uri().path() == mailbox::WAIT_PATH || page_routes::long_poll(&request) {
         return next.run(request).await;
     }
     let Ok(_permit) = state.slots.try_acquire() else {
@@ -551,6 +557,7 @@ mod tests {
             calls: Arc::new(call_routes::Runtime::default()),
             services: Arc::new(service_routes::Runtime::default()),
             maps: Arc::new(map_routes::Runtime::default()),
+            pages: Arc::new(page_routes::Runtime::default()),
             store: Arc::new(Mutex::new(
                 Store::open(&directory.path().join("sigil.db")).unwrap(),
             )),

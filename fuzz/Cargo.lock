@@ -3631,6 +3631,7 @@ dependencies = [
  "libfuzzer-sys",
  "serde_json",
  "sigil-crypto",
+ "sigil-pages",
  "sigil-protocol",
  "sigil-server",
  "sigil-text",
@@ -3653,6 +3654,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "sigil-pages"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

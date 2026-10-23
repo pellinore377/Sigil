@@ -1,5 +1,8 @@
 /// Reconstruct historical schemas from a fresh current synthetic database.
 pub fn rewind(db: &rusqlite::Connection, version: u32) {
+    if version < 87 {
+        db.execute_batch("DROP TABLE IF EXISTS page_cache; DROP TABLE IF EXISTS page_work;").unwrap();
+    }
     if version < 79 {
         db.execute_batch("ALTER TABLE outbox DROP COLUMN wake;").unwrap();
     }

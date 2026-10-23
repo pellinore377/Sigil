@@ -896,6 +896,7 @@ impl ClientStore {
                 }
             }
             Construct::Note(_)
+            | Construct::Page(_)
             | Construct::Location(_)
             | Construct::Reminder(_)
             | Construct::Countdown(_)

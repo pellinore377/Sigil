@@ -11,6 +11,7 @@ pub mod handshake;
 mod identity;
 mod kem;
 pub mod link;
+pub mod page;
 pub mod private_credentials;
 pub mod private_group;
 pub mod ratchet;

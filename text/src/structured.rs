@@ -62,6 +62,7 @@ pub enum Construct {
     Contact(crate::contact::Contact),
     Service(Box<crate::service::Snapshot>),
     Location(crate::location::Share),
+    Page(crate::page_card::PageCard),
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,6 +184,7 @@ impl Card {
             Ok(())
         };
         match &self.content {
+            Construct::Page(value) => value.validate()?,
             Construct::Location(value) => {
                 value.validate(self.created_at)?;
                 add(&value.label)?;
@@ -286,6 +288,9 @@ impl Card {
         let body = match &self.content {
             Construct::Service(value) => value.body()?,
             Construct::Location(value) => value.body(),
+            Construct::Page(value) => format!("Page: {}\n{}", value.title, value.preview)
+                .trim_end()
+                .into(),
             Construct::Contact(value) => value.body()?,
             Construct::Utility(value) => value.body()?,
             Construct::Data(value) => value.body(),
@@ -359,6 +364,9 @@ impl Card {
             }
             Construct::Service(value) => html.push_str(&value.html()?),
             Construct::Location(value) => html.push_str(&value.html()?),
+            Construct::Page(_) => {
+                html.push_str(&Text::plain(&self.body()?, Default::default())?.html())
+            }
             Construct::Utility(value) => html.push_str(&value.html()?),
             Construct::Data(value) => html.push_str(&value.html()?),
             Construct::Reminder(_)

@@ -16,6 +16,7 @@ pub mod link;
 pub mod login;
 pub mod mailbox;
 pub mod oidc;
+pub mod pages;
 pub mod prekeys;
 pub mod push;
 pub mod recovery;

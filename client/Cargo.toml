@@ -12,6 +12,7 @@ test-loopback = []
 sigil-crypto = { path = "../crypto" }
 sigil-calls = { path = "../calls" }
 sigil-protocol = { path = "../protocol" }
+sigil-pages = { path = "../pages" }
 sigil-media = { path = "../media", default-features = false }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 zeroize = { version = "=1.9.0", features = ["serde"] }

@@ -2,7 +2,7 @@ use sigil_crypto::{storage::StorageKey, triple::Session, DhKey, Secret32};
 use std::path::Path;
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus");
-    for target in ["content", "wire", "checkpoints", "federation"] {
+    for target in ["content", "wire", "checkpoints", "federation", "pages"] {
         std::fs::create_dir_all(root.join(target)).unwrap();
     }
     for (n, source) in [
@@ -86,4 +86,18 @@ fn main() {
         b"\x07{\"version\":0,\"server\":\"origin.example\"}",
     )
     .unwrap();
+    for (n, ops) in [
+        r#"[{"delta":[{"retain":2},{"insert":"x","attrs":{"bold":true}},{"retain":2}]},{"meta":{"title":"Trip","kind":"list"}}]"#,
+        r#"[{"table_row":{"table":"t1","at":0,"action":"insert"}},{"cell":{"table":"t1","row":0,"col":0},"delta":[{"insert":"a"}]}]"#,
+        r#"[{"table_col":{"table":"t1","at":1,"action":"insert","width":2.0}},{"table_col":{"table":"t1","at":0,"action":"delete"}}]"#,
+        r#"[{"body_set":[{"insert":"one\n"},{"insert":{"block":{"id":"b","source":"chart::A|1"}}},{"insert":"\n"}]},{"block_set":{"id":"b","source":"x"}}]"#,
+        r#"[{"delta":[{"retain":0},{"delete":1},{"retain":0},{"retain":3}]},{"cell":{"table":"t1","row":0,"col":0},"delta":[{"retain":0},{"delete":0},{"insert":""}]}]"#,
+        r#"[{"delta":[{"retain":4294967295},{"retain":2}]},{"delta":[{"delete":4294967295},{"insert":"x"}]}]"#,
+        r#"[{"delta":[{"delete":1},{"retain":2}]},{"cell":{"table":"t1","row":0,"col":0},"delta":[{"retain":999}]}]"#,
+    ]
+    .iter()
+    .enumerate()
+    {
+        std::fs::write(root.join(format!("pages/ops{n}")), ops).unwrap();
+    }
 }

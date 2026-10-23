@@ -64,6 +64,8 @@ mod contacts;
 mod federation;
 #[path = "group_network.rs"]
 mod groups;
+#[path = "page_network.rs"]
+mod pages;
 #[path = "profile_network.rs"]
 mod profiles;
 #[path = "push_network.rs"]

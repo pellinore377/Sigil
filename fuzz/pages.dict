@@ -1,0 +1,13 @@
+# Page op tokens; run with -dict=pages.dict
+"{\"retain\":0}"
+"{\"delete\":0}"
+"{\"insert\":\"\"}"
+"{\"retain\":4294967295}"
+"{\"delete\":4294967295}"
+"{\"insert\":{\"hr\":true}}"
+"\"attrs\":{\"bold\":null}"
+"{\"delta\":["
+"{\"cell\":{\"table\":\"t1\",\"row\":0,\"col\":0},\"delta\":["
+"{\"cell\":{\"table\":\"missing\",\"row\":0,\"col\":0},\"delta\":["
+"{\"table_row\":{\"table\":\"t1\",\"at\":0,\"action\":\"delete\"}}"
+"{\"body_set\":["

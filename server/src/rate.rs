@@ -18,14 +18,14 @@ use std::{
 const MAX_DEVICES: usize = 4096;
 const IDLE: Duration = Duration::from_secs(60);
 
-struct Bucket {
+pub(crate) struct Bucket {
     credit: u64,
     capacity: u64,
     cost: u64,
     updated: Instant,
 }
 impl Bucket {
-    fn new(burst: u64, period_ms: u64, now: Instant) -> Self {
+    pub(crate) fn new(burst: u64, period_ms: u64, now: Instant) -> Self {
         let cost = period_ms * 1_000_000;
         Self {
             credit: burst * cost,
@@ -34,7 +34,7 @@ impl Bucket {
             updated: now,
         }
     }
-    fn take(&mut self, now: Instant) -> Result<(), Duration> {
+    pub(crate) fn take(&mut self, now: Instant) -> Result<(), Duration> {
         let elapsed = now
             .saturating_duration_since(self.updated)
             .as_nanos()
